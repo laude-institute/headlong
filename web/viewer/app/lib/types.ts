@@ -130,6 +130,7 @@ export interface ChatMessage {
   content: string;
   reply_to: string | null;
   filename: string | null;
+  partial?: boolean;
 }
 
 export interface ChatLog {
