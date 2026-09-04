@@ -288,6 +288,39 @@ LLM_API_URL=http://localhost:11434/v1/chat/completions \
 llm -m qwen3:8b "hello"
 ```
 
+OpenAI's Responses completion protocol is opt-in. Native OpenAI and
+OpenRouter choose their `/responses` endpoint automatically;
+`openai-compatible` uses the exact configured URL without appending a path:
+
+```bash
+# Native OpenAI Responses, with the complete terminal object kept for tools,
+# typed output items, response IDs, status, and usage.
+LLM_API_FORMAT=responses \
+LLM_RESPONSE_FILE=/tmp/response.json \
+llm --provider openai -m gpt-5.5 --thinking high "solve carefully"
+
+# A compatible Responses endpoint.
+LLM_API_FORMAT=responses \
+LLM_PROVIDER=openai-compatible \
+LLM_API_URL=https://router.example/v1/responses \
+LLM_API_KEY=... \
+llm -m routed-model "hello"
+```
+
+`LLM_RESPONSES_BODY_FILE` may name a JSON object with other synchronous
+Responses create fields, including `tools`, `include`, `store`, `metadata`,
+`text.format`, `truncation`, and provider-specific extensions. `llm` owns the
+fields coupled to its CLI (`model`, `input`, `instructions`,
+`previous_response_id`, `max_output_tokens`, `stream`, and command-line
+reasoning settings). Typed message, image, file, reasoning, function-call, and
+function-output items in `--messages-file` pass through unchanged.
+
+Visible output text remains stdout; reasoning summaries go to stderr. The
+mode-0600 `LLM_RESPONSE_FILE` sidecar is the machine channel for the complete
+terminal Response or error envelope, including function-only results. Retrieval,
+cancellation, deletion, Conversations, background mode, and WebSocket sessions
+are lifecycle APIs and are not completion operations in this CLI.
+
 Set `LLM_API_KEY` if the endpoint wants a bearer token. The policy for
 which providers live in core is in
 [design/providers.md](../design/providers.md).
@@ -310,13 +343,21 @@ shellm "what os is this?"
 nested shellm runs the same way the vendor keys are, so `llm` calls
 inside generated code reach the endpoint too.
 
+To run shellm itself on Responses, set `SHELLM_API_FORMAT=responses` (and
+`SHELLM_RESPONSES_BODY_FILE` for extra create fields). Native OpenAI and generic
+compatible endpoints use `previous_response_id` while retaining an exact
+process-local replay chain. If an endpoint rejects continuation, shellm retries
+once with that chain and stays stateless for the rest of the run. OpenRouter's
+documented stateless Responses endpoint uses exact replay from the first turn.
+Remote response IDs and replay items are removed when the shellm process exits.
+
 A provider that can't speak this protocol (an SDK, a vendor CLI,
 signed requests) runs outside core as an adapter: set
 `LLM_PROVIDER=adapter` and `LLM_ADAPTER=/path/to/executable`, and
 `llm` runs that executable in place of curl. The adapter contract is
 in [design/providers.md](../design/providers.md).
 
-**Output contract:** stdout = text response, stderr = thinking tokens (Anthropic only), exit 0 = success. This makes it composable with pipes and subshells.
+**Output contract:** stdout = text response, stderr = thinking/reasoning output, exit 0 = success. This makes it composable with pipes and subshells.
 
 ## mem and skills
 

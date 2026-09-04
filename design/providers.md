@@ -58,8 +58,9 @@ llm -m qwen3:8b "hello"
 | Variable | Meaning |
 |---|---|
 | `LLM_PROVIDER=openai-compatible` | Selects the provider (or pass `--provider openai-compatible`) |
-| `LLM_API_URL` | The chat-completions endpoint. Required, no default |
+| `LLM_API_URL` | The exact chat-completions or Responses endpoint. Required, no default |
 | `LLM_API_KEY` | Optional. When set, sent as `Authorization: Bearer` |
+| `LLM_API_FORMAT` | `chat` (default) or `responses` |
 
 What "compatible" means here, concretely: a chat-completions endpoint
 that accepts `model`, `messages`, and `max_tokens`; non-streaming
@@ -69,6 +70,15 @@ by `data: [DONE]`; and errors as non-2xx responses with a JSON body.
 That subset is what the code exercises and the tests pin. An endpoint
 that diverges from it is best effort — it may well work, but the
 divergence is not a core bug to absorb.
+
+With `LLM_API_FORMAT=responses`, compatibility instead means the synchronous
+OpenAI Responses create protocol at the exact configured URL: typed `input`
+items, terminal `output` items and status, Responses SSE events, and structured
+errors. `LLM_RESPONSES_BODY_FILE` carries create fields beyond the completion
+CLI's stable flags, while `LLM_RESPONSE_FILE` receives the full terminal object
+or error envelope. Server-side lifecycle operations (retrieve, cancel, delete,
+Conversations, background jobs, and WebSocket sessions) are not part of this
+completion-provider seam.
 
 `LLM_PROVIDER` is process-wide by design (decided 2026-08-26:
 environment overrides are authoritative, never pattern-guessed around),

@@ -71,6 +71,8 @@ SHELLM_MAX_CONSECUTIVE_FAILURES="${SHELLM_MAX_CONSECUTIVE_FAILURES:-10}"
 SHELLM_MAX_REPEAT_FAILURES="${SHELLM_MAX_REPEAT_FAILURES:-3}"
 SHELLM_TRUNCATE="${SHELLM_TRUNCATE:-2000}"
 SHELLM_API_URL="${SHELLM_API_URL:-}"
+SHELLM_API_FORMAT="${SHELLM_API_FORMAT:-chat}"
+SHELLM_RESPONSES_BODY_FILE="${SHELLM_RESPONSES_BODY_FILE:-}"
 # Clear any inherited LLM_API_URL so llm uses per-provider defaults
 unset LLM_API_URL 2>/dev/null || true
 if [[ -n "$SHELLM_API_URL" ]]; then
@@ -142,6 +144,16 @@ _SHELLM_EXTRA_BINS=()
 # ---------------------------------------------------------------------------
 
 die() { echo "shellm: error: $*" >&2; exit 1; }
+
+case "$SHELLM_API_FORMAT" in
+    chat|responses) ;;
+    *) die "Invalid SHELLM_API_FORMAT: $SHELLM_API_FORMAT (expected chat or responses)" ;;
+esac
+if [[ -n "$SHELLM_RESPONSES_BODY_FILE" ]]; then
+    [[ -f "$SHELLM_RESPONSES_BODY_FILE" ]] \
+        || die "SHELLM_RESPONSES_BODY_FILE not found: $SHELLM_RESPONSES_BODY_FILE"
+    SHELLM_RESPONSES_BODY_FILE=$(realpath "$SHELLM_RESPONSES_BODY_FILE")
+fi
 
 # A local model bound to the Docker host is usually configured as localhost
 # for thinkers and other llm calls that run on that host. Code executed in a
@@ -305,6 +317,13 @@ Environment:
   SHELLM_CONTEXT_WHOLE_BLOCKS
                           How many newest blocks get the larger limit (default
                           1); in traj scope, the newest N rows
+  SHELLM_API_FORMAT       Completion protocol: chat (default) or responses.
+                          Responses persists and reuses previous_response_id
+                          within a run, with one full-context fallback when a
+                          provider rejects continuation
+  SHELLM_RESPONSES_BODY_FILE
+                          Optional Responses create-body JSON object passed to
+                          llm (tools, include, store, text format, etc.)
   SHELLM_EMPTY_RESPONSE_RETRIES
                           Empty-response retries before the run dies
                           (default 8; set empty for unlimited)
@@ -1527,64 +1546,237 @@ execute_code() {
 
 call_llm() {
     local system_prompt="$1"
-    local messages_json="$2"
+    local full_messages_json="$2"
     local thinking_output_file="${3:-}"
+    local messages_are_delta="${4:-0}"
+    local api_format="${SHELLM_API_FORMAT:-chat}"
+    local response_file="${SHELLM_RESPONSE_FILE:-}"
+    local response_id_file="${SHELLM_RESPONSE_ID_FILE:-}"
+    local disabled_file="${SHELLM_RESPONSES_DISABLED_FILE:-}"
+    local replay_file="${SHELLM_RESPONSES_REPLAY_FILE:-}"
+    local context_file="${SHELLM_RESPONSES_CONTEXT_FILE:-}"
+    local stateless="${SHELLM_RESPONSES_STATELESS:-0}"
+    local request_messages_json="$full_messages_json"
+    local new_messages_json="$full_messages_json"
+    local previous_response_id=""
+    local fallback_used=0
 
-    # The message array rides a file, not argv: a long conversation (or the
-    # empty-response retry's fed-back thinking) can exceed the OS's per-argument
-    # cap (128KB on Linux), and exec would die with E2BIG before the call.
-    local messages_file
-    messages_file=$(mktemp)
-    printf '%s' "$messages_json" > "$messages_file"
-
-    local -a args=(-m "$SHELLM_MODEL"
-        --effort "$SHELLM_EFFORT" --thinking --system-prompt "$system_prompt" --messages-file "$messages_file")
-    [[ -n "$SHELLM_MAX_TOKENS" ]] && args+=(-t "$SHELLM_MAX_TOKENS")
-    [[ "${SHELLM_STOP_AFTER_CODE_BLOCK:-1}" == 1 ]] && args+=(--stop-after-code-block)
-
-    local text_file stderr_file
-    text_file=$(mktemp)
-    stderr_file=$(mktemp)
-
-    # Run llm, capturing stdout to text_file and stderr to stderr_file.
-    # When not quiet, also tee stdout to stderr (for live display) and
-    # stderr to the terminal. Use a subshell to capture llm's exit code
-    # despite the pipeline.
-    local llm_exit=0
-    if [[ "$QUIET" -eq 0 ]]; then
-        { llm "${args[@]}" 2>"$stderr_file"; echo $? > "$text_file.rc"; } | tee "$text_file" >&2
-        llm_exit=$(cat "$text_file.rc" 2>/dev/null) || llm_exit=0
-        rm -f "$text_file.rc"
-        # Replay stderr (thinking output + errors) to terminal and thinking file
-        if [[ -s "$stderr_file" ]]; then
-            cat "$stderr_file" >&2
-            [[ -n "$thinking_output_file" ]] && cp "$stderr_file" "$thinking_output_file"
+    export LLM_API_FORMAT="$api_format"
+    if [[ "$api_format" == "responses" ]]; then
+        if [[ -n "$response_file" ]]; then
+            export LLM_RESPONSE_FILE="$response_file"
+        else
+            unset LLM_RESPONSE_FILE 2>/dev/null || true
+        fi
+        if [[ -n "${SHELLM_RESPONSES_BODY_FILE:-}" ]]; then
+            export LLM_RESPONSES_BODY_FILE="$SHELLM_RESPONSES_BODY_FILE"
+        else
+            unset LLM_RESPONSES_BODY_FILE 2>/dev/null || true
+        fi
+        local replay_has_history=0
+        if [[ -n "$replay_file" && -s "$replay_file" ]] \
+            && jq -e 'type == "array" and length > 0' "$replay_file" >/dev/null 2>&1; then
+            replay_has_history=1
+        fi
+        if [[ "$stateless" != "1" && -n "$response_id_file" && -f "$response_id_file" \
+            && ( -z "$disabled_file" || ! -e "$disabled_file" ) ]]; then
+            previous_response_id=$(cat "$response_id_file")
+        fi
+        if [[ "$messages_are_delta" != "1" \
+            && ( -n "$previous_response_id" || "$replay_has_history" -eq 1 ) ]]; then
+            [[ -n "$context_file" && -s "$context_file" ]] \
+                || die "Responses continuation context is missing"
+            new_messages_json=$(printf '%s' "$full_messages_json" | jq --slurpfile previous "$context_file" '
+                ($previous[0] // null) as $prior
+                | if ($prior | type) != "array" or type != "array"
+                    or .[0:($prior | length)] != $prior
+                  then error("previous Responses context is not a prefix of the rendered context")
+                  else .[($prior | length):]
+                  end
+                | . as $new
+                | (reduce range(0; length) as $i
+                    (0; if . == $i and $new[$i].role == "assistant" then . + 1 else . end)) as $start
+                | $new[$start:]
+            ') || die "Responses continuation boundary fell outside the rendered context; increase SHELLM_CONTEXT_RUN_TAIL"
+        fi
+        if [[ "$stateless" == "1" || ( -n "$disabled_file" && -e "$disabled_file" ) ]]; then
+            if [[ "$replay_has_history" -eq 1 ]]; then
+                request_messages_json=$(printf '%s' "$new_messages_json" \
+                    | jq --slurpfile history "$replay_file" '($history[0] // []) + .')
+            else
+                request_messages_json="$new_messages_json"
+            fi
+        elif [[ -n "$previous_response_id" ]]; then
+            request_messages_json="$new_messages_json"
         fi
     else
-        llm "${args[@]}" > "$text_file" 2>"$stderr_file" || llm_exit=$?
-        [[ -n "$thinking_output_file" ]] && cp "$stderr_file" "$thinking_output_file"
+        unset LLM_RESPONSE_FILE LLM_RESPONSES_BODY_FILE LLM_PREVIOUS_RESPONSE_ID \
+            2>/dev/null || true
     fi
 
-    # A failed llm call must never yield its partial stream as a response:
-    # a truncated code block that still parses would get executed. Stall
-    # timeouts (bin/llm net guards) land here after llm's own retries.
-    if [[ "$llm_exit" -ne 0 ]]; then
+    while true; do
+        # The message array rides a file, not argv: a long conversation (or the
+        # empty-response retry's fed-back thinking) can exceed the OS's per-argument
+        # cap (128KB on Linux), and exec would die with E2BIG before the call.
+        local messages_file text_file stderr_file
+        messages_file=$(mktemp)
+        text_file=$(mktemp)
+        stderr_file=$(mktemp)
+        printf '%s' "$request_messages_json" > "$messages_file"
+
+        local -a args=(-m "$SHELLM_MODEL"
+            --effort "$SHELLM_EFFORT" --thinking --system-prompt "$system_prompt" --messages-file "$messages_file")
+        [[ -n "$SHELLM_MAX_TOKENS" ]] && args+=(-t "$SHELLM_MAX_TOKENS")
+        # Responses needs the terminal event (id, usage, status). Cutting the
+        # stream at the first fence would drop it and break continuation.
+        [[ "${SHELLM_STOP_AFTER_CODE_BLOCK:-1}" == 1 && "$api_format" != responses ]] \
+            && args+=(--stop-after-code-block)
+
+        if [[ "$api_format" == "responses" ]]; then
+            if [[ -n "$previous_response_id" ]]; then
+                export LLM_PREVIOUS_RESPONSE_ID="$previous_response_id"
+            else
+                unset LLM_PREVIOUS_RESPONSE_ID 2>/dev/null || true
+            fi
+            [[ -z "$response_file" ]] || rm -f "$response_file"
+        fi
+
+        # Run llm, capturing stdout to text_file and stderr to stderr_file.
+        # When not quiet, also tee stdout to stderr (for live display) and
+        # stderr to the terminal. Use a subshell to capture llm's exit code
+        # despite the pipeline.
+        local llm_exit=0
+        if [[ "$QUIET" -eq 0 ]]; then
+            { llm "${args[@]}" 2>"$stderr_file"; echo $? > "$text_file.rc"; } | tee "$text_file" >&2
+            llm_exit=$(cat "$text_file.rc" 2>/dev/null) || llm_exit=0
+            rm -f "$text_file.rc"
+            # Replay stderr (thinking output + errors) to terminal and thinking file
+            if [[ -s "$stderr_file" ]]; then
+                cat "$stderr_file" >&2
+                [[ -n "$thinking_output_file" ]] && cp "$stderr_file" "$thinking_output_file"
+            fi
+        else
+            llm "${args[@]}" > "$text_file" 2>"$stderr_file" || llm_exit=$?
+            [[ -n "$thinking_output_file" ]] && cp "$stderr_file" "$thinking_output_file"
+        fi
+
+        if [[ "$llm_exit" -eq 0 ]]; then
+            if [[ "$api_format" == "responses" ]] \
+                && { [[ -z "$response_file" || ! -s "$response_file" ]] \
+                    || ! jq -e '.status == "completed" or .status == "incomplete"' \
+                        "$response_file" >/dev/null 2>&1; }; then
+                rm -f "$text_file" "$stderr_file" "$messages_file"
+                die "llm returned Responses output without a terminal response"
+            fi
+            if [[ "$api_format" == "responses" && -n "$response_file" \
+                && -s "$response_file" ]] \
+                && jq -e '.status == "completed" or .status == "incomplete"' \
+                    "$response_file" >/dev/null 2>&1; then
+                # Keep an exact process-local replay chain in parallel with
+                # stateful continuation. It is the primary path for OpenRouter
+                # and the safe fallback for ZDR/expired compatible endpoints.
+                if [[ -n "$replay_file" ]]; then
+                    local replay_dir replay_tmp turn_tmp
+                    replay_dir=$(dirname "$replay_file")
+                    mkdir -p "$replay_dir"
+                    chmod 700 "$replay_dir" 2>/dev/null || true
+                    [[ -s "$replay_file" ]] \
+                        || { ( umask 077; printf '[]' > "$replay_file" ); chmod 600 "$replay_file"; }
+                    replay_tmp=$(mktemp "$replay_dir/.responses-replay.XXXXXX")
+                    turn_tmp=$(mktemp)
+                    chmod 600 "$replay_tmp"
+                    printf '%s' "$new_messages_json" > "$turn_tmp"
+                    jq -s '.[0] + .[1] + (.[2].output // [])' \
+                        "$replay_file" "$turn_tmp" "$response_file" > "$replay_tmp"
+                    mv -f "$replay_tmp" "$replay_file"
+                    rm -f "$turn_tmp"
+                fi
+                if [[ -n "$context_file" && "$messages_are_delta" != "1" ]]; then
+                    local context_dir context_tmp
+                    context_dir=$(dirname "$context_file")
+                    mkdir -p "$context_dir"
+                    chmod 700 "$context_dir" 2>/dev/null || true
+                    context_tmp=$(mktemp "$context_dir/.responses-context.XXXXXX")
+                    chmod 600 "$context_tmp"
+                    printf '%s' "$full_messages_json" > "$context_tmp"
+                    mv -f "$context_tmp" "$context_file"
+                fi
+
+                local terminal_response_id
+                terminal_response_id=$(jq -r '
+                    select((.status == "completed" or .status == "incomplete")
+                        and (.id | type == "string") and (.id | length > 0))
+                    | .id
+                ' "$response_file" 2>/dev/null || true)
+                if [[ "$stateless" != "1" && -n "$response_id_file" \
+                    && -n "$terminal_response_id" \
+                    && ( -z "$disabled_file" || ! -e "$disabled_file" ) ]]; then
+                    local id_dir id_tmp
+                    id_dir=$(dirname "$response_id_file")
+                    mkdir -p "$id_dir"
+                    chmod 700 "$id_dir" 2>/dev/null || true
+                    id_tmp=$(mktemp "$id_dir/.response-id.XXXXXX")
+                    chmod 600 "$id_tmp"
+                    printf '%s\n' "$terminal_response_id" > "$id_tmp"
+                    mv -f "$id_tmp" "$response_id_file"
+                fi
+            fi
+
+            # No visible text is not a failure. `llm --thinking` streams reasoning to
+            # stderr, and a run that spends its whole token budget there returns 200,
+            # exits 0 and emits nothing on stdout, which is exactly what run_loop's
+            # empty-response retry feeds back as assistant context. Real failures exit
+            # non-zero and are caught below.
+            cat "$text_file"
+            rm -f "$text_file" "$stderr_file" "$messages_file"
+            return 0
+        fi
+
+        # Providers may reject a previous_response_id after expiry or when a
+        # compatible endpoint does not implement continuation. Retry once with
+        # the exact input/output-item replay chain, then leave continuation
+        # disabled so an endpoint cannot trap shellm in a fallback loop.
+        if [[ "$api_format" == "responses" && -n "$previous_response_id" \
+            && "$fallback_used" -eq 0 && -n "$response_file" && -s "$response_file" ]] \
+            && jq -e '[.error.param?,.error.code?,.error.message?,.param?,.code?,.message?,.detail?]
+                      | map(select(. != null) | tostring | ascii_downcase) | join(" ")
+                      | test("previous[ _]response[ _]id|previous response")' \
+                "$response_file" >/dev/null 2>&1; then
+            [[ -z "$response_id_file" ]] || rm -f "$response_id_file"
+            if [[ -n "$disabled_file" ]]; then
+                local disabled_dir disabled_tmp
+                disabled_dir=$(dirname "$disabled_file")
+                mkdir -p "$disabled_dir"
+                chmod 700 "$disabled_dir" 2>/dev/null || true
+                disabled_tmp=$(mktemp "$disabled_dir/.continuation-disabled.XXXXXX")
+                chmod 600 "$disabled_tmp"
+                printf 'provider rejected previous_response_id\n' > "$disabled_tmp"
+                mv -f "$disabled_tmp" "$disabled_file"
+            fi
+            previous_response_id=""
+            unset LLM_PREVIOUS_RESPONSE_ID 2>/dev/null || true
+            if [[ -n "$replay_file" && -s "$replay_file" ]] \
+                && jq -e 'type == "array" and length > 0' "$replay_file" >/dev/null 2>&1; then
+                request_messages_json=$(printf '%s' "$new_messages_json" \
+                    | jq --slurpfile history "$replay_file" '($history[0] // []) + .')
+            else
+                request_messages_json="$full_messages_json"
+            fi
+            fallback_used=1
+            rm -f "$text_file" "$stderr_file" "$messages_file"
+            [[ -z "$thinking_output_file" ]] || : > "$thinking_output_file"
+            progress "responses continuation rejected; retrying once with exact replay context"
+            continue
+        fi
+
+        # A failed llm call must never yield its partial stream as a response:
+        # a truncated code block that still parses would get executed. Stall
+        # timeouts (bin/llm net guards) land here after llm's own retries.
         local _llm_err=""
         [[ -s "$stderr_file" ]] && _llm_err=$(tail -c 500 "$stderr_file")
         rm -f "$text_file" "$stderr_file" "$messages_file"
         die "llm failed (exit $llm_exit): $_llm_err"
-    fi
-
-    # No visible text is not a failure. `llm --thinking` streams reasoning to
-    # stderr, and a run that spends its whole token budget there returns 200,
-    # exits 0 and emits nothing on stdout, which is exactly what run_loop's
-    # empty-response retry feeds back as assistant context. Dying on a
-    # non-empty stderr here made that retry unreachable and printed the
-    # model's reasoning as an error. Real failures exit non-zero and are
-    # caught above.
-
-    cat "$text_file"
-    rm -f "$text_file" "$stderr_file" "$messages_file"
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -2350,6 +2542,7 @@ run_loop() {
         --arg wd "$workdir" \
         --arg model "$SHELLM_MODEL" \
         --arg effort "$SHELLM_EFFORT" \
+        --arg api_format "$SHELLM_API_FORMAT" \
         --arg max_iter "${SHELLM_MAX_ITERATIONS:-}" \
         --arg max_tok "${SHELLM_MAX_TOKENS:-}" \
         --arg inactivity_timeout "$SHELLM_INACTIVITY_TIMEOUT" \
@@ -2359,7 +2552,7 @@ run_loop() {
         --arg trigger "${SHELLM_TRIGGER_STEP_ID:-}" \
         --arg launched_by "${SHELLM_LAUNCHED_BY:-}" \
         --arg wake "${SHELLM_WAKE:-}" \
-        '{type:"shellm-run", command:$cmd, workdir:$wd, model:$model, effort:$effort, max_iterations:$max_iter, max_tokens:$max_tok, inactivity_timeout:$inactivity_timeout, context_files:$ctx, env:$env, resumed:$resumed}
+        '{type:"shellm-run", command:$cmd, workdir:$wd, model:$model, effort:$effort, api_format:$api_format, max_iterations:$max_iter, max_tokens:$max_tok, inactivity_timeout:$inactivity_timeout, context_files:$ctx, env:$env, resumed:$resumed}
          + (if $trigger == "" then {} else {trigger_step: $trigger} end)
          + (if $launched_by == "" then {} else {launched_by: $launched_by} end)
          + (if $wake == "" then {} else {wake: $wake} end)')
@@ -2368,6 +2561,35 @@ run_loop() {
     # interleave in one shared trajectory)
     local _run_step_id _prompt_step_id=""
     _run_step_id=$(printf '%s' "$_shellm_run_json" | traj append --traj_dir "$_run_traj_dir" "$_run_traj_id")
+
+    # Responses continuation belongs to this process only. A resumed shellm
+    # starts a fresh chain from its trajectory; remote response IDs and exact
+    # output-item replay state disappear with rundir at process cleanup.
+    local SHELLM_RESPONSE_FILE=""
+    local SHELLM_RESPONSE_ID_FILE=""
+    local SHELLM_RESPONSES_DISABLED_FILE=""
+    local SHELLM_RESPONSES_REPLAY_FILE=""
+    local SHELLM_RESPONSES_CONTEXT_FILE=""
+    local SHELLM_RESPONSES_STATELESS=0
+    if [[ "$SHELLM_API_FORMAT" == "responses" ]]; then
+        SHELLM_RESPONSE_FILE="$rundir/.last_response.json"
+        SHELLM_RESPONSE_ID_FILE="$rundir/.response-id"
+        SHELLM_RESPONSES_DISABLED_FILE="$rundir/.continuation-disabled"
+        SHELLM_RESPONSES_REPLAY_FILE="$rundir/.responses-replay.json"
+        SHELLM_RESPONSES_CONTEXT_FILE="$rundir/.responses-context.json"
+        ( umask 077; printf '[]' > "$SHELLM_RESPONSES_REPLAY_FILE" )
+        chmod 600 "$SHELLM_RESPONSES_REPLAY_FILE"
+
+        # OpenRouter documents /responses as stateless: store=true and a
+        # non-null previous_response_id are rejected. Native OpenAI and
+        # generic compatible endpoints optimistically use continuation and
+        # fall back to this same exact replay chain when needed.
+        if [[ "${LLM_PROVIDER:-}" == "openrouter" \
+            || ( -z "${LLM_PROVIDER:-}" && "$SHELLM_MODEL" == */* ) ]]; then
+            SHELLM_RESPONSES_STATELESS=1
+        fi
+    fi
+
     # Launcher opt-in: report this run's header step_id to the given file so
     # the caller can pair its own steps with this exact run — the trajectory
     # alone can't tell whose header is whose when concurrent runs interleave.
@@ -2507,44 +2729,67 @@ run_loop() {
         fi
         rm -f "$thinking_file"
 
-        # Retry on empty response: feed captured thinking back as assistant
-        # context so the model continues from where it left off (max_tokens
-        # gets hit during thinking before any visible output is emitted).
+        # Retry on empty Chat output by feeding captured thinking back as
+        # assistant context. Responses mode keeps reasoning in the terminal
+        # Response item: continue from its ID/exact replay instead of inventing
+        # an assistant message containing a reasoning summary.
         # Default: 8 retries; SHELLM_EMPTY_RESPONSE_RETRIES overrides (set it
         # to the empty string for unlimited).
         local empty_retries=0
         local max_empty_retries="${SHELLM_EMPTY_RESPONSE_RETRIES-8}"
         local retry_messages_json="$messages_json"
         while [[ -z "$response" ]]; do
+            if [[ "$SHELLM_API_FORMAT" == "responses" ]]; then
+                if [[ -z "${SHELLM_RESPONSE_FILE:-}" || ! -s "$SHELLM_RESPONSE_FILE" ]]; then
+                    die "Empty Responses output without a terminal Response object"
+                fi
+                if jq -e '.output[]? | select(.type == "function_call")' \
+                    "$SHELLM_RESPONSE_FILE" >/dev/null 2>&1; then
+                    die "Responses returned function calls without visible shellm output; consume them through LLM_RESPONSE_FILE"
+                fi
+                if ! jq -e '
+                    .status == "incomplete"
+                    and .incomplete_details.reason == "max_output_tokens"
+                ' "$SHELLM_RESPONSE_FILE" >/dev/null 2>&1; then
+                    local response_status
+                    response_status=$(jq -r '.status // "unknown"' \
+                        "$SHELLM_RESPONSE_FILE" 2>/dev/null || printf 'unknown')
+                    die "Empty Responses output with terminal status $response_status"
+                fi
+            fi
             if [[ -n "$max_empty_retries" && "$empty_retries" -ge "$max_empty_retries" ]]; then
                 break
             fi
             empty_retries=$((empty_retries + 1))
-            # llm's own stderr lines ("llm: warning: output truncated...")
-            # arrive mixed into the captured thinking; they are harness noise,
-            # not the model's reasoning, and must not become assistant content.
-            local feedback
-            feedback=$(printf '%s\n' "$thinking" | grep -Ev '^llm: (warning|note): ') || feedback=""
-            if [[ -n "$feedback" ]]; then
-                progress "Empty response — feeding thinking back to continue (retry $empty_retries${max_empty_retries:+/$max_empty_retries})..."
-                debug "empty_response_retry: fed back ${#feedback} chars of thinking"
-                # --rawfile, not --arg: a full-budget thinking block can exceed
-                # the OS's 128KB per-argument cap.
-                local feedback_file
-                feedback_file=$(mktemp)
-                printf '%s' "$feedback" > "$feedback_file"
-                retry_messages_json=$(printf '%s' "$retry_messages_json" | jq \
-                    --rawfile t "$feedback_file" \
-                    '. + [{"role":"assistant","content":$t},{"role":"user","content":"Your previous response ran out of output tokens during the reasoning above before you could emit any visible text. Continue from where you left off and produce the bash code for the next step now."}]')
-                rm -f "$feedback_file"
-                sleep 1
+            if [[ "$SHELLM_API_FORMAT" == "responses" ]]; then
+                progress "Incomplete Responses output — continuing from terminal response state (retry $empty_retries${max_empty_retries:+/$max_empty_retries})..."
+                retry_messages_json='[{"role":"user","content":"Continue from the incomplete response and emit the bash code for the next step."}]'
             else
-                progress "Empty response from API (retry $empty_retries${max_empty_retries:+/$max_empty_retries})..."
-                sleep 1
+                # llm's own stderr lines ("llm: warning: output truncated...")
+                # arrive mixed into the captured thinking; they are harness noise,
+                # not the model's reasoning, and must not become assistant content.
+                local feedback
+                feedback=$(printf '%s\n' "$thinking" | grep -Ev '^llm: (warning|note): ') || feedback=""
+                if [[ -n "$feedback" ]]; then
+                    progress "Empty response — feeding thinking back to continue (retry $empty_retries${max_empty_retries:+/$max_empty_retries})..."
+                    debug "empty_response_retry: fed back ${#feedback} chars of thinking"
+                    # --rawfile, not --arg: a full-budget thinking block can exceed
+                    # the OS's 128KB per-argument cap.
+                    local feedback_file
+                    feedback_file=$(mktemp)
+                    printf '%s' "$feedback" > "$feedback_file"
+                    retry_messages_json=$(printf '%s' "$retry_messages_json" | jq \
+                        --rawfile t "$feedback_file" \
+                        '. + [{"role":"assistant","content":$t},{"role":"user","content":"Your previous response ran out of output tokens during the reasoning above before you could emit any visible text. Continue from where you left off and produce the bash code for the next step now."}]')
+                    rm -f "$feedback_file"
+                else
+                    progress "Empty response from API (retry $empty_retries${max_empty_retries:+/$max_empty_retries})..."
+                fi
             fi
+            sleep 1
 
             : > "$thinking_file"
-            response=$(call_llm "$system_prompt" "$retry_messages_json" "$thinking_file")
+            response=$(call_llm "$system_prompt" "$retry_messages_json" "$thinking_file" 1)
 
             thinking=""
             if [[ -s "$thinking_file" ]]; then
@@ -2640,6 +2885,10 @@ exit \$__shellm_rc
             SHELLM_MAX_ITERATIONS="$SHELLM_MAX_ITERATIONS"
             SHELLM_EFFORT="$SHELLM_EFFORT"
             SHELLM_TRUNCATE="$SHELLM_TRUNCATE"
+            SHELLM_API_FORMAT="$SHELLM_API_FORMAT"
+            LLM_API_FORMAT="$SHELLM_API_FORMAT"
+            SHELLM_RESPONSES_BODY_FILE="$SHELLM_RESPONSES_BODY_FILE"
+            LLM_RESPONSES_BODY_FILE="$SHELLM_RESPONSES_BODY_FILE"
             SHELLM_API_URL="$execution_api_url"
             LLM_API_URL="$execution_api_url"
             SHELLM_DOCKER_IMAGE="$SHELLM_DOCKER_IMAGE"

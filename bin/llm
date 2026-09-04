@@ -77,6 +77,14 @@ LLM_OR_ZDR="${LLM_OR_ZDR:-}"
 # routing constraint nobody typed on this command line still changes where the
 # prompt may go, so it is announced once rather than applied invisibly.
 _llm_or_env="$LLM_OR_ONLY$LLM_OR_DATA_COLLECTION$LLM_OR_ZDR"
+# Completion wire protocol. "chat" preserves the existing API and output
+# contract; "responses" selects OpenAI's Responses create/stream protocol.
+# Lifecycle operations (retrieve/cancel/delete, conversations, compaction)
+# belong in a follow-on surface rather than overloading this completion CLI.
+LLM_API_FORMAT="${LLM_API_FORMAT:-chat}"
+LLM_RESPONSES_BODY_FILE="${LLM_RESPONSES_BODY_FILE:-}"
+LLM_PREVIOUS_RESPONSE_ID="${LLM_PREVIOUS_RESPONSE_ID:-}"
+LLM_RESPONSE_FILE="${LLM_RESPONSE_FILE:-}"
 # Token usage is captured on every call. A caller that wants this call's
 # numbers sets LLM_USAGE_FILE and gets a one-line JSON record
 # ({in_tok, out_tok, think_tok}) written there after the call (bin/shellm
@@ -326,6 +334,18 @@ Environment:
   LLM_API_KEY              Optional key for openai-compatible, sent as
                            Authorization: Bearer when set (local servers
                            like Ollama need none)
+  LLM_API_FORMAT           Completion protocol: chat (default) or responses.
+                           Responses is supported by openai, openrouter, and
+                           openai-compatible providers
+  LLM_RESPONSES_BODY_FILE  Optional JSON object merged into a Responses create
+                           request. Supports tools, include, store, text format,
+                           metadata, truncation, service tier, and other create
+                           fields. llm owns model, input, instructions,
+                           previous_response_id, max_output_tokens, stream, and
+                           command-line reasoning settings
+  LLM_PREVIOUS_RESPONSE_ID Continue a stored Responses chain from this response
+  LLM_RESPONSE_FILE        Atomically write the full terminal Response object,
+                           or a provider error envelope, to this mode-0600 file
   LLM_ADAPTER              Path to an adapter executable; required with
                            --provider adapter (contract: design/providers.md)
   LLM_PROVIDER             Provider to use when the model name implies none
@@ -361,6 +381,8 @@ Examples:
   llm -m z-ai/glm-5.2 "explain quicksort"
   LLM_API_URL=http://localhost:11434/v1/chat/completions \
     llm --provider openai-compatible -m qwen3:8b "explain quicksort"
+  LLM_API_FORMAT=responses LLM_RESPONSE_FILE=/tmp/response.json \
+    llm --provider openai -m gpt-5.5 --thinking high "solve carefully"
 EOF
     exit "${1:-0}"
 }
@@ -458,6 +480,29 @@ detect_provider() {
 if [[ -z "$LLM_PROVIDER" ]]; then
     LLM_PROVIDER=$(detect_provider "$LLM_MODEL")
 fi
+
+case "$LLM_API_FORMAT" in
+    chat) ;;
+    responses)
+        case "$LLM_PROVIDER" in
+            openai|openrouter|openai-compatible) ;;
+            *) die "Responses format is not supported for provider $LLM_PROVIDER (use openai, openrouter, or openai-compatible)" ;;
+        esac
+        if [[ -n "$LLM_RESPONSES_BODY_FILE" ]]; then
+            [[ -f "$LLM_RESPONSES_BODY_FILE" ]] \
+                || die "Responses body file not found: $LLM_RESPONSES_BODY_FILE"
+            jq -e 'type == "object"' "$LLM_RESPONSES_BODY_FILE" >/dev/null 2>&1 \
+                || die "Responses body file must contain a JSON object: $LLM_RESPONSES_BODY_FILE"
+            if [[ "$(jq -r '.background // false' "$LLM_RESPONSES_BODY_FILE")" == true ]]; then
+                die "background responses require lifecycle operations; use foreground Responses completion for now"
+            fi
+            if jq -e 'has("conversation")' "$LLM_RESPONSES_BODY_FILE" >/dev/null 2>&1; then
+                die "conversation state cannot be combined with llm's previous_response_id continuation; omit conversation"
+            fi
+        fi
+        ;;
+    *) die "Unknown LLM_API_FORMAT '$LLM_API_FORMAT' (expected chat or responses)" ;;
+esac
 
 # An environment-supplied provider reroutes every call in the process tree,
 # so it must never do it silently: when it disagrees with what the model
@@ -726,6 +771,58 @@ build_payload_openai() {
     printf '%s' "$msgs" | jq "${jq_args[@]}" "$jq_filter"
 }
 
+# OpenAI Responses create request. Input stays as the typed JSON supplied by
+# --messages/--messages-file: message items, images/files, prior reasoning
+# items, tool calls, and tool outputs must not be flattened into chat strings.
+# The optional extra body owns the broad protocol surface while llm overwrites
+# the fields coupled to its existing CLI contract.
+build_payload_responses() {
+    local reasoning_effort="${LLM_THINKING_LEVEL:-${LLM_EFFORT:-}}"
+    local -a jq_args=(
+        --arg model "$LLM_MODEL"
+        --arg system "$LLM_SYSTEM"
+        --arg previous "$LLM_PREVIOUS_RESPONSE_ID"
+        --arg effort "$reasoning_effort"
+        --argjson max_tokens "$LLM_MAX_TOKENS"
+        --argjson stream "$( [[ "$LLM_STREAM" -eq 1 ]] && echo true || echo false )"
+    )
+
+    if [[ -n "$LLM_RESPONSES_BODY_FILE" ]]; then
+        jq_args+=(--slurpfile extra "$LLM_RESPONSES_BODY_FILE")
+    else
+        # Match --slurpfile's array shape without putting any caller content
+        # on argv.
+        jq_args+=(--argjson extra '[{}]')
+    fi
+
+    if [[ -n "$reasoning_effort" && "$LLM_PROVIDER" == openai ]] \
+       && ! supports_openai_reasoning; then
+        echo "llm: --thinking/--effort ignored: $LLM_MODEL not in the known-reasoning model list (LLM_ASSUME_THINKING=1 to send anyway)" >&2
+        reasoning_effort=""
+        # Replace the earlier jq value; the final duplicate option wins.
+        jq_args+=(--arg effort "")
+    fi
+
+    printf '%s' "$LLM_MESSAGES" | jq "${jq_args[@]}" '
+        ($extra[0] // {}) + {
+            model: $model,
+            input: .,
+            max_output_tokens: $max_tokens,
+            stream: $stream
+        }
+        | if $system == "" then del(.instructions)
+          else .instructions = $system end
+        | if $previous == "" then del(.previous_response_id)
+          else .previous_response_id = $previous end
+        | if $effort == "" then .
+          else .reasoning = ((.reasoning // {}) + {effort: $effort, summary: "auto"}) end
+        | .include = ((.include // [])
+            | if index("reasoning.encrypted_content") == null
+              then . + ["reasoning.encrypted_content"]
+              else . end)
+    '
+}
+
 build_payload_gemini() {
     # Convert messages to Gemini format: {contents:[{role,parts:[{text}]}]}
     local contents
@@ -753,10 +850,9 @@ build_payload_gemini() {
     printf '%s' "$contents" | jq "${jq_args[@]}" "$jq_filter"
 }
 
-# OpenRouter is OpenAI-compatible (chat/completions wire format)
-# OpenRouter is OpenAI-compatible (chat/completions wire format), plus an
-# optional "provider" object carrying the routing preferences above. Without
-# that object OpenRouter is free to pick any host serving the model.
+# OpenRouter is OpenAI-compatible (chat/completions or Responses wire format),
+# plus an optional "provider" object carrying the routing preferences above.
+# Without that object OpenRouter is free to pick any host serving the model.
 build_payload_openrouter() {
     # Unpinned callers pay nothing: no extra jq pass, byte-identical to before.
     if [[ -z "$LLM_OR_ONLY$LLM_OR_DATA_COLLECTION$LLM_OR_ZDR" ]]; then
@@ -839,13 +935,21 @@ get_url_headers() {
             ;;
         openai)
             [[ -z "${OPENAI_API_KEY:-}" ]] && die "OPENAI_API_KEY is not set"
-            url="${LLM_API_URL:-https://api.openai.com/v1/chat/completions}"
+            if [[ "$LLM_API_FORMAT" == responses ]]; then
+                url="${LLM_API_URL:-https://api.openai.com/v1/responses}"
+            else
+                url="${LLM_API_URL:-https://api.openai.com/v1/chat/completions}"
+            fi
             headers=(-H "Content-Type: application/json")
             add_auth_header "Authorization: Bearer $OPENAI_API_KEY"
             ;;
         openrouter)
             [[ -z "${OPENROUTER_API_KEY:-}" ]] && die "OPENROUTER_API_KEY is not set"
-            url="${LLM_API_URL:-https://openrouter.ai/api/v1/chat/completions}"
+            if [[ "$LLM_API_FORMAT" == responses ]]; then
+                url="${LLM_API_URL:-https://openrouter.ai/api/v1/responses}"
+            else
+                url="${LLM_API_URL:-https://openrouter.ai/api/v1/chat/completions}"
+            fi
             headers=(-H "Content-Type: application/json")
             add_auth_header "Authorization: Bearer $OPENROUTER_API_KEY"
             ;;
@@ -901,6 +1005,27 @@ extract_text_openai() {
     jq -r '.choices[0].message.content // empty' 2>/dev/null
 }
 
+extract_text_responses() {
+    jq -j '
+        .output[]?
+        | select(.type == "message")
+        | .content[]?
+        | if .type == "output_text" then .text
+          elif .type == "refusal" then .refusal
+          else empty end
+    ' 2>/dev/null
+}
+
+extract_reasoning_responses() {
+    jq -j '
+        .output[]?
+        | select(.type == "reasoning")
+        | .summary[]?
+        | select(.type == "summary_text")
+        | .text
+    ' 2>/dev/null
+}
+
 extract_text_gemini() {
     jq -r '.candidates[0].content.parts[0].text // empty' 2>/dev/null
 }
@@ -937,6 +1062,14 @@ check_response_openai() {
       ] | .[0] // empty' 2>/dev/null
 }
 
+check_response_responses() {
+    jq -r '
+        if .error != null then .error.message // "unknown error"
+        elif .status == "failed" then .error.message // "response failed"
+        else empty end
+    ' 2>/dev/null
+}
+
 check_response_gemini() {
     jq -r '.error.message // empty' 2>/dev/null
 }
@@ -962,6 +1095,22 @@ check_truncated_openai() {
     jq -r 'if (.choices[0].finish_reason // "") == "length" then "y" else empty end' 2>/dev/null
 }
 
+check_truncated_responses() {
+    jq -r '
+        if .status == "incomplete"
+           and (.incomplete_details.reason // "") == "max_output_tokens"
+        then "y" else empty end
+    ' 2>/dev/null
+}
+
+check_incomplete_responses() {
+    jq -r '
+        if .status == "incomplete"
+        then .incomplete_details.reason // "unknown reason"
+        else empty end
+    ' 2>/dev/null
+}
+
 check_truncated_gemini() {
     jq -r 'if (.candidates[0].finishReason // "") == "MAX_TOKENS" then "y" else empty end' 2>/dev/null
 }
@@ -976,6 +1125,33 @@ check_truncated_opencode() { check_truncated_anthropic; }
 # straight through the handler subshell, so this works from either).
 warn_truncated() {
     echo "llm: warning: output truncated at max_tokens=$LLM_MAX_TOKENS (reasoning tokens count against it) — raise with -t" >&2
+}
+
+warn_incomplete_response() {
+    local reason="$1"
+    [[ -z "$reason" || "$reason" == max_output_tokens ]] && return 0
+    echo "llm: warning: response incomplete: $reason" >&2
+}
+
+# Write the full terminal Responses object (or an API error envelope) for
+# machine callers. A same-directory temporary plus rename makes each write
+# atomic, and mode 0600 keeps prompts, outputs, and reasoning private.
+write_response_file() {
+    [[ -n "$LLM_RESPONSE_FILE" ]] || return 0
+    local response_dir response_tmp
+    response_dir=$(dirname "$LLM_RESPONSE_FILE")
+    [[ -d "$response_dir" ]] \
+        || die "Response file directory does not exist: $response_dir"
+    response_tmp=$(mktemp "$response_dir/.llm-response.XXXXXX") \
+        || die "Cannot create temporary Response file in: $response_dir"
+    if ( umask 077; cat > "$response_tmp" ); then
+        chmod 600 "$response_tmp" 2>/dev/null || true
+        mv -f "$response_tmp" "$LLM_RESPONSE_FILE" \
+            || { rm -f "$response_tmp"; die "Cannot write Response file: $LLM_RESPONSE_FILE"; }
+    else
+        rm -f "$response_tmp"
+        die "Cannot write Response file: $LLM_RESPONSE_FILE"
+    fi
 }
 
 # Write the LLM_USAGE_FILE record. Args: input tokens, output tokens,
@@ -1036,12 +1212,31 @@ _llm_ledger_append() {
 # Streaming handlers
 # ---------------------------------------------------------------------------
 
+# True when a Responses error names previous_response_id (expiry, ZDR, etc.).
+_responses_prev_id_error() {
+    jq -e '[.error.param?,.error.code?,.error.message?,.param?,.code?,.message?,.detail?]
+           | map(select(. != null) | tostring | ascii_downcase) | join(" ")
+           | test("previous[ _]response[ _]id|previous response")' >/dev/null 2>&1
+}
+
 # Shared stream tail: if no SSE data arrived, the buffered lines are an API
 # error body. Reads the caller's _saw_data/_err_buf via dynamic scoping.
 _die_if_no_stream_data() {
     [[ "$_saw_data" -eq 0 && -n "$_err_buf" ]] || return 0
-    local _err
-    _err=$(printf '%s' "$_err_buf" | jq -r '.error.message // empty' 2>/dev/null || true)
+    local _err _continuation_error=0
+    if [[ "$LLM_API_FORMAT" == responses && -n "$LLM_RESPONSE_FILE" ]]; then
+        if printf '%s' "$_err_buf" | jq -e . >/dev/null 2>&1; then
+            printf '%s' "$_err_buf" | write_response_file
+            printf '%s' "$_err_buf" | _responses_prev_id_error && _continuation_error=1
+        else
+            jq -nc --arg message "$_err_buf" '{error:{message:$message}}' \
+                | write_response_file
+        fi
+    fi
+    _err=$(printf '%s' "$_err_buf" | jq -r '.error.message // .message // empty' 2>/dev/null || true)
+    if [[ "$_continuation_error" -eq 1 ]]; then
+        die "API error: ${_err:-previous_response_id was rejected}"
+    fi
     [[ -n "$_err" ]] && die_retryable "API error: $_err"
     die_retryable "API error: $_err_buf"
 }
@@ -1156,6 +1351,116 @@ stream_openai() {
         fi
     done
     _die_if_no_stream_data
+}
+
+stream_responses() {
+    local _saw_data=0 _err_buf="" _chunk="" _event="" _response=""
+    local _text_emitted=0 _reasoning_emitted=0 _terminal=0
+    while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+        local line="${raw_line%$'\r'}"
+        if [[ "$line" == data:\ * ]]; then
+            _saw_data=1
+            local json="${line#data: }"
+            [[ "$json" == "[DONE]" ]] && continue
+            _event=$(printf '%s' "$json" | jq -r '.type // empty' 2>/dev/null) || _event=""
+            case "$_event" in
+                response.output_text.delta|response.refusal.delta)
+                    # Preserve newline-only deltas; see stream_openai.
+                    _chunk=$(printf '%s' "$json" | jq -j '.delta // empty'; printf X)
+                    _chunk="${_chunk%X}"
+                    if [[ -n "$_chunk" ]]; then
+                        mark_emitted
+                        _text_emitted=1
+                        printf '%s' "$_chunk"
+                    fi
+                    ;;
+                response.reasoning_summary_text.delta)
+                    _chunk=$(printf '%s' "$json" | jq -j '.delta // empty'; printf X)
+                    _chunk="${_chunk%X}"
+                    if [[ -n "$_chunk" ]]; then
+                        mark_emitted
+                        _reasoning_emitted=1
+                        printf '%s' "$_chunk" >&2
+                    fi
+                    ;;
+                response.output_item.done)
+                    # A function call or other typed item is valid protocol
+                    # output even when there is no visible assistant text.
+                    mark_emitted
+                    ;;
+                response.completed|response.incomplete)
+                    _response=$(printf '%s' "$json" | jq -c '.response // empty' 2>/dev/null) || _response=""
+                    if [[ -n "$_response" ]] \
+                        && printf '%s' "$_response" | jq -e --arg status "${_event#response.}" \
+                            '.status == $status' >/dev/null 2>&1; then
+                        _terminal=1
+                        printf '%s' "$_response" | write_response_file
+                        if [[ "$_reasoning_emitted" -eq 0 ]]; then
+                            printf '%s' "$_response" | extract_reasoning_responses >&2
+                        fi
+                        if [[ "$_text_emitted" -eq 0 ]]; then
+                            printf '%s' "$_response" | extract_text_responses
+                        fi
+
+                        local _u=""
+                        _u=$(printf '%s' "$_response" | jq -r '[
+                                (.usage.input_tokens // ""),
+                                (.usage.output_tokens // ""),
+                                (.usage.output_tokens_details.reasoning_tokens // ""),
+                                (.usage.input_tokens_details.cached_tokens // "")
+                            ] | @tsv' 2>/dev/null) || _u=""
+                        if [[ -n "$_u" ]]; then
+                            local _u_in _u_out _u_think _u_cache
+                            IFS=$'\t' read -r _u_in _u_out _u_think _u_cache <<<"$_u"
+                            write_usage "$_u_in" "$_u_out" "$_u_think" "$_u_cache"
+                        fi
+
+                        if [[ "$_event" == response.incomplete ]]; then
+                            local _reason=""
+                            _reason=$(printf '%s' "$_response" | check_incomplete_responses)
+                            if [[ "$_reason" == max_output_tokens ]]; then
+                                warn_truncated
+                            else
+                                warn_incomplete_response "$_reason"
+                            fi
+                        fi
+                    fi
+                    mark_emitted
+                    ;;
+                response.failed)
+                    _response=$(printf '%s' "$json" | jq -c '.response // empty' 2>/dev/null) || _response=""
+                    [[ -n "$_response" ]] && printf '%s' "$_response" | write_response_file
+                    local _failed_msg=""
+                    _failed_msg=$(printf '%s' "$json" | jq -r '.response.error.message // .error.message // "response failed"' 2>/dev/null) || _failed_msg="response failed"
+                    if [[ -e "$LLM_DATA_MARKER" ]]; then
+                        die "API stream error: $_failed_msg"
+                    else
+                        die_retryable "API stream error: $_failed_msg"
+                    fi
+                    ;;
+                error)
+                    printf '%s' "$json" | write_response_file
+                    local _error_msg=""
+                    _error_msg=$(printf '%s' "$json" | jq -r '.error.message // .message // "unknown error"' 2>/dev/null) || _error_msg="unknown error"
+                    if [[ -e "$LLM_DATA_MARKER" ]] || printf '%s' "$json" | _responses_prev_id_error; then
+                        die "API stream error: $_error_msg"
+                    else
+                        die_retryable "API stream error: $_error_msg"
+                    fi
+                    ;;
+            esac
+        elif [[ "$_saw_data" -eq 0 ]]; then
+            _err_buf="${_err_buf}${line}
+"
+        fi
+    done
+    _die_if_no_stream_data
+    if [[ "$_terminal" -ne 1 ]]; then
+        if [[ -e "$LLM_DATA_MARKER" ]]; then
+            die "API stream error: Responses stream ended without a terminal response"
+        fi
+        die_retryable "API stream error: Responses stream ended without a terminal response"
+    fi
 }
 
 stream_gemini() {
@@ -1339,9 +1644,13 @@ fi
 # A typo'd provider name would otherwise surface as bash's exit-127
 # "build_payload_...: command not found" instead of an error naming the
 # problem, because payload build runs before get_url_headers' own check.
-declare -f "build_payload_${LLM_PROVIDER}" >/dev/null \
-    || die "Unknown provider: $LLM_PROVIDER (see --provider in --help for the list)"
-"build_payload_${LLM_PROVIDER}" > "$payload_file"
+if [[ "$LLM_API_FORMAT" == responses ]]; then
+    build_payload_responses > "$payload_file"
+else
+    declare -f "build_payload_${LLM_PROVIDER}" >/dev/null \
+        || die "Unknown provider: $LLM_PROVIDER (see --provider in --help for the list)"
+    "build_payload_${LLM_PROVIDER}" > "$payload_file"
+fi
 
 # Get URL and headers
 url=""
@@ -1377,7 +1686,9 @@ if [[ "$LLM_STREAM" -eq 1 ]]; then
         LLM_DATA_MARKER="${LLM_RETRY_ERR}.emitted"
         LLM_STOP_MARKER="${LLM_RETRY_ERR}.stopped"
         _rc=0
-        ( "stream_${LLM_PROVIDER}" < <(curl -sS -N ${_net_args[@]+"${_net_args[@]}"} "${headers[@]}" -d @"$payload_file" "$url" 2>"$_curl_err") ) || _rc=$?
+        _stream_handler="stream_${LLM_PROVIDER}"
+        [[ "$LLM_API_FORMAT" == responses ]] && _stream_handler=stream_responses
+        ( "$_stream_handler" < <(curl -sS -N ${_net_args[@]+"${_net_args[@]}"} "${headers[@]}" -d @"$payload_file" "$url" 2>"$_curl_err") ) || _rc=$?
 
         _emitted=0
         [[ -e "$LLM_DATA_MARKER" ]] && _emitted=1
@@ -1411,7 +1722,11 @@ if [[ "$LLM_STREAM" -eq 1 ]]; then
             _retry_msg="empty response: stream ended without emitting anything"
             _rc=1
         fi
-        if [[ "$_emitted" -eq 0 && "$_attempt" -lt "$_max_attempts" ]]; then
+        _retryable=0
+        [[ "$_rc" -eq 75 || -n "$_ce" ]] && _retryable=1
+        [[ "$_retry_msg" == empty\ response:* ]] && _retryable=1
+        if [[ "$_emitted" -eq 0 && "$_retryable" -eq 1 \
+            && "$_attempt" -lt "$_max_attempts" ]]; then
             echo "llm: transient API failure (attempt $_attempt/$_max_attempts): ${_retry_msg:-${_ce:-exit $_rc}} — retrying" >&2
             sleep $(( LLM_RETRY_BACKOFF * _attempt ))
             continue
@@ -1443,7 +1758,11 @@ else
         # Nothing has been emitted yet on this path, so retrying is safe.
         if [[ "$http_code" != "000" && "$http_code" -lt 400 ]]; then
             if grep -q '[^[:space:]]' "$local_resp"; then
-                embedded_err=$("check_response_${LLM_PROVIDER}" < "$local_resp")
+                if [[ "$LLM_API_FORMAT" == responses ]]; then
+                    embedded_err=$(check_response_responses < "$local_resp")
+                else
+                    embedded_err=$("check_response_${LLM_PROVIDER}" < "$local_resp")
+                fi
             else
                 # A whitespace-only 200 is keep-alive padding from a provider
                 # that died mid-generation. The embedded-error checkers
@@ -1452,12 +1771,22 @@ else
                 embedded_err="whitespace-only response body"
             fi
             if [[ -n "$embedded_err" ]]; then
-                rm -f "$local_resp"
+                if [[ "$LLM_API_FORMAT" == responses ]] \
+                    && jq -e '.status == "failed"' "$local_resp" >/dev/null 2>&1; then
+                    write_response_file < "$local_resp"
+                    rm -f "$local_resp"
+                    die "API error: $embedded_err"
+                fi
                 if [[ "$_attempt" -lt "$_max_attempts" ]]; then
+                    rm -f "$local_resp"
                     echo "llm: transient API failure (attempt $_attempt/$_max_attempts): $embedded_err — retrying" >&2
                     sleep $(( LLM_RETRY_BACKOFF * _attempt ))
                     continue
                 fi
+                if [[ "$LLM_API_FORMAT" == responses ]]; then
+                    printf '%s' "$(cat "$local_resp")" | write_response_file
+                fi
+                rm -f "$local_resp"
                 die "API error: $embedded_err"
             fi
         fi
@@ -1466,6 +1795,16 @@ else
 
     if [[ "$http_code" -ge 400 || "$http_code" == "000" ]]; then
         error_msg=$(jq -r '.error.message // .message // empty' "$local_resp" 2>/dev/null || true)
+        if [[ "$LLM_API_FORMAT" == responses ]]; then
+            if [[ -s "$local_resp" ]] && jq -e . "$local_resp" >/dev/null 2>&1; then
+                write_response_file < "$local_resp"
+            else
+                jq -nc --arg message "${error_msg:-HTTP $http_code}" \
+                    --arg code "$http_code" \
+                    '{error:{message:$message,http_code:$code}}' \
+                    | write_response_file
+            fi
+        fi
         rm -f "$local_resp"
         _llm_note error "$http_code" "${error_msg:-HTTP $http_code}"
         if [[ -n "$error_msg" ]]; then
@@ -1475,16 +1814,28 @@ else
     fi
     _llm_note ok
 
-    if [[ -n "$("check_truncated_${LLM_PROVIDER}" < "$local_resp")" ]]; then
+    if [[ "$LLM_API_FORMAT" == responses ]]; then
+        write_response_file < "$local_resp"
+        if [[ -n "$(check_truncated_responses < "$local_resp")" ]]; then
+            warn_truncated
+        else
+            _incomplete_reason=$(check_incomplete_responses < "$local_resp")
+            warn_incomplete_response "$_incomplete_reason"
+        fi
+    elif [[ -n "$("check_truncated_${LLM_PROVIDER}" < "$local_resp")" ]]; then
         warn_truncated
     fi
 
-    case "$LLM_PROVIDER" in
-        # opencode (Zen) speaks the Anthropic wire protocol, usage shape included.
-        anthropic|opencode) _u=$(jq -r '[(.usage.input_tokens // ""), (.usage.output_tokens // ""), "", (.usage.cache_read_input_tokens // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
-        gemini)    _u=$(jq -r '[(.usageMetadata.promptTokenCount // ""), (.usageMetadata.candidatesTokenCount // ""), (.usageMetadata.thoughtsTokenCount // ""), (.usageMetadata.cachedContentTokenCount // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
-        *)         _u=$(jq -r '[(.usage.prompt_tokens // ""), (.usage.completion_tokens // ""), (.usage.completion_tokens_details.reasoning_tokens // ""), (.usage.prompt_tokens_details.cached_tokens // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
-    esac
+    if [[ "$LLM_API_FORMAT" == responses ]]; then
+        _u=$(jq -r '[(.usage.input_tokens // ""), (.usage.output_tokens // ""), (.usage.output_tokens_details.reasoning_tokens // ""), (.usage.input_tokens_details.cached_tokens // "")] | @tsv' "$local_resp" 2>/dev/null) || _u=""
+    else
+        case "$LLM_PROVIDER" in
+            # opencode (Zen) speaks the Anthropic wire protocol, usage shape included.
+            anthropic|opencode) _u=$(jq -r '[(.usage.input_tokens // ""), (.usage.output_tokens // ""), "", (.usage.cache_read_input_tokens // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
+            gemini)    _u=$(jq -r '[(.usageMetadata.promptTokenCount // ""), (.usageMetadata.candidatesTokenCount // ""), (.usageMetadata.thoughtsTokenCount // ""), (.usageMetadata.cachedContentTokenCount // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
+            *)         _u=$(jq -r '[(.usage.prompt_tokens // ""), (.usage.completion_tokens // ""), (.usage.completion_tokens_details.reasoning_tokens // ""), (.usage.prompt_tokens_details.cached_tokens // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
+        esac
+    fi
     if [[ -n "$_u" ]]; then
         IFS=$'\t' read -r _u_in _u_out _u_think _u_cache <<<"$_u"
         write_usage "$_u_in" "$_u_out" "$_u_think" "$_u_cache"
@@ -1493,6 +1844,9 @@ else
 
     if [[ "$LLM_RAW" -eq 1 ]]; then
         cat "$local_resp"
+    elif [[ "$LLM_API_FORMAT" == responses ]]; then
+        extract_reasoning_responses < "$local_resp" >&2
+        extract_text_responses < "$local_resp"
     else
         "extract_text_${LLM_PROVIDER}" < "$local_resp"
     fi
