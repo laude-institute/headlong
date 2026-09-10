@@ -421,6 +421,13 @@ def run(
             if first_ts is None:
                 ts = _resp_get(resp, "ts")
                 first_ts = str(ts) if ts else None
+        if conv.thread_ts is None and first_ts:
+            # A top-level post starts a thread rooted at its own ts. Register
+            # it as active so un-mentioned replies under it are forwarded;
+            # the touch above was a no-op for a bare channel address, which
+            # is why a reply under one of Audel's posts went unseen for an
+            # hour on 2026-09-10.
+            threads.touch(conv.channel, first_ts)
         if failure is not None and first_ts is None:
             _notice(cfg, traj, step, "failed", reason=failure)
         elif failure is not None:

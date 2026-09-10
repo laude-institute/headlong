@@ -730,3 +730,43 @@ def test_append_step_refuses_an_unwritable_log_without_spawning(tmp_path, monkey
     with pytest.raises(PermissionError):
         outbound._append_step_via_traj(tmp_path, traj_path, {"type": "delivery"})
     assert ran == []
+
+
+def _drive_recording_threads(tmp_path, monkeypatch, steps, client):
+    monkeypatch.setattr(outbound.mindlog, "find_trajectory", lambda d: tmp_path / "t.jsonl")
+    monkeypatch.setattr(outbound.mindlog, "follow", lambda *a, **k: iter(steps))
+
+    class RecordingThreads:
+        def __init__(self):
+            self.touched = []
+
+        def touch(self, channel, thread_ts):
+            self.touched.append((channel, thread_ts))
+
+    threads = RecordingThreads()
+    outbound.run(_cfg(tmp_path), client, threads, threading.Event())
+    return threads
+
+
+def test_top_level_post_registers_its_own_thread(tmp_path, monkeypatch, notices):
+    # A bare channel post becomes a thread root. Replies under it carry no
+    # mention, and the inbound side forwards un-mentioned replies only for
+    # active threads, so the root's ts must be registered when it is posted.
+    client = RecordingClient()
+    threads = _drive_recording_threads(tmp_path, monkeypatch, [_msg("m1", "slack-C0BMVH6LM4K", "papers")], client)
+    assert ("C0BMVH6LM4K", "1757372480.000001") in threads.touched
+
+
+def test_threaded_reply_does_not_register_a_new_root(tmp_path, monkeypatch, notices):
+    client = RecordingClient()
+    threads = _drive_recording_threads(
+        tmp_path, monkeypatch, [_msg("m1", "slack-U0BFD9NDVE3-C0BMVH6LM4K-1789018408.414049", "reply")], client
+    )
+    assert threads.touched == [("C0BMVH6LM4K", "1789018408.414049")]
+
+
+def test_failed_top_level_post_registers_nothing(tmp_path, monkeypatch, notices):
+    client = RecordingClient(fail_post=True)
+    threads = _drive_recording_threads(tmp_path, monkeypatch, [_msg("m1", "slack-C0BMVH6LM4K", "papers")], client)
+    # The real store ignores a None ts; only a real root ts would matter.
+    assert [t for t in threads.touched if t[1] is not None] == []
