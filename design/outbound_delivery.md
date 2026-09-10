@@ -233,8 +233,9 @@ acknowledges, the web server can write the same step.
 Switching the Telegram bridge back from a scratch identity to Audel at 10:55
 UTC handed it a cursor written for the other trajectory (its state dir is
 shared across identities). `follow` treated the small offset as valid and
-read Audel's whole 1.5 GB log, so the bridge re-sent 130 of the 183
-historical Telegram messages to Nick before it was stopped at 11:29. Each
+read Audel's whole 1.5 GB log, so the bridge re-sent 65 historical Telegram
+messages (08-06 to 08-12) to the three people on its allowlist before it
+was stopped at 11:29. Each
 send took 31 seconds because the notice writer ran `bin/traj append` as the
 bridge user, which has read-only access to the trajectory, and traj's lock
 loop spun for the whole subprocess timeout instead of failing. Three
