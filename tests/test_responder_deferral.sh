@@ -223,6 +223,15 @@ run_responder "$(grep -F '"step_id":"trig-3"' "$TRAJ")"
 sent=$(jq -r 'select(.type=="message" and .from=="testid" and .reply_to=="trig-3") | .content' "$TRAJ" | tail -1)
 [[ "$sent" == "Let me look into that and get back to you." ]] && ok "a bare DEFER sends the default holding line" || bad "a bare DEFER sends the default holding line" "got '$sent'"
 
+# --- 5. a leading blank line does not hide the DEFER (Nemotron, 2026-09-10) --
+printf '{"step_id":"trig-4","type":"message","from":"%s","to":"%s","content":"any conflicts in your workspace?","ts":"%s","source":"chat"}\n' "$THEM" "$ME" "$(now)" >> "$TRAJ"
+printf '\nDEFER: check the workspace for test goal conflicts\n' > "$STUB_REPLY_FILE"
+run_responder "$(grep -F '"step_id":"trig-4"' "$TRAJ")"
+sent=$(jq -r 'select(.type=="message" and .from=="testid" and .reply_to=="trig-4") | .content' "$TRAJ" | tail -1)
+[[ "$sent" == "Let me look into that and get back to you." ]] && ok "a DEFER after a blank line sends the holding line, not the DEFER text" || bad "a DEFER after a blank line sends the holding line, not the DEFER text" "got '$sent'"
+act=$(jq -c 'select(.type=="action" and .source=="responder" and .trigger_step=="trig-4")' "$TRAJ" | tail -1)
+[[ -n "$act" && "$(printf '%s' "$act" | jq -r .request)" == "check the workspace for test goal conflicts" ]] && ok "a DEFER after a blank line still appends the action" || bad "a DEFER after a blank line still appends the action" "got '$act'"
+
 echo
 echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]

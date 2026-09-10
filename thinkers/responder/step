@@ -417,6 +417,12 @@ fi
 printf '  replying to %s...\n' "$msg_from" >&2
 reply=$(llm -m "$REPLY_MODEL" -M "$convo_json" -s "$reply_system") || true
 
+# Drop leading blank lines first: the NO_REPLY and DEFER protocols key off
+# the first line, and a model that opens with a newline (Nemotron, 2026-09-10)
+# otherwise gets its "DEFER: ..." line sent to the person as the reply, with
+# no action step behind it.
+reply=$(printf '%s' "$reply" | sed -E '/[^[:space:]]/,$!d')
+
 # Strip a leaked delivery command if a model echoes one.
 reply=$(printf '%s' "$reply" | sed -E '1s/^[[:space:]]*chat reply [A-Za-z0-9._-]+[[:space:]]*//')
 
