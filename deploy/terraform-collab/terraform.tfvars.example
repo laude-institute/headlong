@@ -1,0 +1,28 @@
+# Copy to terraform.tfvars and fill in. Gitignored. No secrets belong here:
+# a box's optional .env (its own spend-capped LLM key) lives in SSM at
+# /headlong-collab/<name>/env, seeded before apply (see README).
+
+aws_region = "ap-southeast-2" # same region as Audel's box
+
+# One entry per box. The key is the box name (a-z, 0-9, -): it becomes the
+# hostname headlong-<name>, the Name tag, the SSM parameter path, and the
+# default login user. Adding an entry creates a box; removing one destroys
+# it and everything on it.
+boxes = {
+  alice = {
+    ssh_public_keys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample0000000000000000000000000000000000 alice@laptop",
+    ]
+    # user           = "alice"       # login + passwordless sudo; default: the box name
+    # instance_type  = "t4g.large"   # default: var.instance_type
+    # root_volume_gb = 40
+    # repo           = "https://github.com/alice/headlong.git"   # their fork
+    # branch         = "main"
+    # env_parameter  = ""            # "" = no SSM .env; default /headlong-collab/alice/env
+  }
+}
+
+# Who may reach port 22. Default is the whole internet with key-only auth;
+# narrow it when a collaborator has a fixed address.
+# ssh_ingress_cidrs      = ["203.0.113.4/32"]
+# ssh_ingress_ipv6_cidrs = []

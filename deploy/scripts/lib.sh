@@ -30,7 +30,7 @@ require_tools() {
 
 require_state() {
     [[ -f "$TF_DIR/terraform.tfstate" ]] \
-        || die "no terraform state in deploy/terraform — provision first (deploy/terraform/README.md)"
+        || die "no terraform state in $TF_DIR — provision first (see the README there)"
 }
 
 require_aws() {

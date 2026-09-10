@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# deploy/scripts/collab — collaborator boxes (deploy/terraform-collab).
+#
+# Usage: deploy/scripts/collab status [--check]     every box: state, address, user, launch time
+#        deploy/scripts/collab check [<box>]         on-box audit: sshd settings, root, keys, ports,
+#                                                    upgrades, SSH activity, Headlong health
+#        deploy/scripts/collab keys <box>            push the applied ssh_public_keys to the box
+#                                                    (edit terraform.tfvars, terraform apply, then this)
+#        deploy/scripts/collab run <box> '<command>' one command on a box over SSM (24KB output cap)
+#        deploy/scripts/collab ssh-config            ~/.ssh/config stanzas for every box
+#        deploy/scripts/collab stop|start <box>      instance power (the Elastic IP is kept)
+# Needs AWS credentials (SSO is enough) and terraform state in
+# deploy/terraform-collab. No Cloudflare token. Read-only except keys/stop/start.
+
+export SHELLM_TF_STACK=terraform-collab
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+cmd="${1:-status}"
+case "$cmd" in
+    -h|--help|help) usage; exit 0 ;;
+esac
+shift || true
+
+require_tools terraform aws jq
+require_state
+require_aws
+
+# lib.sh drives one instance per stack through instance_id()/region(); this
+# stack has many, so both are redefined to read the box currently selected.
+COLLAB_REGION=$(tf output -raw region)
+COLLAB_INSTANCE_ID=""
+region()      { printf '%s' "$COLLAB_REGION"; }
+instance_id() { printf '%s' "$COLLAB_INSTANCE_ID"; }
+
+BOXES_JSON=$(tf output -json boxes)
+box_names() { jq -r 'keys[]' <<<"$BOXES_JSON"; }
+box_field() { jq -r --arg b "$1" --arg f "$2" '.[$b][$f] // empty' <<<"$BOXES_JSON"; }
+select_box() {
+    [[ -n "${1:-}" ]] || die "which box? one of: $(box_names | paste -sd' ' -)"
+    COLLAB_INSTANCE_ID=$(box_field "$1" instance_id)
+    [[ -n "$COLLAB_INSTANCE_ID" ]] || die "no box named '$1' in the applied state (boxes: $(box_names | paste -sd' ' -))"
+}
+
+# Everything the audit needs, in one SSM round trip. Plain sh-compatible
+# where it can be; it runs as root on Ubuntu 24.04.
+audit_script='
+ok()  { echo "ok    $*"; }
+bad() { echo "FAIL  $*"; }
+mkdir -p /run/sshd   # socket-activated sshd; -T needs its runtime dir
+cfg=$(/usr/sbin/sshd -T 2>/dev/null || true)
+[ -n "$cfg" ] || bad "could not read the effective sshd config (sshd -T)"
+want() {
+    v=$(printf "%s\n" "$cfg" | awk -v k="$1" "\$1==k {print \$2; exit}")
+    if [ "$v" = "$2" ]; then ok "sshd $1 $v"; else bad "sshd $1 is ${v:-unset}, want $2"; fi
+}
+want passwordauthentication no
+want kbdinteractiveauthentication no
+want permitemptypasswords no
+want permitrootlogin no
+want pubkeyauthentication yes
+allow=$(printf "%s\n" "$cfg" | awk "\$1==\"allowusers\" {print \$2}" | paste -sd, -)
+if [ -n "$allow" ]; then ok "sshd allowusers $allow"; else bad "sshd allowusers unset: any account with a key may log in"; fi
+rootpw=$(passwd -S root 2>/dev/null | awk "{print \$2}")
+if [ "$rootpw" = "L" ]; then ok "root password locked"; else bad "root password state is ${rootpw:-unknown}"; fi
+for h in /home/*; do
+    [ -d "$h" ] || continue
+    u=${h##*/}
+    n=$(grep -cE "^(ssh-|ecdsa-|sk-)" "$h/.ssh/authorized_keys" 2>/dev/null || true)
+    pw=$(passwd -S "$u" 2>/dev/null | awk "{print \$2}")
+    echo "keys  $u: ${n:-0} authorized key(s), password ${pw:-?}"
+done
+echo "ports $(ss -Htln 2>/dev/null | awk "{print \$4}" | sort -u | paste -sd" " -)"
+if apt-config dump APT::Periodic::Unattended-Upgrade 2>/dev/null | grep -q "\"1\""; then
+    ok "unattended-upgrades enabled ($(systemctl is-active unattended-upgrades 2>/dev/null))"
+else
+    bad "unattended-upgrades not enabled in /etc/apt/apt.conf.d/20auto-upgrades"
+fi
+[ -f /var/run/reboot-required ] && echo "note  reboot pending (kernel or security update)"
+if grep -q "bootstrap done" /var/log/headlong-bootstrap.log 2>/dev/null; then
+    ok "first boot finished"
+else
+    bad "first boot NOT finished: $(tail -1 /var/log/headlong-bootstrap.log 2>/dev/null || echo "no bootstrap log")"
+fi
+acc=$(journalctl -u ssh --since -7d --no-pager 2>/dev/null | grep -c "Accepted publickey" || true)
+fail=$(journalctl -u ssh --since -24h --no-pager 2>/dev/null | grep -cE "Invalid user|Failed|authentication failure" || true)
+echo "ssh   ${acc:-0} key logins in 7d, ${fail:-0} failed attempts in 24h (background scanning is normal)"
+journalctl -u ssh --since -7d --no-pager 2>/dev/null | grep "Accepted publickey" | tail -3 | sed "s/^/      /"
+echo "web   $(curl -fsS localhost:8080/api/health 2>/dev/null || echo DOWN) unit $(systemctl is-active headlong-web 2>/dev/null)"
+echo "code  $(sudo -u shellm git -C /opt/shellm/app log -1 --oneline 2>/dev/null || echo "no checkout yet")"
+minds=$(systemctl list-units "headlong-thinkers@*" --no-legend --plain 2>/dev/null | awk "{print \$1\" \"\$4}" | paste -sd", " -)
+echo "minds ${minds:-none running}"
+echo "disk  $(df -h / | awk "NR==2 {print \$5\" of \"\$2\" used\"}")"
+echo "up    $(uptime -p 2>/dev/null)"
+'
+
+do_check() {
+    local box state
+    for box in "$@"; do
+        select_box "$box"
+        state=$(instance_state)
+        info "$box ($COLLAB_INSTANCE_ID, $(box_field "$box" user)@$(box_field "$box" public_ip)) — $state"
+        if [[ "$state" == "running" ]]; then
+            run_script_on_box "$audit_script" | sed 's/^/    /'
+            echo
+        fi
+    done
+}
+
+do_status() {
+    local ids names sg ingress
+    names=$(box_names)
+    if [[ -z "$names" ]]; then
+        info "Stack: terraform-collab ($COLLAB_REGION) — no boxes in state (boxes = {} or not applied)"
+        exit 0
+    fi
+    sg=$(tf output -raw security_group_id)
+    ingress=$(aws ec2 describe-security-groups --region "$COLLAB_REGION" --group-ids "$sg" \
+        --query 'SecurityGroups[0].IpPermissions[?ToPort==`22`].[IpRanges[].CidrIp, Ipv6Ranges[].CidrIpv6]' \
+        --output text 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/ $//')
+    info "Stack: terraform-collab ($COLLAB_REGION), SSH port 22 open to: ${ingress:-nobody}"
+    ids=$(jq -r '.[].instance_id' <<<"$BOXES_JSON" | paste -sd' ' -)
+    # One EC2 call for every box; the terraform output supplies the rest.
+    # shellcheck disable=SC2086
+    aws ec2 describe-instances --region "$COLLAB_REGION" --instance-ids $ids \
+        --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType,launched:LaunchTime}' \
+        --output json > "${TMPDIR:-/tmp}/collab-ec2.$$" || die "describe-instances failed"
+    {
+        printf 'box\tinstance\tstate\ttype\taddress\tlaunched\n'
+        for box in $names; do
+            jq -r --arg b "$box" --argjson ec2 "$(cat "${TMPDIR:-/tmp}/collab-ec2.$$")" '
+                .[$b] as $o | ($ec2[] | select(.id == $o.instance_id)) as $e
+                | [$b, $o.instance_id, ($e.state // "?"), ($e.type // $o.instance_type),
+                   ($o.user + "@" + $o.public_ip), (($e.launched // "?") | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z"))]
+                | @tsv' <<<"$BOXES_JSON"
+        done
+    } | column -t -s $'\t'
+    rm -f "${TMPDIR:-/tmp}/collab-ec2.$$"
+    if [[ "${1:-}" == "--check" ]]; then
+        echo
+        # shellcheck disable=SC2086
+        do_check $names
+    fi
+}
+
+do_keys() {
+    local box user keys n
+    select_box "$1"
+    user=$(box_field "$1" user)
+    keys=$(jq -r --arg b "$1" '.[$b].ssh_public_keys[]' <<<"$BOXES_JSON")
+    n=$(printf '%s\n' "$keys" | grep -c .)
+    [[ "$n" -gt 0 ]] || die "no keys for '$1' in the applied state — terraform apply after editing terraform.tfvars"
+    [[ "$(instance_state)" == "running" ]] || die "'$1' is not running"
+    info "Installing $n key(s) for $user on $1"
+    run_script_on_box "
+set -e
+u='$user'
+id \"\$u\" >/dev/null 2>&1 || { echo \"no such user \$u\" >&2; exit 1; }
+install -d -m 0700 -o \"\$u\" -g \"\$u\" \"/home/\$u/.ssh\"
+echo '$(printf '%s\n' "$keys" | base64 | tr -d '\n')' | base64 -d > \"/home/\$u/.ssh/authorized_keys\"
+chown \"\$u:\$u\" \"/home/\$u/.ssh/authorized_keys\"
+chmod 0600 \"/home/\$u/.ssh/authorized_keys\"
+echo \"authorized_keys for \$u now has \$(grep -cE '^(ssh-|ecdsa-|sk-)' \"/home/\$u/.ssh/authorized_keys\") key(s)\"
+"
+    echo
+}
+
+do_ssh_config() {
+    local box
+    for box in $(box_names); do
+        printf 'Host headlong-%s\n    HostName %s\n    User %s\n    IdentitiesOnly yes\n\n' \
+            "$box" "$(box_field "$box" public_ip)" "$(box_field "$box" user)"
+    done
+}
+
+do_power() {
+    local verb="$1" box="$2"
+    select_box "$box"
+    case "$verb" in
+        stop)
+            info "Stopping $box ($COLLAB_INSTANCE_ID); its Elastic IP stays reserved"
+            aws ec2 stop-instances --region "$COLLAB_REGION" --instance-ids "$COLLAB_INSTANCE_ID" \
+                --query 'StoppingInstances[0].CurrentState.Name' --output text ;;
+        start)
+            info "Starting $box ($COLLAB_INSTANCE_ID)"
+            aws ec2 start-instances --region "$COLLAB_REGION" --instance-ids "$COLLAB_INSTANCE_ID" \
+                --query 'StartingInstances[0].CurrentState.Name' --output text
+            aws ec2 wait instance-running --region "$COLLAB_REGION" --instance-ids "$COLLAB_INSTANCE_ID"
+            info "Running; SSH at $(box_field "$box" user)@$(box_field "$box" public_ip) in about a minute" ;;
+    esac
+}
+
+case "$cmd" in
+    status)     do_status "${1:-}" ;;
+    check)      if [[ $# -gt 0 ]]; then do_check "$@"; else
+                    # shellcheck disable=SC2046
+                    do_check $(box_names); fi ;;
+    keys)       do_keys "${1:-}" ;;
+    run)        select_box "${1:-}"; [[ -n "${2:-}" ]] || die "usage: collab run <box> '<command>'"
+                run_script_on_box "$2"; echo ;;
+    ssh-config) do_ssh_config ;;
+    stop|start) do_power "$cmd" "${1:-}" ;;
+    *)          usage >&2; die "unknown command: $cmd" ;;
+esac

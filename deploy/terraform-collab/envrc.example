@@ -1,0 +1,8 @@
+# Optional. This stack needs only AWS credentials: no Cloudflare token, no
+# Google client. With the Laude SSO profile (`aws sso login`) terraform
+# picks up the default profile on its own and no .envrc is needed.
+#
+# If you drive it with static keys instead, copy to .envrc (gitignored),
+# fill in the op:// references, then `direnv allow`:
+#export AWS_ACCESS_KEY_ID="$(op read 'op://Private/aws-terraform/username')"
+#export AWS_SECRET_ACCESS_KEY="$(op read 'op://Private/aws-terraform/credential')"
