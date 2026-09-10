@@ -145,6 +145,10 @@ SHELLM_REQUIRE_DOCKER="${SHELLM_REQUIRE_DOCKER:-0}"
 SHELLM_TEMP_DOCKER="${SHELLM_TEMP_DOCKER:-0}"
 SHELLM_INACTIVITY_TIMEOUT="${SHELLM_INACTIVITY_TIMEOUT:-30}"
 SHELLM_INACTIVITY_MAX="${SHELLM_INACTIVITY_MAX:-900}"
+# Kill a command whose output file grows past this many bytes, even while it is
+# actively producing output (a runaway loop resets the inactivity counter every
+# check, so silence-based watchdogs never catch it). 0 disables the guard.
+SHELLM_MAX_OUTPUT_SIZE="${SHELLM_MAX_OUTPUT_SIZE:-104857600}"
 SHELLM_BEACON_INTERVAL="${SHELLM_BEACON_INTERVAL:-5}"
 VERBOSE=0
 QUIET=0
@@ -349,6 +353,8 @@ Environment:
   SHELLM_INACTIVITY_TIMEOUT  Seconds before killing idle execution (default: 30)
   SHELLM_INACTIVITY_MAX   Seconds before killing execution that is silent but
                           has a live nested shellm run (default: 900)
+  SHELLM_MAX_OUTPUT_SIZE  Bytes of output before killing a command that keeps
+                          producing output (default: 104857600; 0 disables)
   SHELLM_BEACON_INTERVAL  Seconds between activity beacon touches (default: 5)
   SHELLM_WORKDIR          (Internal) Working directory for current run
 
@@ -527,6 +533,17 @@ build_inactivity_feedback() {
 
     local last_output
     last_output=$(truncate_output "$output")
+
+    # A runaway command that kept producing output was not idle and not at a
+    # prompt, so none of the interactive/nested advice below applies.
+    if [[ "$reason" == "output" ]]; then
+        printf 'Execution was KILLED after its output grew past %s bytes\n' "$timeout"
+        printf '(a command producing unbounded output, e.g. an infinite loop).\n'
+        printf '\nLast output before the kill:\n%s\n' "$last_output"
+        printf '\nBound the output: add a limit (head -c, timeout, a loop guard),\n'
+        printf 'fix the loop condition, or redirect bulk output to a file.\n'
+        return 0
+    fi
 
     # A block that ran a nested shellm run was not sitting at a prompt, so the
     # interactive-input advice below would send the model looking for a flag
@@ -2778,7 +2795,13 @@ exit \$__shellm_rc
                     last_beacon="$cur_beacon"
                     stale_seconds=0
                 fi
-                if [[ "$stale_seconds" -ge "$SHELLM_INACTIVITY_TIMEOUT" ]]; then
+                # A command that never stops producing output (e.g. a runaway
+                # loop printing the same line) resets stale_seconds every check,
+                # so the silence guards above never fire. Cap total output size.
+                if [[ "$SHELLM_MAX_OUTPUT_SIZE" -gt 0 && "$cur_size" -ge "$SHELLM_MAX_OUTPUT_SIZE" ]]; then
+                    kill_reason="output"
+                    kill_limit="$SHELLM_MAX_OUTPUT_SIZE"
+                elif [[ "$stale_seconds" -ge "$SHELLM_INACTIVITY_TIMEOUT" ]]; then
                     kill_reason="idle"
                     kill_limit="$SHELLM_INACTIVITY_TIMEOUT"
                 elif [[ "$quiet_seconds" -ge "$SHELLM_INACTIVITY_MAX" ]]; then
@@ -2846,7 +2869,9 @@ exit \$__shellm_rc
 
         # Show exit status
         if [[ "$timed_out" -eq 1 ]]; then
-            if [[ "$kill_reason" == "nested" ]]; then
+            if [[ "$kill_reason" == "output" ]]; then
+                progress "\033[1;31mKILLED — output exceeded ${kill_limit} bytes\033[0m"
+            elif [[ "$kill_reason" == "nested" ]]; then
                 progress "\033[1;31mKILLED — sub-run silent for ${kill_limit}s\033[0m"
             else
                 progress "\033[1;31mKILLED — inactivity timeout (${kill_limit}s)\033[0m"
