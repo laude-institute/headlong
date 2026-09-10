@@ -12,6 +12,14 @@
 
 set -uo pipefail
 
+# Hermetic by design (laude-institute/headlong#117): running the suite from inside
+# an activated identity must not leak its identity/trajectory env into the tests.
+# tools/identity re-roots to the caller's live .identities when IDENTITY_NAME and
+# IDENTITY_DIR point at an active identity, so `identity new` inside a test would write
+# there instead of the test's own temp app dir. Every test unsets or exports its own
+# values, so the suite itself needs none of these.
+unset IDENTITY_NAME IDENTITY_DIR MEM_DIR SKILLS_DIR SKILLS_KERNEL_DIR TRAJ_ID TRAJ_DIR ROOT_TRAJ_ID
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pattern="${1:-}"
 
