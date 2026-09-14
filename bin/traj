@@ -533,6 +533,43 @@ cmd_append() {
             '. + {stderr: $stderr, stderr_ref: $ref, stderr_bytes: $bytes, stderr_truncated: true}')
     fi
 
+
+    # ===== TRAJECTORY STEP SIGNING =====
+    # Compute prev_hash from the last line of the trajectory file
+    local prev_hash="genesis"
+    if [[ -f "$traj_file" && -s "$traj_file" ]]; then
+        local last_line
+        last_line=$(tail -1 "$traj_file")
+        # Hash the exact line as written (compact JSON)
+        prev_hash=$(printf '%s' "$last_line" | sha256sum | cut -d' ' -f1)
+    fi
+
+    # Add prev_hash to record
+    record=$(printf '%s' "$record" | jq --arg ph "$prev_hash" '. + {prev_hash: $ph}')
+
+    # Sign the step if signing key exists
+    local signing_key_file="${IDENTITY_DIR:-}/secrets/traj_signing_key"
+    if [[ -f "$signing_key_file" && -r "$signing_key_file" ]]; then
+        local signing_key
+        signing_key=$(cat "$signing_key_file" 2>/dev/null | tr -d '\n\r ')
+        if [[ -n "$signing_key" && ${#signing_key} -eq 64 ]]; then
+            # Create canonical JSON for signing (compact, with prev_hash)
+            local canonical
+            canonical=$(printf '%s' "$record" | jq -c .)
+            # Compute HMAC-SHA256
+            local sig
+            sig=$(printf '%s' "$canonical" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$signing_key" -binary | xxd -p -c 256)
+            # Add signature to record
+            record=$(printf '%s' "$record" | jq --arg s "$sig" '. + {sig: $s}')
+        else
+            printf '[traj append] WARNING: Invalid signing key (expected 64 hex chars, got %d)\n' "${#signing_key}" >&2
+        fi
+    else
+        # No signing key - continue unsigned (backward compatibility)
+        printf '[traj append] INFO: No signing key found at %s, step will be unsigned\n' "$signing_key_file" >&2
+    fi
+    # ===== END TRAJECTORY STEP SIGNING =====
+
     # Append row to file (compact, one line).
     mkdir -p "$(dirname "$traj_file")"
     local compact
@@ -2223,6 +2260,171 @@ CHECKHELP
     fi
 }
 
+
+# ---------------------------------------------------------------------------
+# verify — Verify trajectory step signature chain
+# ---------------------------------------------------------------------------
+
+cmd_verify() {
+    local traj_dir_opt="" traj_id_opt="" verbose=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --traj_dir)  traj_dir_opt="${2:?--traj_dir requires DIR}"; shift 2 ;;
+            -v|--verbose) verbose=1; shift ;;
+            -h|--help)
+                cat <<'VERIFYHELP'
+traj verify — Verify trajectory step signature chain
+
+Usage:
+  traj verify [ID]        Verify a single trajectory file
+  traj verify [ID] -v     Verbose output (show each step status)
+
+Options:
+  [ID]               Trajectory ID (positional)
+  -v, --verbose      Show each step's verification status
+  --traj_dir DIR     Trajectory directory
+
+Environment:
+  TRAJ_DIR + TRAJ_ID   Default trajectory
+
+Exit codes:
+  0 = all steps verified (or legacy unsigned)
+  1 = tampered/corrupted chain
+  2 = error (file not found, etc.)
+
+Verification states:
+  verified      - Step has valid prev_hash and sig matching signing key
+  unverified    - Step is unsigned (legacy) or signing key unavailable
+  TAMPERED      - prev_hash mismatch or invalid signature
+VERIFYHELP
+                return 0
+                ;;
+            -*)  die "verify: unknown option: $1" ;;
+            *)
+                if [[ -z "$traj_id_opt" ]]; then
+                    traj_id_opt="$1"
+                else
+                    die "verify: unexpected argument: $1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    local traj_file
+    traj_file=$(require_traj_file "$traj_dir_opt" "$traj_id_opt" "verify")
+
+    if [[ ! -f "$traj_file" ]]; then
+        die "verify: trajectory file not found: $traj_file"
+    fi
+
+    # Load signing key
+    local signing_key_file="${IDENTITY_DIR:-}/secrets/traj_signing_key"
+    local signing_key=""
+    if [[ -f "$signing_key_file" && -r "$signing_key_file" ]]; then
+        signing_key=$(cat "$signing_key_file" 2>/dev/null | tr -d '\n\r ')
+        if [[ -n "$signing_key" && ${#signing_key} -ne 64 ]]; then
+            printf 'WARNING: Invalid signing key length (%d chars)\n' "${#signing_key}" >&2
+            signing_key=""
+        fi
+    fi
+
+    local line_num=0
+    local prev_hash_expected="genesis"
+    local tampered=0
+    local unverified=0
+    local verified=0
+    local total=0
+
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        line_num=$((line_num + 1))
+        total=$((total + 1))
+
+        # Parse step
+        local step_type step_id prev_hash sig
+        step_type=$(printf '%s' "$line" | jq -r '.type // empty')
+        step_id=$(printf '%s' "$line" | jq -r '.step_id // empty')
+        prev_hash=$(printf '%s' "$line" | jq -r '.prev_hash // empty')
+        sig=$(printf '%s' "$line" | jq -r '.sig // empty')
+
+        # Check prev_hash - if missing, it's a legacy unsigned step
+        local hash_ok=0
+        local is_legacy=0
+        if [[ -z "$prev_hash" ]]; then
+            # Legacy step - no prev_hash field
+            is_legacy=1
+            hash_ok=1  # Don't fail on missing prev_hash
+        elif [[ "$prev_hash" == "$prev_hash_expected" ]]; then
+            hash_ok=1
+        fi
+
+        # Check signature if present and key available
+        local sig_ok=0
+        local has_sig=0
+        if [[ -n "$sig" && -n "$signing_key" ]]; then
+            has_sig=1
+            # Recompute canonical JSON (without sig for verification)
+            local canonical
+            canonical=$(printf '%s' "$line" | jq 'del(.sig)' | jq -c .)
+            local expected_sig
+            expected_sig=$(printf '%s' "$canonical" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$signing_key" -binary | xxd -p -c 256)
+            if [[ "$sig" == "$expected_sig" ]]; then
+                sig_ok=1
+            fi
+        elif [[ -n "$sig" && -z "$signing_key" ]]; then
+            # Has sig but no key to verify
+            has_sig=1
+        fi
+
+        # Determine status
+        local status=""
+        if [[ "$is_legacy" -eq 1 ]]; then
+            # Legacy step - no signing fields at all
+            status="unverified (legacy)"
+            unverified=$((unverified + 1))
+        elif [[ "$hash_ok" -eq 1 && "$has_sig" -eq 1 && "$sig_ok" -eq 1 ]]; then
+            status="verified"
+            verified=$((verified + 1))
+        elif [[ "$hash_ok" -eq 1 && "$has_sig" -eq 0 ]]; then
+            status="unverified (no sig)"
+            unverified=$((unverified + 1))
+        elif [[ "$hash_ok" -eq 1 && "$has_sig" -eq 1 && "$sig_ok" -eq 0 ]]; then
+            status="TAMPERED (invalid sig)"
+            tampered=$((tampered + 1))
+        else
+            status="TAMPERED (prev_hash mismatch: expected $prev_hash_expected, got $prev_hash)"
+            tampered=$((tampered + 1))
+        fi
+
+        if [[ "$verbose" -eq 1 ]]; then
+            printf '%d: %s [%s] %s\n' "$line_num" "${step_type:-?}" "${step_id:0:8}" "$status"
+        fi
+
+        # Compute hash of this line for next iteration (always use actual line)
+        prev_hash_expected=$(printf '%s' "$line" | sha256sum | cut -d' ' -f1)
+
+    done < "$traj_file"
+
+    if [[ "$verbose" -eq 0 ]]; then
+        printf 'Total steps: %d\n' "$total"
+        printf 'Verified:    %d\n' "$verified"
+        printf 'Unverified:  %d\n' "$unverified"
+        printf 'Tampered:    %d\n' "$tampered"
+    fi
+
+    if [[ "$tampered" -gt 0 ]]; then
+        printf 'RESULT: TAMPERED (%d tampered step(s))\n' "$tampered"
+        return 1
+    elif [[ "$unverified" -gt 0 && "$verified" -eq 0 ]]; then
+        printf 'RESULT: UNVERIFIED (all steps unsigned, no signing key or legacy trajectory)\n'
+        return 0
+    else
+        printf 'RESULT: VERIFIED (%d verified, %d unverified)\n' "$verified" "$unverified"
+        return 0
+    fi
+}
+
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -2244,6 +2446,7 @@ case "$cmd" in
     list)     cmd_list "$@" ;;
     root)     cmd_root "$@" ;;
     check)    cmd_check "$@" ;;
+    verify)   cmd_verify "$@" ;;
     help|-h|--help) usage 0 ;;
     *) die "unknown command: $cmd" ;;
 esac
