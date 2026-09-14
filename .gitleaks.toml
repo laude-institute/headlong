@@ -35,3 +35,7 @@ keywords = ["api.telegram.org"]
 [[allowlists]]
 description = "Real Telegram bot token in telegram/tests/test_logging.py (2026-09-03). Rotated 2026-09-04 (old token returns 401); fixture replaced with a fake."
 commits = ["44fe2f48491f66d59f8a7aa7b265cccded3df995"]
+
+[[allowlists]]
+description = "Fake 64-hex HMAC-SHA256 signing key used as a test fixture (tests/test_traj_verify.sh, PR #123). Triaged 2026-09-14: not a real secret."
+regexes = ['''46cf6fe78961cb6a3d46d54fd6f4579d18af2be5c3f1ea59dc6da47c640838cd''']

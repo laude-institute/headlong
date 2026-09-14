@@ -541,7 +541,7 @@ cmd_append() {
         local last_line
         last_line=$(tail -1 "$traj_file")
         # Hash the exact line as written (compact JSON)
-        prev_hash=$(printf '%s' "$last_line" | sha256sum | cut -d' ' -f1)
+        prev_hash=$(printf '%s' "$last_line" | openssl dgst -sha256 -r | cut -d' ' -f1)
     fi
 
     # Add prev_hash to record
@@ -2402,7 +2402,7 @@ VERIFYHELP
         fi
 
         # Compute hash of this line for next iteration (always use actual line)
-        prev_hash_expected=$(printf '%s' "$line" | sha256sum | cut -d' ' -f1)
+        prev_hash_expected=$(printf '%s' "$line" | openssl dgst -sha256 -r | cut -d' ' -f1)
 
     done < "$traj_file"
 

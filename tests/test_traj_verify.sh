@@ -12,7 +12,7 @@ bad() { fail=$((fail+1)); printf 'FAIL %s%s\n' "$1" "${2:+ — $2}"; }
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 
 # ---- Helper: sha256 of a line ----
-hash_line() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+hash_line() { printf '%s' "$1" | openssl dgst -sha256 -r | cut -d' ' -f1; }
 
 # ---- Signing key setup ----
 SIGNING_KEY="46cf6fe78961cb6a3d46d54fd6f4579d18af2be5c3f1ea59dc6da47c640838cd"
@@ -75,7 +75,7 @@ TAMPERED_DIR="$WORK/trajectories/$TRAJ_ID"
 mkdir -p "$TAMPERED_DIR"
 cp "$SIGNED_DIR/trajectory.jsonl" "$TAMPERED_DIR/trajectory.jsonl"
 # Tamper: change content of step 1 (second line)
-sed -i '2s/signed step 1/TAMPERED/' "$TAMPERED_DIR/trajectory.jsonl"
+sed '2s/signed step 1/TAMPERED/' "$TAMPERED_DIR/trajectory.jsonl" > "$TAMPERED_DIR/trajectory.jsonl.tmp" && mv "$TAMPERED_DIR/trajectory.jsonl.tmp" "$TAMPERED_DIR/trajectory.jsonl"
 
 export TRAJ_ID
 out=$(traj verify 2>&1); rc=$?
