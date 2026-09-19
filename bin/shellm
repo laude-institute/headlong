@@ -1703,8 +1703,56 @@ call_llm() {
 # Code extraction from LLM response
 # ---------------------------------------------------------------------------
 
+# normalize_toolcall_markup RESPONSE — Qwen-family models sometimes answer in
+# their native tool-call markup instead of a fence:
+#   <tool_call>            <tool_call>              <tool_call>
+#   <function=bash>        <function=bash>          set -e
+#   set -e … code …        <parameter=command>      … code …
+#   </function>            … code …                 </tool_call>
+#   </tool_call>           </parameter> …
+# (also the hybrid "<function=bash> … </bash>"). Run as-is, the first line is a
+# bash syntax error and the whole turn is wasted (4 of 46 responses on Custos,
+# 2026-09-09). When a response has NO fence but does have this markup, lift
+# the code between the openers and the first closer into a ```bash fence so
+# it executes, and tell the model on stderr what happened so it learns the
+# fence. A response that has a real fence is left alone (fences win).
+normalize_toolcall_markup() {
+    local response="$1"
+    case "$response" in
+        *"<tool_call>"*|*"<function="*|*"<bash>"*) ;;
+        *) printf '%s' "$response"; return 1 ;;
+    esac
+    if printf '%s\n' "$response" | grep -qE '^```|```(bash|shell|sh)[[:space:]]*$'; then
+        printf '%s' "$response"; return 1
+    fi
+    local lifted
+    lifted=$(printf '%s\n' "$response" | awk '
+        BEGIN { started = 0 }
+        !started {
+            if ($0 ~ /^[[:space:]]*<(tool_call|function=[A-Za-z_]+|parameter=[A-Za-z_]+|bash)>[[:space:]]*$/) { started = 1 }
+            next
+        }
+        started {
+            if ($0 ~ /^[[:space:]]*<\/(tool_call|function|parameter|bash)>[[:space:]]*$/) { exit }
+            if ($0 ~ /^[[:space:]]*<(function=[A-Za-z_]+|parameter=[A-Za-z_]+|bash)>[[:space:]]*$/) { next }
+            print
+        }')
+    if [[ "$lifted" =~ [^[:space:]] ]]; then
+        printf '%s' $'```bash\n'"$lifted"$'\n```'
+        return 0
+    fi
+    printf '%s' "$response"
+    return 1
+}
+
 extract_code() {
     local response="$1"
+    local toolcall_lifted=0
+    local _normalized
+    if _normalized=$(normalize_toolcall_markup "$response"); then
+        response="$_normalized"
+        toolcall_lifted=1
+    fi
 
     # Extract the FIRST fenced code block (```bash, ```sh, or bare ```).
     # Heredoc-aware: lines like ``` inside an open heredoc do NOT close the
@@ -1827,6 +1875,14 @@ extract_code() {
     if [[ "$truncation_signal" == *TRUNCATED* ]]; then
         code=$'echo "[rest of model response truncated after first code block]" >&2\n'"$code"
     fi
+    if [[ "$toolcall_lifted" -eq 1 ]]; then
+        local toolcall_notice
+        toolcall_notice=$(cat <<'NOTICE'
+printf '%s\n' '[shellm: your reply used <tool_call>/<function=bash> markup. This runtime only reads ```bash fences; it lifted your code into one and ran it this time. Next time put the script inside a ```bash block, nothing else: start the reply with a line that is exactly ```bash and end the block with a line that is exactly ```.]' >&2
+NOTICE
+)
+        code="$toolcall_notice"$'\n'"$code"
+    fi
     if [[ "$no_fence" -eq 1 ]]; then
         local nofence_notice
         nofence_notice=$(cat <<'NOTICE'
@@ -1855,6 +1911,7 @@ build_system_prompt() {
 You are running in shellm, headlong's bash agent loop: you solve tasks by generating and executing bash code.
 
 IMPORTANT: End your response with exactly ONE ```bash code block. Your response is NOT streamed — code blocks are not executed until your entire response is complete. Combine multiple steps into a single script. Only the first code block is executed; all others are silently discarded.
+Never use <tool_call>, <function=bash>, <parameter=...> or <bash> tags: this runtime is not a tool-calling API and only reads ```bash fences.
 
 CRITICAL — the opening ```bash fence MUST start on its OWN new line. Put a
 newline after your prose, THEN the fence on a line by itself. Never append the

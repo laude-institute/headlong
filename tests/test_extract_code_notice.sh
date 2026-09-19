@@ -25,7 +25,8 @@ bad() { fail=$((fail+1)); printf 'FAIL %s%s\n' "$1" "${2:+ — $2}"; }
 # `source <(...)`: the CI macOS bash 3.2 binary has no process substitution.
 FN=$(mktemp)
 trap 'rm -f "$FN"' EXIT
-sed -n '/^extract_code() {/,/^}/p' "$REPO/bin/shellm" > "$FN"
+sed -n '/^normalize_toolcall_markup() {/,/^}/p' "$REPO/bin/shellm" > "$FN"
+sed -n '/^extract_code() {/,/^}/p' "$REPO/bin/shellm" >> "$FN"
 # shellcheck disable=SC1090
 source "$FN"
 
@@ -60,6 +61,34 @@ out=$(extract_code "do it now.\`\`\`bash
 echo hi
 \`\`\`")
 grep -q "$NOTICE" <<<"$out" && bad "an end-of-line fence must not get the notice" || ok "an end-of-line fence gets no notice"
+
+# --- Qwen tool-call markup is lifted into a fence and runs, with a notice ------
+# Four shapes seen on Custos 2026-09-09: canonical <tool_call><function=bash>…
+# </function></tool_call>; the hybrid …</bash>; a bare <tool_call> wrapper; and
+# <parameter=command> inside <function=bash>. A real fence always wins.
+for shape in canonical hybrid bare parameter; do
+    case "$shape" in
+        canonical) resp=$'Let me check.\n<tool_call>\n<function=bash>\necho lifted-canonical\n</function>\n</tool_call>' ;;
+        hybrid)    resp=$'<tool_call>\n<function=bash>\necho lifted-hybrid\n</bash>\n\n</bash>' ;;
+        bare)      resp=$'<tool_call>\necho lifted-bare\nFINAL="done"' ;;
+        parameter) resp=$'<tool_call>\n<function=bash>\n<parameter=command>\necho lifted-parameter\n</parameter>\n</function>\n</tool_call>' ;;
+    esac
+    out=$(extract_code "$resp")
+    ran=$(bash -c "$out" 2>/tmp/notice.$$)
+    if [[ "$ran" == "lifted-$shape"* ]] && grep -q 'used <tool_call>/<function=bash> markup' /tmp/notice.$$; then
+        ok "tool-call markup ($shape) is lifted, runs, and carries the notice"
+    else
+        bad "tool-call markup ($shape) is lifted, runs, and carries the notice" "ran=$ran notice=$(cat /tmp/notice.$$ | head -c 120)"
+    fi
+    rm -f /tmp/notice.$$
+done
+out=$(extract_code $'<tool_call> mentioned in prose\n```bash\necho fence-wins\n```')
+if [[ "$(bash -c "$out" 2>/dev/null)" == "fence-wins" ]] && [[ "$out" != *"used <tool_call>"* ]]; then
+    ok "a real fence wins over tool-call words in prose"
+else
+    bad "a real fence wins over tool-call words in prose" "$out"
+fi
+
 
 echo
 echo "$pass passed, $fail failed"
