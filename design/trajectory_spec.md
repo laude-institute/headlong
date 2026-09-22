@@ -86,12 +86,16 @@ The canonical list of step types. Families:
   carry `source` (the thinker's name).
 - **conversation** — written by `chat` (a bus client, not a shellm entry
   point). Carry `source: "chat"`.
+- **delegation** — written by `coding-agent` in a forked child trajectory;
+  captures one bounded external coding run and its independently checked result.
 
 | Type | Family | Writer | Notes |
 |------|--------|--------|-------|
 | `trajectory` | structural | `traj new` | First line of every file; its `step_id` is the trajectory's ID |
 | `fork` | structural | `traj fork` (nested shellm runs) | Spawns a child trajectory; carries `run_id` when forked from inside a run |
 | `merge` | structural | shellm (write-back when a forked child completes); `traj merge` | Carries `content` + `from_traj`/`from_step`/`from_traj_ref`; no `source`; carries `run_id` when written from inside a run |
+| `delegation` | delegation | `coding-agent` | First child step for a bounded coding task; records task, backend, base commit, worktree, verification command, and parent/child lineage |
+| `delegation-result` | delegation | `coding-agent` | Terminal child step; records executor/check exits, candidate commit or patch, transcripts/artifacts, status, and parent/child lineage |
 | `shellm-run` | machinery | shellm loop | Run header; its `step_id` is the run's identity; may carry `trigger_step` + `launched_by` |
 | `prompt` | machinery | shellm loop | Carries `run_id` |
 | `reasoning` | machinery | shellm loop | Carries `run_id` |
@@ -193,6 +197,28 @@ finishes (the write-back carries the child's final answer as `content`, or
 Carries no `source`. Logs written before 2026-07-10 record these
 write-backs as `thought` steps with the same cross-reference fields;
 readers should treat a `thought` carrying `from_traj` as a legacy merge.
+
+#### `delegation` / `delegation-result`
+
+`coding-agent` uses an ordinary forked child trajectory for each external
+coding run. Its `delegation` step captures the bounded task and immutable base
+before execution. Its terminal `delegation-result` records the executor and
+independent verification statuses, retained candidate branch/worktree and
+artifact references, and explicitly distinguishes `candidate` from
+`accepted` (Phase 1 never accepts automatically). The parent then receives a
+normal `merge` step pointing at that result; trajectory files remain
+append-only.
+
+Candidate integrity is recorded with `source_checkout_unchanged`,
+`verification_checkout_unchanged`, `integrity_check_exit_status`, and the
+`source_fingerprint_before/after` and `verification_fingerprint_before/after`
+SHA-256 values. These cover Git-visible contents and state, not ignored runtime
+files or an OS sandbox. Observed source changes reject the result as
+`source_changed`; a passing check that changes the candidate rejects it as
+`verification_changed`; snapshot errors produce `integrity_check_failed`.
+The original executor/check exit codes are preserved. `timeout_seconds` gives
+the per-phase deadline; expiry records exit 124. Real exit 125 remains failure.
+See [the experiment guide](../docs/collegial-experiment.md) for scope and limits.
 
 ### Reference pattern
 

@@ -172,6 +172,7 @@ experiment with.
 | **chat** / **focus** | Messages and goals on an identity's trajectory |
 | **mem** / **skills** | File-based memory store and SKILL.md-based abilities |
 | **recap** | Summarizes a trajectory into themes and episodes |
+| **coding-agent** | Delegates a bounded coding task to OpenCode, verifies candidate/source integrity, and retains evidence ([experiment guide](docs/collegial-experiment.md)) |
 | **shellm-docker** | Constrained docker facade staged into sandbox containers for generated code |
 | **glob** / **view** / **put** / **sub** | Small file tools the agent uses instead of the sharp edges of coreutils |
 

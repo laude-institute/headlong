@@ -159,7 +159,7 @@ _SHELLM_CONTAINER=""
 _SHELLM_WORKDIR_USER=""
 _SHELLM_DOCKER_BROKER_DIR=""
 _SHELLM_DOCKER_BROKER_TRANSPORT=""
-_SHELLM_TOOL_MOUNTS_VERSION=2
+_SHELLM_TOOL_MOUNTS_VERSION=3
 _SHELLM_EXTRA_VARS=()
 _SHELLM_EXTRA_BINS=()
 
@@ -710,7 +710,7 @@ docker_prepare_container_tools() {
     [[ "${_SHELLM_DOCKER_MODE:-0}" -eq 1 ]] || return 0
 
     local tool tool_path
-    for tool in llm traj context; do
+    for tool in llm traj context coding-agent; do
         tool_path=$(resolve_shellm_tool_path "$shellm_path" "$tool" || true)
         [[ -n "$tool_path" ]] || continue
         local dest="/usr/local/bin/$tool"
@@ -739,7 +739,7 @@ docker_prepare_container_tools() {
 docker_container_has_unusable_tool_mounts() {
     local container_id="$1"
     local tool dest
-    for tool in llm traj context; do
+    for tool in llm traj context coding-agent; do
         dest="/usr/local/bin/$tool"
         if docker exec -w / "$container_id" sh -c "mount | grep -F ' on $dest ' >/dev/null 2>&1" >/dev/null 2>&1; then
             if ! docker exec -w / "$container_id" test -x "$dest" >/dev/null 2>&1; then
@@ -1052,10 +1052,10 @@ docker_setup() {
     fi
     local -a extra_mounts=()
     local -a seen_dirs=("$runs_mount")
-    local -a install_packages=(jq curl python3 tmux sudo)
+    local -a install_packages=(jq curl git python3 tmux sudo)
 
     local tool tool_path
-    local -a shellm_tools=(llm traj context shellm-explore headlong skills mem shellm-docker shellm-docker-broker)
+    local -a shellm_tools=(llm traj context coding-agent opencode shellm-explore headlong skills mem shellm-docker shellm-docker-broker)
     for tool in "${shellm_tools[@]}"; do
         tool_path=$(resolve_shellm_tool_path "$shellm_path" "$tool" || true)
         [[ -n "$tool_path" ]] || continue

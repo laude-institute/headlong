@@ -34,7 +34,6 @@ mk() { printf -- '---\nid: x\nsummary: s\ntype: %s\ncreated: %s\n---\n\n%s\n' "$
 mk 2026-08-20-00-00-00_a1_gh   fact "2026-08-20 00:00:00" "GitHub write on this box: gh is logged in as headlong42, pull-only on laude-institute"
 mk 2026-08-21-00-00-00_b2_disp fact "2026-08-21 00:00:00" "The dispatcher token file arms the wake and lives under run/"
 mk 2026-08-22-00-00-00_c3_todo todo "2026-08-22 00:00:00" "Ping Braden about the temporal test"
-printf '{"step_id":"t1","type":"thought","content":"I should check the github pull-only login headlong42 before the PR work","source":"monolith","ts":"2026-09-04T00:00:00Z"}\n' >> "$TRAJ"
 # A scheduled goal whose one window opened at 00:00 UTC and is always inside
 # the grace period (design/scheduled_goals.md).
 export SCHEDULE_GRACE_MIN=1440
@@ -57,6 +56,9 @@ printf '{"step_id":"m1","type":"message","from":"testid","to":"slack-C0BMVH6LM4K
 printf '{"step_id":"d1","type":"delivery","source":"slack-bridge","transport":"slack","trigger_step":"m1","status":"delivered","channel":"C0BMVH6LM4K","ts":"%s"}\n' "$now_ts" >> "$TRAJ"
 printf '{"step_id":"m2","type":"message","from":"testid","to":"slack-nick","content":"lost note","source":"chat","ts":"%s"}\n' "$now_ts" >> "$TRAJ"
 printf '{"step_id":"d2","type":"delivery","source":"slack-bridge","transport":"slack","trigger_step":"m2","status":"failed","reason":"unknown slack address form","ts":"%s"}\n' "$now_ts" >> "$TRAJ"
+# Keep the thought this test expects to drive retrieval in the latest three
+# stream entries; the outbound fixture above would otherwise bury it.
+printf '{"step_id":"t1","type":"thought","content":"I should check the github pull-only login headlong42 before the PR work","source":"monolith","ts":"%s"}\n' "$now_ts" >> "$TRAJ"
 
 run_step "$WAKE"
 p=$(cat "$STUB_CAPTURE" 2>/dev/null)
