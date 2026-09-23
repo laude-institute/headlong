@@ -253,5 +253,37 @@ coding-agent --repo "$FIXTURE_REPO" --task anything --verify true --out "$FIXTUR
 is "non-ignored source output: rejected" 2 "$?"
 check "non-ignored source output: no worktree created" test ! -e "$FIXTURE_REPO/artifacts/worktree"
 
+# K. A directory-backed gitlink must be fingerprinted or fail closed.
+# Load the production function without running the CLI lifecycle.
+eval "$(sed -n '/^checkout_fingerprint() {$/,/^}$/p' "$REPO/bin/coding-agent")"
+new_fixture submodule_source
+submodule_source="$FIXTURE_REPO"
+new_fixture submodule_parent
+git -C "$FIXTURE_REPO" -c protocol.file.allow=always submodule add -q "$submodule_source" vendor/lib
+git -C "$FIXTURE_REPO" -c user.name=Test -c user.email=test@example.invalid commit -qm submodule
+before=$(checkout_fingerprint "$FIXTURE_REPO")
+is "initialized submodule: initial fingerprint succeeds" 0 "$?"
+printf 'working edit\n' >> "$FIXTURE_REPO/vendor/lib/original.txt"
+after=$(checkout_fingerprint "$FIXTURE_REPO")
+is "initialized submodule: edited fingerprint succeeds" 0 "$?"
+check "initialized submodule: content edit changes fingerprint" test "$before" != "$after"
+
+# Custos's repro: metadata is already absent before either snapshot.
+rm "$FIXTURE_REPO/vendor/lib/.git"
+before=$(checkout_fingerprint "$FIXTURE_REPO" 2>"$WORK/submodule-before.stderr")
+is "broken submodule: initial fingerprint fails closed" 1 "$?"
+printf 'y\n' >> "$FIXTURE_REPO/vendor/lib/original.txt"
+after=$(checkout_fingerprint "$FIXTURE_REPO" 2>"$WORK/submodule-after.stderr")
+is "broken submodule: edited fingerprint fails closed" 1 "$?"
+is "broken submodule: no initial digest emitted" '' "$before"
+is "broken submodule: no edited digest emitted" '' "$after"
+check "broken submodule: diagnostic explains failure" grep -q 'submodule directory lacks .git metadata' "$WORK/submodule-before.stderr"
+coding-agent --repo "$FIXTURE_REPO" --task anything --verify true \
+    --backend-bin "$WORK/bin/opencode-fake" --out "$WORK/broken-submodule-artifacts" \
+    >"$WORK/broken-submodule.stdout" 2>"$WORK/broken-submodule.stderr"
+is "broken submodule: CLI rejects source snapshot" 2 "$?"
+check "broken submodule: CLI reports snapshot failure" grep -q 'could not snapshot source checkout' "$WORK/broken-submodule.stderr"
+check "broken submodule: no worktree created" test ! -e "$WORK/broken-submodule-artifacts/worktree"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

@@ -92,9 +92,12 @@ def snapshot(root):
                 for chunk in iter(lambda: f.read(1024 * 1024), b""):
                     content.update(chunk)
             add(content.digest())
-        elif mode == b"160000" and os.path.exists(os.path.join(full, b".git")):
+        elif mode == b"160000" and stat.S_ISDIR(st.st_mode):
+            # Without metadata Git may discover the parent checkout instead.
+            if not os.path.exists(os.path.join(full, b".git")):
+                raise RuntimeError("submodule directory lacks .git metadata: " + os.fsdecode(path))
             add(snapshot(full).encode())
-        elif not (mode == b"160000" and stat.S_ISDIR(st.st_mode)):
+        else:
             raise RuntimeError("unsupported file type in checkout")
     return digest.hexdigest()
 try:
