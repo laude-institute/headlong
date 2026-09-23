@@ -120,6 +120,9 @@ try:
 except subprocess.TimeoutExpired:
     print("coding-agent: deadline exceeded after " + sys.argv[1] + " seconds", file=sys.stderr)
     for sig in (signal.SIGTERM, signal.SIGKILL):
+        # Darwin rejects killpg on a zombie-only group with EPERM. Reap an
+        # exited leader first, but still signal the group: descendants may live.
+        child.poll()
         try:
             os.killpg(child.pid, sig)
         except ProcessLookupError:

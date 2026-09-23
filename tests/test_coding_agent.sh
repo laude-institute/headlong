@@ -46,6 +46,19 @@ case "${FAKE_OPENCODE_MODE:-success}" in
         (sleep 3; printf 'leaked\n' > "$FAKE_TIMEOUT_MARKER") &
         wait
         ;;
+    executor-timeout-stubborn-child)
+        printf 'implemented\n' > delegated.txt
+        exec python3 - "$FAKE_TIMEOUT_MARKER" <<'PY_CHILD'
+import signal, subprocess, sys, time
+# The descendant inherits ignored TERM before it can race with the deadline.
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+subprocess.Popen([sys.executable, "-c",
+                  "import pathlib, sys, time; time.sleep(4); pathlib.Path(sys.argv[1]).write_text('leaked')",
+                  sys.argv[1]])
+signal.signal(signal.SIGTERM, signal.SIG_DFL)
+time.sleep(30)
+PY_CHILD
+        ;;
     source-commit|source-dirty|source-untracked|source-index|source-branch)
         printf 'implemented\n' > delegated.txt
         case "$FAKE_OPENCODE_MODE" in
@@ -208,6 +221,13 @@ is "verification timeout: exit 124 recorded" 124 "$(printf '%s' "$CASE_JSON" | j
 is "verification timeout: candidate rejected" verification_failed "$(printf '%s' "$CASE_JSON" | jq -r '.status')"
 check "timeout: descendant did not survive to write" test ! -e "$WORK/timeout-leaked"
 check "timeout: DAG validates" env TRAJ_DIR="$FIXTURE_TRAJ_DIR" TRAJ_ID="$FIXTURE_PARENT" traj check -r
+
+# Reaping a leader must not skip KILL for descendants that ignored TERM.
+run_case stubborn_child executor-timeout-stubborn-child 'test -f delegated.txt' 1
+is "stubborn child: timeout exit preserved" 124 "$(printf '%s' "$CASE_JSON" | jq -r '.executor_exit_status')"
+is "stubborn child: candidate rejected" executor_failed "$(printf '%s' "$CASE_JSON" | jq -r '.status')"
+sleep 3
+check "stubborn child: killed after leader exited" test ! -e "$WORK/timeout-leaked"
 
 # H. No-op and artifact reuse must not look like new accepted work.
 run_case no_changes no-op true
