@@ -9,7 +9,7 @@
 [![CI](https://github.com/laude-institute/headlong/actions/workflows/ci.yml/badge.svg)](https://github.com/laude-institute/headlong/actions/workflows/ci.yml)
 
 **Headlong** is an open source agent microharness, a complete agent harness
-with a core of about 11K lines of Bash.
+with a core of under 12K lines of Bash.
 
 [Launch post](https://www.laude.org/updates/headlong-a-microharness-for-persistent-agents) |
 [Announcement](https://x.com/andykonwinski/status/2091990178638496195)
@@ -158,7 +158,7 @@ Headlong also gives an agent a few convenience tools, such as a way to
 distill and codify its experience (`mem`) and a way to save and reuse
 procedures for specialized tasks (`skills`). The core is the tools the
 running mind executes, the executables in `bin/` plus the thought
-processes in `thinkers/`, and it comes to about 11K lines by cloc's count (capped at 11.5K). A
+processes in `thinkers/`, and it stays under 12K lines by cloc's count (enforced in CI). A
 harness this small can be read end to end, and it is easy to modify and
 experiment with.
 

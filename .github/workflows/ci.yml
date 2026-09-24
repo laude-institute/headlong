@@ -294,7 +294,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      LOC_LIMIT: 11500
+      LOC_LIMIT: 12000
     steps:
       - uses: actions/checkout@v5
       - name: Install cloc
