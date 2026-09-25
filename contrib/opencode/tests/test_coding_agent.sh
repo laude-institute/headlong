@@ -5,7 +5,8 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(dirname "$HERE")"
-export PATH="$REPO/bin:$PATH"
+export PATH="$REPO/../../bin:$PATH"
+export SHELLM_THINKER_ENV=local
 
 pass=0
 fail=0
@@ -81,6 +82,12 @@ PY_CHILD
 esac
 FAKE
 chmod +x "$WORK/bin/opencode-fake"
+export CODING_AGENT_OPENCODE_BIN="$WORK/bin/opencode-fake"
+mkdir -p "$WORK/identity"
+touch "$WORK/identity/core_identity_prompt.md"
+"$REPO/bin/headlong-opencode" install --identity "$WORK/identity" >/dev/null
+"$REPO/bin/headlong-opencode" enable --identity "$WORK/identity" >/dev/null
+export PATH="$WORK/identity/extensions/opencode/bin:$PATH"
 
 new_fixture() {
     local name="$1"
@@ -255,7 +262,7 @@ check "non-ignored source output: no worktree created" test ! -e "$FIXTURE_REPO/
 
 # K. A directory-backed gitlink must be fingerprinted or fail closed.
 # Load the production function without running the CLI lifecycle.
-eval "$(sed -n '/^checkout_fingerprint() {$/,/^}$/p' "$REPO/bin/coding-agent")"
+eval "$(sed -n '/^checkout_fingerprint() {$/,/^}$/p' "$REPO/libexec/coding-agent.sh")"
 new_fixture submodule_source
 submodule_source="$FIXTURE_REPO"
 new_fixture submodule_parent

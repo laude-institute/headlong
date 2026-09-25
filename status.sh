@@ -19,7 +19,7 @@ cmd_for() {        # cmd_for <identity> — how to address it from THIS shell
     if [[ -L "$PREFIX/$1" && "$(readlink "$PREFIX/$1")" == */persona ]]; then printf '%s%s' "$BIN" "$1"
     else printf '%spersona %s' "$BIN" "$1"; fi
 }
-TOOLS=(shellm shellm-docker skills mem llm context traj thinkers chat recap coding-agent
+TOOLS=(shellm shellm-docker skills mem llm context traj thinkers chat recap
        shellm-docker-broker identity shellm-explore headlong-skills headlong-init headlong-killall persona headlong-web
        headlong-slack-bridge headlong-telegram-bridge headlong-tui)
 # Process shapes, same as headlong-killall (the source of truth) and

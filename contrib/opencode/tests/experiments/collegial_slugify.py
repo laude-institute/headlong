@@ -30,7 +30,8 @@ def main():
         parser.error("--out must be new or empty; preserve earlier experiment evidence")
     out.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    env["PATH"] = str(ROOT / "bin") + os.pathsep + env["PATH"]
+    env["PATH"] = str(ROOT.parents[1] / "bin") + os.pathsep + env["PATH"]
+    env["SHELLM_THINKER_ENV"] = "local"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["TRAJ_DIR"] = str(out / "trajectories")
     env.pop("TRAJ_ID", None)
@@ -38,6 +39,12 @@ def main():
     def run(argv, **kw):
         return subprocess.run([str(x) for x in argv], env=env, text=True,
                               capture_output=True, check=True, **kw)
+
+    identity = out / "identity"
+    identity.mkdir()
+    (identity / "core_identity_prompt.md").touch()
+    run([ROOT / "bin/headlong-opencode", "install", "--identity", identity])
+    env["PATH"] = str(identity / "extensions/opencode/bin") + os.pathsep + env["PATH"]
 
     repo = out / "source"
     shutil.copytree(ROOT / "tests/fixtures/collegial-slugify", repo)
@@ -62,6 +69,8 @@ def main():
         backend.write_text("#!/usr/bin/env python3\nfrom pathlib import Path\n"
                            + "Path('slugify.py').write_text(" + repr(implementation) + ")\n")
         backend.chmod(0o755)
+        env["CODING_AGENT_OPENCODE_BIN"] = str(backend)
+        run([ROOT / "bin/headlong-opencode", "enable", "--identity", identity])
         verify = shlex.join([sys.executable, str(checker), ".", "--mode", mode])
         completed = run(["coding-agent", "--repo", target, "--task", task,
                          "--verify", verify, "--backend-bin", backend,

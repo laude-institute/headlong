@@ -18,7 +18,4 @@ and every pull request, alongside the pytest suites in `web/`, `slack/`,
 and `telegram/`, the viewer tests/typecheck/build, `cargo check` for the TUI,
 and shellcheck at warning level.
 
-`experiments/collegial_slugify.py --out /tmp/fresh-slugify-run` retains an offline
-delegation, semantic rejection, and revision experiment. It uses real worktrees
-and trajectories with fake executors; it makes no autonomous claim and no API
-calls. See [the experiment guide](../docs/collegial-experiment.md).
+`test_contrib_opencode.sh` runs the optional package’s offline lifecycle, integrity, and scripted rejection/revision tests. See [package setup](../contrib/opencode/README.md).

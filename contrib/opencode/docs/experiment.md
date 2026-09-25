@@ -1,3 +1,5 @@
+> This integration is optional. Follow [package setup](../README.md) first; invoke the installed wrapper by its absolute path. Historical results below predate optional packaging.
+
 # Collegial coding: candidate integrity and a repeatable experiment
 
 `coding-agent` runs a bounded OpenCode task against a committed Git base,
@@ -57,6 +59,8 @@ phase. On expiry the wrapper sends TERM, then KILL after a one-second grace
 period, to that phase's process group, records exit 124, and returns a failure
 through the normal trajectory path. Ordinary descendant processes are stopped;
 a process deliberately detaching into another session can escape that group.
+The same TERM/KILL cleanup runs after successful phase exit, before committing
+or fingerprinting, so ordinary background children cannot mutate a candidate later.
 Git setup/commit operations and snapshot work are outside the phase deadlines.
 A timeout is not a spending cap.
 
@@ -67,7 +71,7 @@ parent trajectory below that directory. JSON is printed to stdout; redirect it
 to a separate file if desired, not a file inside `--out` before the command runs.
 
 ```bash
-bin/coding-agent --repo /path/to/repo \
+"$IDENTITY_DIR/extensions/opencode/bin/coding-agent" --repo /path/to/repo \
   --task 'A bounded change with explicit requirements' \
   --verify 'PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests' \
   --timeout 120 --out /tmp/new-candidate > /tmp/new-candidate-result.json
@@ -82,7 +86,7 @@ cleanup is manual. The wrapper has no spending cap or automatic retry policy.
 From the repository root:
 
 ```bash
-python3 tests/experiments/collegial_slugify.py \
+python3 contrib/opencode/tests/experiments/collegial_slugify.py \
   --out /tmp/slugify-experiment-1
 ```
 
@@ -110,8 +114,8 @@ Inspect `summary.json`, `result-1.json`, `result-2.json`, `review-1.json`,
 retained worktrees in the output directory. The summary explicitly records
 `invocation: scripted_fixture`, `autonomous: false`, and `api_calls: 0`.
 
-The shell-suite regression `tests/test_collegial_experiment.sh` checks the
-outcomes and the parent rejection/revision references. `tests/test_coding_agent.sh`
+The shell-suite regression `contrib/opencode/tests/test_collegial_experiment.sh` checks the
+outcomes and the parent rejection/revision references. `contrib/opencode/tests/test_coding_agent.sh`
 separately covers exit codes, verification mutations, source integrity,
 deadlines, ignored caches, no-op results, and evidence retention.
 

@@ -108,13 +108,16 @@ except Exception as e:
 PY_STATE
 }
 
-# A process group lets a timed-out tool's ordinary descendants be stopped too.
+# Settle ordinary descendants after every phase, including successful exit.
 # Reserve 124 for a deadline; preserve real exit codes, including 125.
 run_bounded() {
-    python3 - "$timeout_seconds" "$@" <<'PY_DEADLINE'
+    local input_file="$1"
+    shift
+    python3 - "$timeout_seconds" "$input_file" "$@" <<'PY_DEADLINE'
 import os, signal, subprocess, sys, time
 try:
-    child = subprocess.Popen(sys.argv[2:], start_new_session=True)
+    child = subprocess.Popen(sys.argv[3:], start_new_session=True,
+                             stdin=open(sys.argv[2], "rb") if sys.argv[2] else subprocess.DEVNULL)
 except OSError as e:
     print("coding-agent: " + str(e), file=sys.stderr)
     sys.exit(127)
@@ -122,6 +125,8 @@ try:
     code = child.wait(timeout=int(sys.argv[1]))
 except subprocess.TimeoutExpired:
     print("coding-agent: deadline exceeded after " + sys.argv[1] + " seconds", file=sys.stderr)
+    code = 124
+finally:
     for sig in (signal.SIGTERM, signal.SIGKILL):
         # Darwin rejects killpg on a zombie-only group with EPERM. Reap an
         # exited leader first, but still signal the group: descendants may live.
@@ -133,7 +138,6 @@ except subprocess.TimeoutExpired:
         if sig == signal.SIGTERM:
             time.sleep(1)
     child.wait()
-    sys.exit(124)
 sys.exit(code if code >= 0 else 128 - code)
 PY_DEADLINE
 }
@@ -176,18 +180,15 @@ if [[ -n "$task" && -n "$task_file" ]]; then
 fi
 if [[ -n "$task_file" ]]; then
     [[ -f "$task_file" ]] || die "task file not found: $task_file"
-    task=$(<"$task_file")
+    [[ -s "$task_file" ]] || die "task file is empty"
 fi
-[[ -n "$task" ]] || die "--task or --task-file is required"
+[[ -n "$task" || -n "$task_file" ]] || die "--task or --task-file is required"
 [[ "$backend" == "opencode" ]] || die "unsupported backend '$backend' (Phase 1 supports opencode)"
 command -v git >/dev/null 2>&1 || die "git is required"
 command -v jq >/dev/null 2>&1 || die "jq is required"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
+command -v perl >/dev/null 2>&1 || die "perl is required"
 traj_bin=$(command -v traj 2>/dev/null || true)
-if [[ -z "$traj_bin" ]]; then
-    script_dir=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)
-    [[ -x "$script_dir/traj" ]] && traj_bin="$script_dir/traj"
-fi
 [[ -n "$traj_bin" ]] || die "traj is required"
 
 repo=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) \
@@ -207,6 +208,13 @@ else
     mkdir -p "$out" || die "could not create output directory: $out"
 fi
 out=$(cd "$out" 2>/dev/null && pwd -P) || die "could not resolve output directory: $out"
+
+if [[ -n "$task_file" ]]; then
+    cp "$task_file" "$out/task.md" || die "could not retain task file"
+else
+    printf '%s' "$task" > "$out/task.md"
+fi
+task_file="$out/task.md"
 
 case "$out/" in
     "$repo/"*) git -C "$repo" check-ignore -q -- "$out/" \
@@ -239,7 +247,7 @@ verification_stderr="$out/verification.stderr"
 patch_file="$out/candidate.patch"
 
 delegation=$(jq -nc \
-    --arg task "$task" --arg backend "$backend" --arg model "$model" \
+    --rawfile task "$task_file" --arg backend "$backend" --arg model "$model" \
     --arg repo "$repo" --arg base "$base_commit" --arg verify "$verify" \
     --arg worktree "$worktree" --arg branch "$branch" --arg out "$out" \
     --arg parent "$parent_traj" --arg child "$child_traj" --argjson timeout "$timeout_seconds" \
@@ -279,16 +287,12 @@ if [[ "$worktree_rc" -eq 0 ]]; then
         : >"$executor_stdout"
         executor_rc=127
     else
-        executor_prompt="Implement this bounded software-engineering task in the current Git worktree:
-
-$task
-
-Acceptance criteria are evaluated independently after you stop with:
-$verify
-
-You may edit files and run tests in this worktree. Do not access files outside
-the current worktree. Do not push, deploy, merge, or modify another checkout.
-Finish after producing the best implementation you can; do not merely propose it."
+        {
+            printf '%s\n\n' 'Implement this bounded software-engineering task in the current Git worktree:'
+            cat "$task_file"
+            printf '\n\nAcceptance criteria are evaluated independently after you stop with:\n%s\n' "$verify"
+            printf '%s\n' 'You may edit files and run tests in this worktree. Do not access files outside' 'the current worktree. Do not push, deploy, merge, or modify another checkout.' 'Finish after producing the best implementation you can; do not merely propose it.'
+        } > "$out/executor.prompt"
         model_args=()
         [[ -n "$model" ]] && model_args=(--model "$model")
         # Inline config has higher precedence than project config. Keep the
@@ -319,8 +323,8 @@ Finish after producing the best implementation you can; do not merely propose it
             unset HEADLONG_HOME SHELLM_HOME SHELLM_CONF_DIR IDENTITY_DIR MEM_DIR SKILLS_DIR \
                 SKILLS_KERNEL_DIR TRAJ_DIR TRAJ_ID ROOT_TRAJ_ID CHATRC
             OPENCODE_CONFIG_CONTENT="$opencode_guard" \
-                run_bounded "$resolved_backend" --pure run --format json \
-                "${model_args[@]+"${model_args[@]}"}" "$executor_prompt"
+                run_bounded "$out/executor.prompt" "$resolved_backend" --pure run --format json \
+                "${model_args[@]+"${model_args[@]}"}"
         ) >"$executor_stdout" 2>"$executor_stderr" || executor_rc=$?
     fi
     redact_file "$executor_stdout"
@@ -356,7 +360,7 @@ Finish after producing the best implementation you can; do not merely propose it
     verification_rc=0
     (
         cd "$worktree" || exit 125
-        run_bounded bash -c "$verify"
+        run_bounded "" bash -c "$verify"
     ) >"$verification_stdout" 2>"$verification_stderr" || verification_rc=$?
     verification_after=$(checkout_fingerprint "$worktree") || integrity_rc=$?
     if [[ "$integrity_rc" -eq 0 && "$verification_before" == "$verification_after" ]]; then
@@ -399,7 +403,7 @@ candidate=false
 [[ "$status" == "candidate" ]] && candidate=true
 
 result=$(jq -nc \
-    --arg status "$status" --arg task "$task" --arg backend "$backend" --arg model "$model" \
+    --arg status "$status" --rawfile task "$task_file" --arg backend "$backend" --arg model "$model" \
     --arg base "$base_commit" --arg commit "$candidate_commit" --arg verify "$verify" \
     --arg branch "$branch" --arg worktree "$worktree" --arg out "$out" --arg patch "$patch_file" \
     --arg executor_stdout_ref "$executor_stdout" --arg executor_stderr_ref "$executor_stderr" \

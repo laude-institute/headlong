@@ -4,8 +4,7 @@ set -euo pipefail
 # monolith/step — The whole mind in one thinker.
 #
 # Runs the router: every wakeup is one shellm agentic run whose prompt is a
-# function menu (think / act / delegate / learn / recall / goals / values /
-# idle). The
+# function menu (think / act / learn / recall / goals / values / idle). The
 # model picks one function and carries it out in the same run.
 #
 # Chat replies are NOT the monolith's job — a dedicated `responder` thinker owns

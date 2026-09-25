@@ -200,7 +200,8 @@ readers should treat a `thought` carrying `from_traj` as a legacy merge.
 
 #### `delegation` / `delegation-result`
 
-`coding-agent` uses an ordinary forked child trajectory for each external
+The optional [OpenCode package](../contrib/opencode/README.md)
+provides `coding-agent`, which uses an ordinary forked child trajectory for each external
 coding run. Its `delegation` step captures the bounded task and immutable base
 before execution. Its terminal `delegation-result` records the executor and
 independent verification statuses, retained candidate branch/worktree and
@@ -218,7 +219,7 @@ files or an OS sandbox. Observed source changes reject the result as
 `verification_changed`; snapshot errors produce `integrity_check_failed`.
 The original executor/check exit codes are preserved. `timeout_seconds` gives
 the per-phase deadline; expiry records exit 124. Real exit 125 remains failure.
-See [the experiment guide](../docs/collegial-experiment.md) for scope and limits.
+See [the experiment guide](../contrib/opencode/docs/experiment.md) for scope and limits.
 
 ### Reference pattern
 

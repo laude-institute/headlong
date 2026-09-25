@@ -9,7 +9,7 @@
 [![CI](https://github.com/laude-institute/headlong/actions/workflows/ci.yml/badge.svg)](https://github.com/laude-institute/headlong/actions/workflows/ci.yml)
 
 **Headlong** is an open source agent microharness, a complete agent harness
-with a core of under 12K lines of Bash.
+with a core of about 11K lines of Bash.
 
 [Launch post](https://www.laude.org/updates/headlong-a-microharness-for-persistent-agents) |
 [Announcement](https://x.com/andykonwinski/status/2091990178638496195)
@@ -158,7 +158,7 @@ Headlong also gives an agent a few convenience tools, such as a way to
 distill and codify its experience (`mem`) and a way to save and reuse
 procedures for specialized tasks (`skills`). The core is the tools the
 running mind executes, the executables in `bin/` plus the thought
-processes in `thinkers/`, and it stays under 12K lines by cloc's count (enforced in CI). A
+processes in `thinkers/`, and it comes to about 11K lines by cloc's count (capped at 11.5K). A
 harness this small can be read end to end, and it is easy to modify and
 experiment with.
 
@@ -172,9 +172,10 @@ experiment with.
 | **chat** / **focus** | Messages and goals on an identity's trajectory |
 | **mem** / **skills** | File-based memory store and SKILL.md-based abilities |
 | **recap** | Summarizes a trajectory into themes and episodes |
-| **coding-agent** | Delegates a bounded coding task to OpenCode, verifies candidate/source integrity, and retains evidence ([experiment guide](docs/collegial-experiment.md)) |
 | **shellm-docker** | Constrained docker facade staged into sandbox containers for generated code |
 | **glob** / **view** / **put** / **sub** | Small file tools the agent uses instead of the sharp edges of coreutils |
+
+Optional integrations live in [contrib](contrib/README.md), including the opt-in [OpenCode coding experiment](contrib/opencode/README.md).
 
 Everything you run *around* the mind lives in `tools/`:
 

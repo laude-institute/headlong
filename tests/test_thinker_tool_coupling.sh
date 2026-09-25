@@ -56,7 +56,7 @@ fi
 # These are the core/convenience executables README.md says the running mind
 # uses. thinkers is the host dispatcher, so it intentionally is not staged into
 # generated-code sandboxes.
-required=(mem traj skills context llm shellm chat recap coding-agent)
+required=(mem traj skills context llm shellm chat recap)
 for tool in "${required[@]}"; do
     path=$(command -v "$tool" 2>/dev/null || true)
     if [[ -z "$path" ]]; then
