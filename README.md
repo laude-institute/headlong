@@ -175,6 +175,8 @@ experiment with.
 | **shellm-docker** | Constrained docker facade staged into sandbox containers for generated code |
 | **glob** / **view** / **put** / **sub** | Small file tools the agent uses instead of the sharp edges of coreutils |
 
+Optional integrations live in [contrib](contrib/README.md), including the opt-in [OpenCode coding experiment](contrib/opencode/README.md).
+
 Everything you run *around* the mind lives in `tools/`:
 
 | Tool | What it does |

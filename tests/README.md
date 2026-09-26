@@ -16,4 +16,6 @@ and `curl | bash`) inside throwaway HOME directories.
 CI (`.github/workflows/ci.yml`) runs both of these on every push to main
 and every pull request, alongside the pytest suites in `web/`, `slack/`,
 and `telegram/`, the viewer tests/typecheck/build, `cargo check` for the TUI,
-and shellcheck at error level.
+and shellcheck at warning level.
+
+`test_contrib_opencode.sh` runs the optional package’s offline lifecycle, integrity, and scripted rejection/revision tests. See [package setup](../contrib/opencode/README.md).

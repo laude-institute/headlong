@@ -187,7 +187,7 @@ jobs:
       - name: bash -n parse under 3.2
         run: |
           set -euo pipefail
-          files=$( { git ls-files -z bin thinkers tools tests install.sh uninstall.sh status.sh | xargs -0 grep -lE '^#!.*\b(ba)?sh\b' ; git ls-files 'bin/*.sh' 'thinkers/*.sh' 'tools/*.sh' 'tests/*.sh'; } | sort -u)
+          files=$( { git ls-files -z bin thinkers tools tests contrib install.sh uninstall.sh status.sh | xargs -0 grep -lE '^#!.*\b(ba)?sh\b' ; git ls-files 'bin/*.sh' 'thinkers/*.sh' 'tools/*.sh' 'tests/*.sh'; } | sort -u)
           echo "$files" | wc -l | xargs echo "parsing files:"
           rc=0
           for f in $files; do bash -n "$f" || { echo "::error file=$f::does not parse under bash 3.2"; rc=1; }; done
@@ -200,7 +200,7 @@ jobs:
         # mapfile, and plain arrays or a lookup function for declare -A.
         run: |
           set -euo pipefail
-          files=$( { git ls-files -z bin thinkers tools tests install.sh uninstall.sh status.sh | xargs -0 grep -lE '^#!.*\b(ba)?sh\b' ; git ls-files 'bin/*.sh' 'thinkers/*.sh' 'tools/*.sh' 'tests/*.sh'; } | sort -u)
+          files=$( { git ls-files -z bin thinkers tools tests contrib install.sh uninstall.sh status.sh | xargs -0 grep -lE '^#!.*\b(ba)?sh\b' ; git ls-files 'bin/*.sh' 'thinkers/*.sh' 'tools/*.sh' 'tests/*.sh'; } | sort -u)
           pat='\$\{[A-Za-z_0-9@*#!]+(\[[^]]*\])?(\^|,)|\$\{[A-Za-z_0-9]+(\[[^]]*\])?@[QEPAaKkULu]\}|(^|[^-a-zA-Z])(declare|local|typeset) +-[a-zA-Z]*A|\b(mapfile|readarray|coproc)\b|\|&|;;&|&>>'
           hits=$(echo "$files" | xargs grep -nE "$pat" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)
           if [[ -n "$hits" ]]; then
