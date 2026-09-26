@@ -1543,13 +1543,14 @@ _kill_exec_tree() {
 # been killed and the direct child reaped. A Docker supervisor publishes its PID
 # so the host can cancel inside the container, not just disconnect its client.
 _supervise_exec() {
-    local code="$1" control_dir="${2:-}" child="" rc=0
+    local code="$1" control_dir="${2:-}" child="" rc=0 code_file=""
     _terminate_exec() {
         trap '' TERM INT HUP
         if [[ -n "$child" ]]; then
             _kill_exec_tree "$child"
             wait "$child" 2>/dev/null || true
         fi
+        [[ -z "$code_file" ]] || rm -f "$code_file"
         exit 143
     }
     trap _terminate_exec TERM INT HUP
@@ -1557,9 +1558,26 @@ _supervise_exec() {
         mkdir -m 700 "$control_dir" || return 1
         printf '%s\n' "$$" > "$control_dir/pid"
     fi
-    bash -e -c "$code" </dev/null &
+    # A generated code block can exceed the kernel's per-argument cap
+    # (MAX_ARG_STRLEN, 128KB on Linux). Handing it to `bash -c "$code"` then
+    # fails the exec itself: rc=126 "Argument list too long", the step never
+    # runs, and the wake dies with nothing durable (live 2026-09-26). Above
+    # the threshold, run bash on a script file instead of an argv string.
+    # The mktemp file is mode 600, stricter than an argv string, which any
+    # user can read through ps. Size is measured in bytes: ${#code} counts
+    # characters, so multibyte UTF-8 code could slip past the cap.
+    local code_bytes
+    code_bytes=$(printf '%s' "$code" | wc -c)
+    if [[ "$code_bytes" -gt 65536 ]]; then
+        code_file=$(mktemp "${TMPDIR:-/tmp}/shellm-code.XXXXXX") || return 1
+        printf '%s' "$code" > "$code_file"
+        bash -e "$code_file" </dev/null &
+    else
+        bash -e -c "$code" </dev/null &
+    fi
     child=$!
     wait "$child" || rc=$?
+    [[ -z "$code_file" ]] || rm -f "$code_file"
     trap - TERM INT HUP
     return "$rc"
 }
@@ -3182,15 +3200,25 @@ exit \$__shellm_rc
         _stdout_tmp=$(mktemp)
         printf '%s' "$clean_output" > "$_stdout_tmp"
 
-        # Record reasoning step (assistant role in multi-turn)
-        local reasoning_json
+        # Record reasoning step (assistant role in multi-turn). --rawfile, not
+        # --arg: both a full-budget thinking block and the extracted code block
+        # can exceed the kernel's per-argument cap (MAX_ARG_STRLEN, 128KB), and
+        # jq then dies before it starts, so the run ends with no step record at
+        # all (live 2026-09-26, "jq: Argument list too long"). Same pattern as
+        # the prompt, feedback, and shell-output records.
+        local reasoning_json _reasoning_thought_tmp _reasoning_cmd_tmp
+        _reasoning_thought_tmp=$(mktemp)
+        _reasoning_cmd_tmp=$(mktemp)
+        printf '%s' "$reasoning" > "$_reasoning_thought_tmp"
+        printf '%s' "$code" > "$_reasoning_cmd_tmp"
         reasoning_json=$(jq -n \
-            --arg thought "$reasoning" \
-            --arg cmd "$code" \
+            --rawfile thought "$_reasoning_thought_tmp" \
+            --rawfile cmd "$_reasoning_cmd_tmp" \
             --arg run_id "$_run_step_id" \
             --argjson llm_s "$_llm_s" \
             --argjson usage "$_usage_extra" \
             '{type:"reasoning", thought:$thought, cmd:$cmd, run_id:$run_id, llm_s:$llm_s} + $usage')
+        rm -f "$_reasoning_thought_tmp" "$_reasoning_cmd_tmp"
         printf '%s' "$reasoning_json" | traj append --traj_dir "$_run_traj_dir" "$_run_traj_id" >/dev/null
 
         # Record shell-output step (user role in multi-turn)
@@ -3239,9 +3267,15 @@ exit \$__shellm_rc
             progress "Final answer received"
             local final_answer
             final_answer=$(cat "$final_path")
+            # --rawfile, not --arg: a full-budget final answer can exceed the
+            # kernel's 128KB per-argument cap and kill jq with "Argument list
+            # too long" (rc=126), same class as the reasoning record above.
+            local _final_tmp
+            _final_tmp=$(mktemp)
+            printf '%s' "$final_answer" > "$_final_tmp"
             rm -f "$final_path"
             printf '%s' "$(jq -n \
-                --arg content "$final_answer" \
+                --rawfile content "$_final_tmp" \
                 --arg run_id "$_run_step_id" \
                 '{type:"final", content:$content, run_id:$run_id}')" \
                 | traj append --traj_dir "$_run_traj_dir" "$_run_traj_id" >/dev/null
@@ -3257,13 +3291,14 @@ exit \$__shellm_rc
                 _child_dir_name=$(basename "$run_name")
                 _from_traj_ref="$_child_dir_name"
                 jq -nc \
-                    --arg content "$final_answer" \
+                    --rawfile content "$_final_tmp" \
                     --arg from_traj "$_run_traj_id" \
                     --arg from_step "${_last_step_id:-}" \
                     --arg from_traj_ref "$_from_traj_ref" \
                     '{type:"merge", content:$content, from_traj:$from_traj, from_step:$from_step, from_traj_ref:$from_traj_ref}' \
                     | traj append --traj_dir "$_run_traj_dir" "$_SHELLM_PARENT_TRAJ_ID" >/dev/null 2>/dev/null || true
             fi
+            rm -f "$_final_tmp"
             return 0
         fi
 
