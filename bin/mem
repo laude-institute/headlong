@@ -412,6 +412,16 @@ action_edit() {
         esac
     done
 
+    # A flag mem edit does not know must not become the body: three times
+    # (2026-09-24 19:39Z, 2026-09-25 15:41Z, 2026-09-26 00:04Z) a body meant
+    # to follow --apply ran as `mem edit <id> --apply <body>` and the bare
+    # --apply token silently became the whole memory, exit 0. Same guard as
+    # mem add (PR 134): text that truly starts with a dash goes on stdin.
+    if [[ "${1:-}" == -* ]]; then
+        die "edit: unknown option '$1'. mem edit takes only --slug, then the text:
+  mem edit <id> [--slug SLUG] <text>      (or the text on stdin)"
+    fi
+
     local text="$*"
     if [[ -z "$text" ]]; then
         text=$(cat)
