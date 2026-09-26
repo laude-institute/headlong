@@ -423,7 +423,9 @@ for selection in default environment argument secret_path; do
         "${args[@]+"${args[@]}"}" --out "$WORK/backend-$selection" 2>"$WORK/backend-$selection.stderr")
     is "$selection backend: candidate returned" candidate "$(printf '%s' "$backend_result" | jq -r .status)"
     resolved_fake=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$WORK/bin/opencode-fake")
-    [[ "$selection" == secret_path ]] && resolved_fake="$WORK/bin/backend-<redacted-api-key>"
+    # Keep the resolved parent: macOS's temporary directory may use /var,
+    # whose canonical path starts with /private/var.
+    [[ "$selection" == secret_path ]] && resolved_fake="${resolved_fake%/*}/backend-<redacted-api-key>"
     is "$selection backend: result records resolved executable" "$resolved_fake" "$(printf '%s' "$backend_result" | jq -r .backend_executable)"
     backend_child="$WORK/backend-$selection/trajectories/$(printf '%s' "$backend_result" | jq -r .child_traj_ref)"
     is "$selection backend: delegation records executable" "$resolved_fake" "$(jq -r 'select(.type == "delegation") | .backend_executable' "$backend_child")"

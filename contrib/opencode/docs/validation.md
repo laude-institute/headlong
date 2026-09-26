@@ -8,6 +8,16 @@ Bash 3.2.57 was built locally and placed first on PATH so the installed wrapper
 and its subprocesses also used it. All seven package shell files pass ShellCheck
 at warning severity and Bash 3.2 syntax checks; `git diff --check` is clean.
 
+[Native macOS CI](https://github.com/laude-institute/headlong/actions/runs/36252719406/job/108433643487)
+at `0c10540` exposed two failures in the credential-in-path
+regression: its expected path used `/var/...` while the wrapper correctly
+recorded `/private/var/...`. The expectation now retains the resolved parent
+directory. A Linux reproduction using Bash 3.2 and a symlinked `TMPDIR`
+confirmed the path mismatch before this test correction.
+After correction, the complete package suite passes with that same symlinked
+`TMPDIR`: 231 assertions, the rejection/revision experiment, and lifecycle
+checks. ShellCheck and Bash 3.2 syntax checks also pass.
+
 The added regressions exercise the installed public wrapper:
 
 - Sanitizer failure on each executor/verifier stream and on every pass, including
