@@ -1,3 +1,36 @@
+# Review fixes validation (2026-09-26)
+
+This pass starts from PR head `602d9166` and addresses the maintainer's remaining
+review requests within the optional package. On Linux ARM64, the package suite
+passes all 231 coding-agent assertions, the scripted rejection/revision
+experiment, and lifecycle checks under both Bash 5.2.21 and Bash 3.2.57.
+Bash 3.2.57 was built locally and placed first on PATH so the installed wrapper
+and its subprocesses also used it. All seven package shell files pass ShellCheck
+at warning severity and Bash 3.2 syntax checks; `git diff --check` is clean.
+
+The added regressions exercise the installed public wrapper:
+
+- Sanitizer failure on each executor/verifier stream and on every pass, including
+  partial raw output, returns a failure and never a candidate. The synthetic key
+  is absent from returned results, trajectories, and published transcript files.
+  Full output stays in sanitized artifacts; trajectory excerpts are bounded.
+- Backend-captured inline configuration preserves caller model, provider URL,
+  credentials, and permission rules while adding package restrictions. Unset
+  configuration receives defaults; malformed, empty, and non-object values fail
+  before backend invocation without echoing credentials.
+- With `core.fileMode=false`, both executable-only changes and executable changes
+  alongside added files are committed correctly. Each exact candidate verifies
+  in a fresh detached worktree. A post-commit hook mode mismatch is rejected.
+- Rejected output paths leave no task file or new directory, preserve existing
+  content and source status, and respect symlink resolution. Temporary default
+  directories inside a non-ignored source path are removed on rejection.
+- Default, environment, and explicit backend selection record the resolved
+  executable. Overrides announce themselves; notices and records redact a
+  synthetic credential even when it appears in the executable's filename.
+
+The earlier complete core-suite and native macOS results remain historical.
+No live provider calls or Docker integration runs were made for this review pass.
+
 # Optional packaging validation (2026-09-25)
 
 Validation ran on Linux ARM64, from PR head `95551e9` plus the optional-package

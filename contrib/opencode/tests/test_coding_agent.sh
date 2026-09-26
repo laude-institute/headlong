@@ -23,7 +23,26 @@ cat > "$WORK/bin/opencode-fake" <<'FAKE'
 #!/usr/bin/env bash
 set -u
 printf '{"event":"fake-start","secret":"%s"}\n' "${OPENROUTER_API_KEY:-}"
+printf 'executor diagnostic: %s\n' "${OPENROUTER_API_KEY:-}" >&2
+if [[ -n "${CONFIG_CAPTURE:-}" ]]; then
+    printf '%s' "$OPENCODE_CONFIG_CONTENT" > "$CONFIG_CAPTURE"
+fi
 case "${FAKE_OPENCODE_MODE:-success}" in
+    mode-change|mode-only|mode-hook)
+        chmod +x run.sh
+        if [[ "$FAKE_OPENCODE_MODE" != mode-only ]]; then
+            printf 'implemented\n' > delegated.txt
+        fi
+        if [[ "$FAKE_OPENCODE_MODE" == mode-hook ]]; then
+            hook=$(git rev-parse --git-path hooks/post-commit)
+            printf '#!/bin/sh\nchmod -x run.sh\n' > "$hook"
+            chmod +x "$hook"
+        fi
+        ;;
+    verbose)
+        printf 'implemented\n' > delegated.txt
+        python3 -c 'print("x" * 12000 + "END-OF-FULL-TRANSCRIPT")'
+        ;;
     success)
         printf 'implemented\n' > delegated.txt
         printf '{"event":"fake-complete"}\n'
@@ -111,6 +130,12 @@ run_case() {
     case "$mode" in
         source-dirty|source-index|dirty-unchanged) printf 'initial dirty content\n' > "$FIXTURE_REPO/original.txt" ;;
         source-untracked) printf 'initial untracked content\n' > "$FIXTURE_REPO/untracked.txt" ;;
+        mode-*)
+            printf '#!/bin/sh\nexit 0\n' > "$FIXTURE_REPO/run.sh"
+            git -C "$FIXTURE_REPO" add run.sh
+            git -C "$FIXTURE_REPO" -c user.name=Test -c user.email=test@example.invalid commit -qm script
+            git -C "$FIXTURE_REPO" config core.fileMode false
+            ;;
     esac
     [[ "$mode" == dirty-unchanged ]] && mode=success
     local out="$WORK/$name/artifacts"
@@ -259,6 +284,27 @@ is "invalid deadline: rejected" 2 "$?"
 coding-agent --repo "$FIXTURE_REPO" --task anything --verify true --out "$FIXTURE_REPO/artifacts" >"$WORK/placement.stdout" 2>"$WORK/placement.stderr"
 is "non-ignored source output: rejected" 2 "$?"
 check "non-ignored source output: no worktree created" test ! -e "$FIXTURE_REPO/artifacts/worktree"
+check "non-ignored source output: no task file written" test ! -e "$FIXTURE_REPO/artifacts/task.md"
+check "non-ignored source output: no empty directory left" test ! -e "$FIXTURE_REPO/artifacts"
+is "non-ignored source output: source remains clean" '' "$(git -C "$FIXTURE_REPO" status --porcelain)"
+mkdir "$FIXTURE_REPO/preexisting"
+for placement in preexisting nested/artifacts; do
+    coding-agent --repo "$FIXTURE_REPO" --task anything --verify true --out "$FIXTURE_REPO/$placement" >"$WORK/placement.stdout" 2>"$WORK/placement.stderr"
+    is "$placement: rejected" 2 "$?"
+    check "$placement: no task written" test ! -e "$FIXTURE_REPO/$placement/task.md"
+done
+check "pre-existing empty output: preserved" test -d "$FIXTURE_REPO/preexisting"
+check "nested output: no parent directory left" test ! -e "$FIXTURE_REPO/nested"
+printf 'keep\n' > "$FIXTURE_REPO/preexisting/keep.txt"
+placement_before=$(git -C "$FIXTURE_REPO" status --porcelain)
+ln -s "$FIXTURE_REPO/preexisting" "$WORK/output-alias"
+coding-agent --repo "$FIXTURE_REPO" --task anything --verify true --out "$WORK/output-alias" >"$WORK/placement.stdout" 2>"$WORK/placement.stderr"
+is "source output symlink: rejected" 2 "$?"
+is "pre-existing output: content preserved" keep "$(cat "$FIXTURE_REPO/preexisting/keep.txt")"
+is "source output symlink: status unchanged" "$placement_before" "$(git -C "$FIXTURE_REPO" status --porcelain)"
+TMPDIR="$FIXTURE_REPO" coding-agent --repo "$FIXTURE_REPO" --task anything --verify true >"$WORK/placement.stdout" 2>"$WORK/placement.stderr"
+is "default output in source: rejected" 2 "$?"
+is "default output in source: temporary directory removed" '' "$(find "$FIXTURE_REPO" -maxdepth 1 -name 'headlong-coding-agent.*' -print)"
 
 # K. A directory-backed gitlink must be fingerprinted or fail closed.
 # Load the production function without running the CLI lifecycle.
@@ -291,6 +337,104 @@ coding-agent --repo "$FIXTURE_REPO" --task anything --verify true \
 is "broken submodule: CLI rejects source snapshot" 2 "$?"
 check "broken submodule: CLI reports snapshot failure" grep -q 'could not snapshot source checkout' "$WORK/broken-submodule.stderr"
 check "broken submodule: no worktree created" test ! -e "$WORK/broken-submodule-artifacts/worktree"
+
+# L. Sanitizer failure at every transcript must fail closed, including partial output.
+mkdir "$WORK/sanitizer"
+REAL_PERL=$(command -v perl)
+export REAL_PERL
+cat > "$WORK/sanitizer/perl" <<'FAKE_PERL'
+#!/usr/bin/env python3
+import os, subprocess, sys
+data = sys.stdin.buffer.read()
+if os.environ['FAIL_SANITIZER_MATCH'].encode() in data:
+    sys.stdout.buffer.write(data)
+    sys.exit(3)
+sys.exit(subprocess.run([os.environ['REAL_PERL'], *sys.argv[1:]], input=data).returncode)
+FAKE_PERL
+chmod +x "$WORK/sanitizer/perl"
+for stream in fake-start 'executor diagnostic' 'verification output' 'verification diagnostic' ''; do
+    PATH="$WORK/sanitizer:$PATH" FAIL_SANITIZER_MATCH="$stream" run_case "sanitize-$stream" success \
+        'printf "verification output: %s\n" "$OPENROUTER_API_KEY"; printf "verification diagnostic: %s\n" "$OPENROUTER_API_KEY" >&2'
+    is "$stream sanitizer failure: CLI fails" 1 "$CASE_RC"
+    is "$stream sanitizer failure: status recorded" sanitization_failed "$(printf '%s' "$CASE_JSON" | jq -r .status)"
+    is "$stream sanitizer failure: never a candidate" false "$(printf '%s' "$CASE_JSON" | jq -r .candidate)"
+    is "$stream sanitizer failure: result contains no key" false "$(printf '%s' "$CASE_JSON" | jq 'tostring | contains("test-secret-value")')"
+    check "$stream sanitizer failure: trajectories contain no key" bash -c '! grep -RqF test-secret-value "$1"' _ "$FIXTURE_TRAJ_DIR"
+    check "$stream sanitizer failure: artifacts contain no key" bash -c '! grep -qF test-secret-value "$1"/*.stdout "$1"/*.stderr' _ "$CASE_OUT"
+    is "$stream sanitizer failure: parent sees rejection" sanitization_failed "$(jq -r 'select(.type == "merge") | .delegation_status' "$CASE_PARENT_FILE")"
+    is "$stream sanitizer failure: temporary output discarded" '' "$(find "$CASE_OUT" -name '*.redacted.*' -print)"
+done
+run_case bounded_transcript verbose
+is "verbose transcript: candidate returned" candidate "$(printf '%s' "$CASE_JSON" | jq -r .status)"
+is "verbose transcript: summary is bounded" 4096 "$(printf '%s' "$CASE_JSON" | jq '.executor_stdout_summary | length')"
+check "verbose transcript: complete sanitized artifact retained" grep -q END-OF-FULL-TRANSCRIPT "$CASE_OUT/executor.stdout"
+check "verbose transcript: trajectory omits full output" bash -c '! grep -Rq END-OF-FULL-TRANSCRIPT "$1"' _ "$FIXTURE_TRAJ_DIR"
+is "verbose transcript: legacy full transcript field absent" false "$(printf '%s' "$CASE_JSON" | jq 'has("executor_stdout")')"
+
+# M. Capture the exact config received by the backend through the installed wrapper.
+unset OPENCODE_CONFIG_CONTENT
+CONFIG_CAPTURE="$WORK/config-unset.json" run_case config_unset success
+check "unset config: package restrictions received" jq -e '.share == "disabled" and .permission.task == "deny" and .permission.bash["git push*"] == "deny"' "$WORK/config-unset.json"
+OPENCODE_CONFIG_CONTENT='{"model":"caller/model","provider":{"test":{"options":{"baseURL":"https://provider.invalid/v1","apiKey":"test-secret-value"}}},"permission":{"webfetch":"deny","bash":{"*":"ask","echo *":"deny"}}}' \
+    CONFIG_CAPTURE="$WORK/config-valid.json" run_case config_valid success
+is "valid config: candidate returned" candidate "$(printf '%s' "$CASE_JSON" | jq -r .status)"
+check "valid config: model and provider preserved" jq -e '.model == "caller/model" and .provider.test.options.baseURL == "https://provider.invalid/v1" and .provider.test.options.apiKey == "test-secret-value"' "$WORK/config-valid.json"
+check "valid config: caller restrictions preserved" jq -e '.permission.webfetch == "deny" and .permission.bash["*"] == "ask" and .permission.bash["echo *"] == "deny" and .permission.bash["git push*"] == "deny"' "$WORK/config-valid.json"
+OPENCODE_CONFIG_CONTENT='{"permission":{"bash":"deny"}}' CONFIG_CAPTURE="$WORK/config-bash.json" run_case config_bash success
+check "string bash permission: deny preserved" jq -e '.permission.bash["*"] == "deny"' "$WORK/config-bash.json"
+OPENCODE_CONFIG_CONTENT='{"permission":"deny"}' CONFIG_CAPTURE="$WORK/config-permission.json" run_case config_permission success
+check "string permission: deny preserved" jq -e '.permission["*"] == "deny"' "$WORK/config-permission.json"
+for config in '{"apiKey":"test-secret-value"' '[]' 'null' '' '{} {}'; do
+    OPENCODE_CONFIG_CONTENT="$config" CONFIG_CAPTURE="$WORK/config-invalid.json" \
+        coding-agent --repo "$FIXTURE_REPO" --task anything --verify true --out "$WORK/config-invalid" >"$WORK/config-invalid.stdout" 2>"$WORK/config-invalid.stderr"
+    is "malformed config: rejected" 2 "$?"
+    check "malformed config: clear diagnostic" grep -q 'OPENCODE_CONFIG_CONTENT must be a valid JSON object' "$WORK/config-invalid.stderr"
+    check "malformed config: backend never called" test ! -e "$WORK/config-invalid.json"
+    check "malformed config: no output directory created" test ! -e "$WORK/config-invalid"
+    check "malformed config: diagnostic contains no key" bash -c '! grep -qF test-secret-value "$1"' _ "$WORK/config-invalid.stderr"
+done
+
+# N. The exact candidate must reproduce executable bits in a fresh checkout.
+for mode in mode-change mode-only; do
+    run_case "$mode" "$mode" ./run.sh
+    is "$mode: candidate returned" candidate "$(printf '%s' "$CASE_JSON" | jq -r .status)"
+    is "$mode: executable mode committed" 100755 "$(git -C "$CASE_OUT/worktree" ls-tree HEAD run.sh | cut -d ' ' -f 1)"
+    git -C "$FIXTURE_REPO" worktree add --detach "$WORK/$mode/fresh" "$(printf '%s' "$CASE_JSON" | jq -r .candidate_commit)" >/dev/null 2>&1
+    check "$mode: exact commit verifies in fresh checkout" bash -c 'cd "$1" && ./run.sh' _ "$WORK/$mode/fresh"
+    is "$mode: caller fileMode setting preserved" false "$(git -C "$FIXTURE_REPO" config core.fileMode)"
+done
+run_case mode_hook mode-hook true
+is "mode hook: committed/worktree mismatch rejected" candidate_commit_failed "$(printf '%s' "$CASE_JSON" | jq -r .status)"
+
+# O. Default and override selection identify the resolved executable without keys.
+ln -s "$WORK/bin/opencode-fake" "$WORK/bin/opencode"
+cp "$WORK/bin/opencode-fake" "$WORK/bin/backend-test-secret-value"
+for selection in default environment argument secret_path; do
+    args=()
+    [[ "$selection" == argument ]] && args=(--backend-bin "$WORK/bin/opencode")
+    selected_backend="$WORK/bin/opencode"
+    [[ "$selection" == default ]] && selected_backend=''
+    [[ "$selection" == secret_path ]] && selected_backend="$WORK/bin/backend-test-secret-value"
+    backend_result=$(
+        export CODING_AGENT_OPENCODE_BIN="$selected_backend"
+        [[ "$selection" == default ]] && unset CODING_AGENT_OPENCODE_BIN
+        PATH="$WORK/bin:$PATH" OPENROUTER_API_KEY=test-secret-value \
+        coding-agent --repo "$FIXTURE_REPO" --task 'Create delegated.txt' --verify true \
+        "${args[@]+"${args[@]}"}" --out "$WORK/backend-$selection" 2>"$WORK/backend-$selection.stderr")
+    is "$selection backend: candidate returned" candidate "$(printf '%s' "$backend_result" | jq -r .status)"
+    resolved_fake=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$WORK/bin/opencode-fake")
+    [[ "$selection" == secret_path ]] && resolved_fake="$WORK/bin/backend-<redacted-api-key>"
+    is "$selection backend: result records resolved executable" "$resolved_fake" "$(printf '%s' "$backend_result" | jq -r .backend_executable)"
+    backend_child="$WORK/backend-$selection/trajectories/$(printf '%s' "$backend_result" | jq -r .child_traj_ref)"
+    is "$selection backend: delegation records executable" "$resolved_fake" "$(jq -r 'select(.type == "delegation") | .backend_executable' "$backend_child")"
+    if [[ "$selection" == default ]]; then
+        check "default backend: no override notice" bash -c '! grep -q "backend override" "$1"' _ "$WORK/backend-$selection.stderr"
+    else
+        check "$selection backend: notice names executable" grep -Fq "$resolved_fake" "$WORK/backend-$selection.stderr"
+    fi
+    check "$selection backend: notice contains no key" bash -c '! grep -qF test-secret-value "$1"' _ "$WORK/backend-$selection.stderr"
+    check "$selection backend: records contain no key" bash -c '! grep -RqF test-secret-value "$1"' _ "$WORK/backend-$selection/trajectories"
+done
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

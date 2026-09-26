@@ -37,6 +37,10 @@ prove provider authentication. Set `CODING_AGENT_OPENCODE_BIN` to select an
 executable and `CODING_AGENT_MODEL` to select a model, or use the wrapper's
 `--backend-bin` and `--model` options for a run. The configured default backend
 must still be available for enablement and admission.
+Each run announces an executable override on stderr and records the resolved
+path in its delegation and result. Valid `OPENCODE_CONFIG_CONTENT` settings are
+preserved while adding package restrictions; malformed inline configuration
+is rejected before task setup.
 
 Use OpenCode's provider authentication store or the selected provider's
 API-key environment variable (for example `OPENROUTER_API_KEY`); all providers'
@@ -76,6 +80,9 @@ artifacts are retained in a `headlong-coding-agent.*` temporary directory; choos
 an explicit durable output directory for evidence you need to keep. Trajectories
 use TRAJ_DIR/TRAJ_ID, or a standalone parent under the output directory. Output
 and trajectory paths inside the package (including symlink aliases) are rejected.
+Transcript sanitization failures reject the candidate and replace the affected
+transcript with a withholding notice. Results and trajectories include artifact
+references and bounded sanitized summaries; full transcripts remain in artifacts.
 To clean up evidence manually after review, remove its Git worktree with
 `git -C SOURCE worktree remove WORKTREE`, delete the candidate branch if no
 longer needed, and then remove the artifact directory. Review trajectory

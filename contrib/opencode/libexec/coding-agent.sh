@@ -36,16 +36,32 @@ EOF
 die() { printf 'coding-agent: error: %s\n' "$*" >&2; exit 2; }
 
 redact_file() {
-    local file="$1" name value
-    [[ -f "$file" ]] || return 0
+    local file="$1" name value temporary
+    [[ -f "$file" ]] || return 1
     for name in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY OPENROUTER_API_KEY OPENCODE_API_KEY LLM_API_KEY; do
         value="${!name:-}"
         [[ -n "$value" ]] || continue
-        SECRET_VALUE="$value" perl -pi -e '
+        temporary=$(mktemp "$file.redacted.XXXXXX") || return 1
+        if ! SECRET_VALUE="$value" perl -pe '
             BEGIN { $secret = $ENV{SECRET_VALUE}; }
             s/\Q$secret\E/<redacted-api-key>/g if length($secret);
-        ' "$file" 2>/dev/null || true
+        ' <"$file" >"$temporary" 2>/dev/null; then
+            rm -f "$temporary"
+            return 1
+        fi
+        mv "$temporary" "$file" || { rm -f "$temporary"; return 1; }
     done
+}
+
+# Paths may contain a configured key too; never echo one in override metadata.
+redact_text() {
+    local text="$1" name value
+    for name in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY OPENROUTER_API_KEY OPENCODE_API_KEY LLM_API_KEY; do
+        value="${!name:-}"
+        [[ -n "$value" ]] || continue
+        text="${text//"$value"/<redacted-api-key>}"
+    done
+    printf '%s' "$text"
 }
 
 # Content-based state, not status text: dirty files may change without changing
@@ -191,6 +207,52 @@ command -v perl >/dev/null 2>&1 || die "perl is required"
 traj_bin=$(command -v traj 2>/dev/null || true)
 [[ -n "$traj_bin" ]] || die "traj is required"
 
+# Preserve the caller's inline configuration, including broad permission rules.
+# Reject invalid JSON without printing its contents (which may contain keys).
+opencode_config='{}'
+if [[ "${OPENCODE_CONFIG_CONTENT+x}" ]]; then
+    opencode_config="$OPENCODE_CONFIG_CONTENT"
+fi
+opencode_guard=$(printf '%s' "$opencode_config" | jq -cse '
+    if length != 1 or (.[0] | type) != "object" then error("expected object") else .[0] end
+    | def rules:
+        if . == null then {}
+        elif type == "string" then {"*": .}
+        elif type == "object" then .
+        else error("invalid permission rules") end;
+    . as $base
+    | ($base.permission | rules) as $permission
+    | ($permission.bash | rules) as $bash
+    | $base * {
+        share: "disabled",
+        permission: ($permission * {
+            external_directory: "deny", task: "deny",
+            bash: ($bash * {
+                "git push*": "deny", "git merge*": "deny", "git cherry-pick*": "deny"
+            })
+        })
+      }' 2>/dev/null) || die "OPENCODE_CONFIG_CONTENT must be a valid JSON object with valid permission rules"
+
+backend_override=''
+if [[ -n "$backend_bin" ]]; then
+    backend_override='--backend-bin'
+elif [[ -n "${CODING_AGENT_OPENCODE_BIN:-}" ]]; then
+    backend_bin="$CODING_AGENT_OPENCODE_BIN"
+    backend_override='CODING_AGENT_OPENCODE_BIN'
+else
+    backend_bin=opencode
+fi
+resolved_backend=$(command -v "$backend_bin" 2>/dev/null || true)
+if [[ -n "$resolved_backend" ]]; then
+    resolved_backend=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$resolved_backend") \
+        || die "could not resolve backend executable"
+fi
+backend_executable=$(redact_text "$resolved_backend")
+if [[ -n "$backend_override" ]]; then
+    printf 'coding-agent: backend override %s: %s\n' "$backend_override" \
+        "${backend_executable:-<not found>}" >&2
+fi
+
 repo=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) \
     || die "not a Git checkout: $repo"
 repo=$(cd "$repo" && pwd -P) || die "could not resolve repository"
@@ -198,28 +260,32 @@ base_commit=$(git -C "$repo" rev-parse HEAD 2>/dev/null) \
     || die "repository has no HEAD commit: $repo"
 source_before=$(checkout_fingerprint "$repo") || die "could not snapshot source checkout"
 
+out_created=false
 if [[ -z "$out" ]]; then
     out=$(mktemp -d "${TMPDIR:-/tmp}/headlong-coding-agent.XXXXXX") \
         || die "could not create output directory"
-else
-    if [[ -d "$out" && -n "$(ls -A "$out")" ]]; then
-        die "output directory must be empty: $out"
-    fi
-    mkdir -p "$out" || die "could not create output directory: $out"
+    out_created=true
 fi
-out=$(cd "$out" 2>/dev/null && pwd -P) || die "could not resolve output directory: $out"
+out=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$out") \
+    || die "could not resolve output directory"
+case "$out/" in
+    "$repo/"*)
+        if ! git -C "$repo" check-ignore -q -- "$out/"; then
+            [[ "$out_created" == true ]] && rmdir "$out"
+            die "output directory inside source must be Git-ignored"
+        fi ;;
+esac
+if [[ -d "$out" && -n "$(ls -A "$out")" ]]; then
+    die "output directory must be empty: $out"
+fi
+mkdir -p "$out" || die "could not create output directory: $out"
 
 if [[ -n "$task_file" ]]; then
     cp "$task_file" "$out/task.md" || die "could not retain task file"
 else
-    printf '%s' "$task" > "$out/task.md"
+    printf '%s' "$task" > "$out/task.md" || die "could not retain task"
 fi
 task_file="$out/task.md"
-
-case "$out/" in
-    "$repo/"*) git -C "$repo" check-ignore -q -- "$out/" \
-        || die "output directory inside source must be Git-ignored" ;;
-esac
 
 if [[ -z "$traj_dir" && -z "$parent_traj" ]]; then
     traj_dir="$out/trajectories"
@@ -248,10 +314,11 @@ patch_file="$out/candidate.patch"
 
 delegation=$(jq -nc \
     --rawfile task "$task_file" --arg backend "$backend" --arg model "$model" \
+    --arg backend_executable "$backend_executable" \
     --arg repo "$repo" --arg base "$base_commit" --arg verify "$verify" \
     --arg worktree "$worktree" --arg branch "$branch" --arg out "$out" \
     --arg parent "$parent_traj" --arg child "$child_traj" --argjson timeout "$timeout_seconds" \
-    '{type:"delegation", task:$task, backend:$backend,
+    '{type:"delegation", task:$task, backend:$backend, backend_executable:$backend_executable,
       base_commit:$base, verification_command:$verify, repository:$repo,
       worktree:$worktree, candidate_branch:$branch, artifact_dir:$out,
       parent_traj:$parent, child_traj:$child, timeout_seconds:$timeout}
@@ -274,14 +341,6 @@ verification_after=""
 integrity_rc=0
 
 if [[ "$worktree_rc" -eq 0 ]]; then
-    if [[ -z "$backend_bin" ]]; then
-        backend_bin="${CODING_AGENT_OPENCODE_BIN:-opencode}"
-    fi
-    resolved_backend=$(command -v "$backend_bin" 2>/dev/null || true)
-    if [[ -z "$resolved_backend" && -x "$backend_bin" ]]; then
-        resolved_backend="$backend_bin"
-    fi
-
     if [[ -z "$resolved_backend" ]]; then
         printf 'OpenCode executable not found: %s\n' "$backend_bin" >"$executor_stderr"
         : >"$executor_stdout"
@@ -295,28 +354,6 @@ if [[ "$worktree_rc" -eq 0 ]]; then
         } > "$out/executor.prompt"
         model_args=()
         [[ -n "$model" ]] && model_args=(--model "$model")
-        # Inline config has higher precedence than project config. Keep the
-        # caller's provider/model settings, but make the executor's filesystem
-        # boundary and no-push/no-subagent policy non-overridable by a checkout.
-        # The value remains in the process environment, never argv or logs.
-        opencode_guard=$(printf '%s' "${OPENCODE_CONFIG_CONTENT:-{}}" | jq -c '
-            (if type == "object" then . else {} end) as $base
-            | ($base.permission
-               | if type == "object" then . else {} end) as $permission
-            | ($permission.bash
-               | if type == "object" then . else {} end) as $bash
-            | $base * {
-                share: "disabled",
-                permission: ($permission * {
-                    external_directory: "deny",
-                    task: "deny",
-                    bash: ($bash * {
-                        "git push*": "deny",
-                        "git merge*": "deny",
-                        "git cherry-pick*": "deny"
-                    })
-                })
-              }' 2>/dev/null) || opencode_guard='{"share":"disabled","permission":{"external_directory":"deny","task":"deny","bash":{"git push*":"deny","git merge*":"deny","git cherry-pick*":"deny"}}}'
         executor_rc=0
         (
             cd "$worktree" || exit 125
@@ -327,11 +364,9 @@ if [[ "$worktree_rc" -eq 0 ]]; then
                 "${model_args[@]+"${model_args[@]}"}"
         ) >"$executor_stdout" 2>"$executor_stderr" || executor_rc=$?
     fi
-    redact_file "$executor_stdout"
-    redact_file "$executor_stderr"
-
-    if [[ -n "$(git -C "$worktree" status --porcelain 2>/dev/null)" ]]; then
-        git -C "$worktree" add -A >/dev/null 2>&1 || commit_rc=$?
+    # Observe and capture executable bits even when the source disables fileMode.
+    if [[ -n "$(git -C "$worktree" -c core.fileMode=true status --porcelain 2>/dev/null)" ]]; then
+        git -C "$worktree" -c core.fileMode=true add -A >/dev/null 2>&1 || commit_rc=$?
         if [[ "$commit_rc" -eq 0 ]]; then
             git -C "$worktree" -c user.name='Headlong Coding Agent' \
                 -c user.email='coding-agent@headlong.local' \
@@ -342,19 +377,19 @@ if [[ "$worktree_rc" -eq 0 ]]; then
 
     # Hooks may leave edits/new files after a successful commit. Do not attest
     # to an already-dirty worktree as if it were the recorded candidate.
-    if ! git -C "$worktree" diff --quiet -- \
-       || ! git -C "$worktree" diff --cached --quiet HEAD -- \
+    if ! git -C "$worktree" -c core.fileMode=true diff --quiet -- \
+       || ! git -C "$worktree" -c core.fileMode=true diff --cached --quiet HEAD -- \
        || [[ -n "$(git -C "$worktree" ls-files --others --exclude-standard)" ]]; then
         commit_rc=1
         printf 'candidate worktree is not clean after commit\n' >>"$out/commit.stderr"
     fi
     result_head=$(git -C "$worktree" rev-parse HEAD 2>/dev/null) || commit_rc=$?
     if [[ "$result_head" != "$base_commit" ]] \
-       || [[ -n "$(git -C "$worktree" status --porcelain 2>/dev/null)" ]]; then
+       || [[ -n "$(git -C "$worktree" -c core.fileMode=true status --porcelain 2>/dev/null)" ]]; then
         has_changes=true
     fi
     [[ "$result_head" != "$base_commit" ]] && candidate_commit="$result_head"
-    git -C "$worktree" diff --binary "$base_commit" >"$patch_file" 2>"$out/patch.stderr" || true
+    git -C "$worktree" -c core.fileMode=true diff --binary "$base_commit" >"$patch_file" 2>"$out/patch.stderr" || true
 
     verification_before=$(checkout_fingerprint "$worktree") || integrity_rc=$?
     verification_rc=0
@@ -366,8 +401,6 @@ if [[ "$worktree_rc" -eq 0 ]]; then
     if [[ "$integrity_rc" -eq 0 && "$verification_before" == "$verification_after" ]]; then
         verification_unchanged=true
     fi
-    redact_file "$verification_stdout"
-    redact_file "$verification_stderr"
 else
     : >"$executor_stdout"
     printf 'git worktree add failed (exit %s); see %s\n' "$worktree_rc" "$out/worktree.stderr" >"$executor_stderr"
@@ -375,11 +408,38 @@ else
     printf 'verification not run because worktree creation failed\n' >"$verification_stderr"
 fi
 
+# Only sanitized artifacts can supply summaries or be referenced as transcripts.
+# A failed pass may have produced partial output: discard it and the raw log.
+sanitization_rc=0
+for transcript in "$executor_stdout" "$executor_stderr" "$verification_stdout" "$verification_stderr"; do
+    if ! redact_file "$transcript"; then
+        sanitization_rc=1
+        rm -f "$transcript" || die "could not discard unsanitized transcript"
+        printf 'Transcript withheld: sanitization failed.\n' >"$transcript" \
+            || die "could not record withheld transcript"
+    fi
+done
+if [[ "$sanitization_rc" -ne 0 ]]; then
+    printf 'coding-agent: transcript sanitization failed; candidate rejected\n' >&2
+fi
+# Bound each summary after sanitization, so truncation cannot split a raw key.
+transcript_summaries=$(python3 - "$executor_stdout" "$executor_stderr" "$verification_stdout" "$verification_stderr" <<'PY_SUMMARIES'
+import json, sys
+summaries = {}
+for name, path in zip(("executor_stdout", "executor_stderr", "verification_stdout", "verification_stderr"), sys.argv[1:]):
+    with open(path, "rb") as stream:
+        summaries[name + "_summary"] = stream.read(4096).decode("utf-8", errors="replace")
+print(json.dumps(summaries))
+PY_SUMMARIES
+) || die "could not summarize sanitized transcripts"
+
 source_after=$(checkout_fingerprint "$repo") || integrity_rc=$?
 source_unchanged=false
 [[ "$integrity_rc" -eq 0 && "$source_before" == "$source_after" ]] && source_unchanged=true
 
-if [[ "$worktree_rc" -ne 0 ]]; then
+if [[ "$sanitization_rc" -ne 0 ]]; then
+    status="sanitization_failed"
+elif [[ "$worktree_rc" -ne 0 ]]; then
     status="setup_failed"
 elif [[ "$integrity_rc" -ne 0 ]]; then
     status="integrity_check_failed"
@@ -404,6 +464,7 @@ candidate=false
 
 result=$(jq -nc \
     --arg status "$status" --rawfile task "$task_file" --arg backend "$backend" --arg model "$model" \
+    --arg backend_executable "$backend_executable" \
     --arg base "$base_commit" --arg commit "$candidate_commit" --arg verify "$verify" \
     --arg branch "$branch" --arg worktree "$worktree" --arg out "$out" --arg patch "$patch_file" \
     --arg executor_stdout_ref "$executor_stdout" --arg executor_stderr_ref "$executor_stderr" \
@@ -415,19 +476,17 @@ result=$(jq -nc \
     --argjson verification_exit "$verification_rc" \
     --argjson verification_unchanged "$verification_unchanged" \
     --argjson integrity_exit "$integrity_rc" --argjson timeout "$timeout_seconds" \
+    --argjson sanitization_exit "$sanitization_rc" --argjson summaries "$transcript_summaries" \
     --arg source_before "$source_before" --arg source_after "$source_after" \
     --arg verification_before "$verification_before" --arg verification_after "$verification_after" \
-    --rawfile executor_stdout "$executor_stdout" --rawfile executor_stderr "$executor_stderr" \
-    --rawfile verification_stdout "$verification_stdout" --rawfile verification_stderr "$verification_stderr" \
     '{type:"delegation-result", status:$status, candidate:$candidate, accepted:$accepted,
-      task:$task, backend:$backend, base_commit:$base,
+      task:$task, backend:$backend, backend_executable:$backend_executable, base_commit:$base,
       candidate_commit:(if $commit == "" then null else $commit end),
       candidate_branch:$branch, has_changes:$changed, worktree:$worktree,
       artifact_dir:$out, patch_ref:$patch, verification_command:$verify,
       worktree_exit_status:$worktree_exit, executor_exit_status:$executor_exit,
       candidate_commit_exit_status:$commit_exit, verification_exit_status:$verification_exit,
-      executor_stdout:$executor_stdout, executor_stderr:$executor_stderr,
-      verification_stdout:$verification_stdout, verification_stderr:$verification_stderr,
+      sanitization_exit_status:$sanitization_exit,
       executor_stdout_ref:$executor_stdout_ref, executor_stderr_ref:$executor_stderr_ref,
       verification_stdout_ref:$verification_stdout_ref, verification_stderr_ref:$verification_stderr_ref,
       source_checkout_unchanged:$source_unchanged,
@@ -436,7 +495,7 @@ result=$(jq -nc \
       source_fingerprint_before:$source_before, source_fingerprint_after:$source_after,
       verification_fingerprint_before:$verification_before, verification_fingerprint_after:$verification_after,
       parent_traj:$parent, child_traj:$child, child_traj_ref:$child_ref}
-     + (if $model == "" then {} else {model:$model} end)')
+     + $summaries + (if $model == "" then {} else {model:$model} end)')
 result_step=$(printf '%s' "$result" | TRAJ_DIR="$traj_dir" TRAJ_ID="$child_traj" "$traj_bin" append) \
     || die "could not append delegation result"
 

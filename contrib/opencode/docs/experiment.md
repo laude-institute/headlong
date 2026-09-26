@@ -1,4 +1,4 @@
-> This integration is optional. Follow [package setup](../README.md) first; invoke the installed wrapper by its absolute path. Historical results below predate optional packaging.
+> This integration is optional. Follow [package setup](../README.md) first; invoke the installed wrapper by its absolute path. See the [validation record](validation.md) for current offline results.
 
 # Collegial coding: candidate integrity and a repeatable experiment
 
@@ -12,6 +12,9 @@ uses the executable on PATH, or `--backend-bin`, and accepts `--model` (also
 in a new candidate worktree, commits its edits, reruns the supplied check, and
 records a result edge in the parent. A trajectory merge records lineage; it does
 not merge Git changes. Without a parent, it creates a standalone trajectory.
+Overrides through `--backend-bin` or `CODING_AGENT_OPENCODE_BIN` announce
+themselves on stderr. Delegation and result records identify the resolved
+executable in `backend_executable`.
 
 ## Candidate integrity
 
@@ -19,7 +22,8 @@ A result can be `candidate` only if execution, commit capture, and verification
 succeed and the integrity checks pass:
 
 - Subprocess exit codes are preserved, including 125. A deadline returns 124.
-- The committed candidate worktree must be clean before verification.
+- The committed candidate worktree must be clean before verification, including
+  executable bits even when the repository sets `core.fileMode=false`.
 - Verification must leave HEAD, branch, index entries, tracked file contents,
   modes and symlinks, and non-ignored untracked files unchanged.
 - The source checkout must retain those same invariants throughout the run's
@@ -29,7 +33,9 @@ succeed and the integrity checks pass:
   integrity flags; evidence is retained even when a candidate is rejected.
 
 New failure statuses are `verification_changed`, `source_changed`, and
-`integrity_check_failed`. A nonzero verification exit remains
+`integrity_check_failed`. Transcript sanitization errors take precedence and
+produce `sanitization_failed`, with `candidate:false` and a nonzero CLI exit.
+A nonzero verification exit otherwise remains
 `verification_failed` even if the check also changed files; inspect
 `verification_checkout_unchanged` for that additional condition. Source
 integrity failures take precedence over executor/check failures; the original
@@ -66,9 +72,16 @@ A timeout is not a spending cap.
 
 `--out` must be new or empty. Reusing an artifact directory is refused before
 previous transcripts are overwritten. Place it outside the source checkout or
-inside a Git-ignored directory. For a standalone run, the wrapper creates its
+inside a Git-ignored directory. The resolved destination is validated before
+task data is written. For a standalone run, the wrapper creates its
 parent trajectory below that directory. JSON is printed to stdout; redirect it
 to a separate file if desired, not a file inside `--out` before the command runs.
+
+Executor and verification transcripts are sanitized before publication. Failed
+sanitization discards that transcript and replaces it with a withholding notice.
+The result and trajectory retain artifact references and `*_summary` fields
+limited to the first 4096 sanitized bytes of each stream; full transcripts stay
+in their artifacts. `sanitization_exit_status` records whether every pass succeeded.
 
 ```bash
 "$IDENTITY_DIR/extensions/opencode/bin/coding-agent" --repo /path/to/repo \
@@ -121,13 +134,18 @@ deadlines, ignored caches, no-op results, and evidence retention.
 
 ## The next live experiment
 
-The monolith prompt now asks it to compare the diff with the actual requirements,
-record a substantive rejection with feedback, and use the retained candidate
-as the base of a later bounded revision. The scripted run proves the mechanism
-and the evaluator, not Headlong's ability to follow those instructions. A live test must remain a separate measurement:
+Explicitly enabling the package registers its skill for that identity. On the
+next prompt assembly, the skill supplies instructions to compare the diff with
+the requirements, record substantive rejection feedback, and use a retained
+candidate as the base of a later bounded revision. The scripted run exercises
+the mechanism and evaluator; following these instructions in a live run remains
+a separate measurement:
 
-1. Prepare a fresh identity and a fresh copy of this fixture. Use the updated
-   monolith prompt/tools so the run has its own clearly attributable history.
+1. Prepare a fresh local identity and a fresh copy of this fixture. Install the
+   optional package for that identity, run `doctor`, and explicitly `enable` it
+   using the [package setup](../README.md). Confirm its skill is discovered on
+   the next prompt assembly. Record the installed VERSION, OpenCode version,
+   and absolute wrapper path so the run has clearly attributable history.
 2. Set a small dedicated provider spending limit and the wrapper's phase
    deadlines; bound the supervisor's iterations and output tokens as well.
    An account-wide key limit is not a per-experiment cap.
