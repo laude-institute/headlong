@@ -428,7 +428,8 @@ redact_sensitive() {
 extract_reasoning() {
     local response="$1"
     printf '%s\n' "$response" | awk '
-        # Stop at the opening code fence — everything before it is reasoning.
+        # Emit only the text before the opening code fence. Keep reading after
+        # it so a large response cannot give printf SIGPIPE under pipefail.
         # The fence may be a lone ``` line OR a tagged ```bash/```sh appended
         # to the end of a prose sentence (some models, e.g. grok, do the
         # latter). In the appended case, emit the prose that precedes the fence
@@ -436,12 +437,14 @@ extract_reasoning() {
         # Bare and shell-tagged line-start fences end the reasoning, trailing
         # text included; a non-shell fence (```json etc.) does NOT — a model
         # showing a JSON example mid-reasoning keeps its subsequent prose.
-        /^```(bash|shell|sh)?([[:space:]].*)?$/ { exit }
+        in_code { next }
+        /^```(bash|shell|sh)?([[:space:]].*)?$/ { in_code = 1; next }
         match($0, /```(bash|shell|sh)[[:space:]]*$/) {
             pre = substr($0, 1, RSTART - 1)
             sub(/[[:space:]]+$/, "", pre)
             if (pre ~ /[^[:space:]]/) print pre
-            exit
+            in_code = 1
+            next
         }
         { print }
     '
@@ -1569,7 +1572,9 @@ _supervise_exec() {
     local code_bytes
     code_bytes=$(printf '%s' "$code" | wc -c)
     if [[ "$code_bytes" -gt 65536 ]]; then
-        code_file=$(mktemp "${TMPDIR:-/tmp}/shellm-code.XXXXXX") || return 1
+        # Docker cancellation kills the supervisor too; its control directory
+        # is removed by the host afterward, including this script.
+        code_file=$(mktemp "${control_dir:-${TMPDIR:-/tmp}}/shellm-code.XXXXXX") || return 1
         printf '%s' "$code" > "$code_file"
         bash -e "$code_file" </dev/null &
     else
@@ -1637,9 +1642,12 @@ execute_code() {
         }
         trap _terminate_docker_exec TERM INT HUP
         if [[ ${#exports[@]} -gt 0 ]]; then export "${exports[@]}"; fi
-        docker exec "${docker_env_flags[@]}" -w "$workspace" \
+        # The Docker client also has an argv limit, before the remote
+        # supervisor can move large code to a script. Send code over stdin;
+        # _supervise_exec still gives generated commands /dev/null for stdin.
+        docker exec -i "${docker_env_flags[@]}" -w "$workspace" \
             "$_SHELLM_CONTAINER" bash -c "$(declare -f _kill_exec_tree _supervise_exec)
-_supervise_exec \"\$@\"" _ "$wrapped_code" "$control_dir" </dev/null 2>&1 &
+_supervise_exec \"\$(cat)\" \"\$1\"" _ "$control_dir" <<< "$wrapped_code" 2>&1 &
         client=$!
         wait "$client" || rc=$?
         trap - TERM INT HUP

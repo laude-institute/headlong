@@ -135,5 +135,133 @@ bash "$WORK/driver_final.sh" 2>"$WORK/final_err" || true
 check_record "oversized final recorded via rawfile" final '.type' "final"
 check_record "final content intact" final '(.content | length)' 200000
 
+# Run a large fenced response through the real parser, executor and trajectory.
+# The direct supervisor fixture above cannot catch an early parser SIGPIPE.
+mkdir -p "$WORK/loop/wd" "$WORK/loop/state"
+cp -R "$REPO/bin" "$WORK/loop/toolbin"
+cat > "$WORK/loop/toolbin/llm" <<'STUB'
+#!/usr/bin/env bash
+for arg in "$@"; do
+    if [[ "$arg" == --thinking ]]; then cat "$RESPONSE_FILE"; exit; fi
+done
+printf '{}\n'
+STUB
+{
+    printf 'Reasoning before the fence.\n```bash\n# '
+    head -c 2000000 /dev/zero | tr '\0' x
+    printf '\nprintf executed > executed\nFINAL=done\n```\n'
+} > "$WORK/loop/response"
+(
+    cd "$WORK/loop/wd" || exit 1
+    export PATH="$WORK/loop/toolbin:$PATH" SHELLM_ENV=local
+    export HEADLONG_HOME="$WORK/loop/state" SHELLM_HOME="$WORK/loop/state"
+    export SHELLM_CONF_DIR="$WORK/loop/state" SHELLM_TRAJ_DIR="$WORK/loop/state/trajectories"
+    export SHELLM_MODEL=test-model RESPONSE_FILE="$WORK/loop/response"
+    unset IDENTITY_DIR IDENTITY_NAME TRAJ_DIR TRAJ_ID ROOT_TRAJ_ID _SHELLM_PARENT_TRAJ_ID
+    "$WORK/loop/toolbin/shellm" --workdir "$WORK/loop/wd" --max-iterations 1 fixture
+) > "$WORK/loop/out" 2> "$WORK/loop/err" < /dev/null
+rc=$?
+if [[ $rc -eq 0 && "$(cat "$WORK/loop/wd/executed" 2>/dev/null)" == executed && "$(cat "$WORK/loop/out")" == "done" ]]; then
+    ok "large fenced response executes through the real loop"
+else
+    bad "large fenced response executes through the real loop" "rc=$rc: $(tail -c 250 "$WORK/loop/err")"
+fi
+if jq -se 'any(.[]; .type == "reasoning" and .thought == "Reasoning before the fence." and (.cmd | length) > 2000000)
+    and any(.[]; .type == "shell-output" and .exit == 0)
+    and any(.[]; .type == "final" and .content == "done")' \
+    "$WORK/loop/state/trajectories"/*/trajectory.jsonl >/dev/null 2>&1; then
+    ok "large fenced response has intact reasoning, execution and final records"
+else
+    bad "large fenced response has intact reasoning, execution and final records"
+fi
+
+# Exercise the actual Docker caller with a local CLI stand-in. Enforce Linux's
+# argv cap even on macOS and execute the remote wrapper, including cancellation.
+# No Docker daemon is needed by CI; the stub never contacts the network.
+sed -n '/^_kill_exec_tree()/,/^}/p; /^_supervise_exec()/,/^}/p; /^execute_code()/,/^}/p' "$SHELLM" > "$WORK/exec.sh"
+cat > "$WORK/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+set -eu
+export LC_ALL=C
+for arg in "$@"; do
+    if [[ ${#arg} -gt 131071 ]]; then
+        echo 'docker stub: oversized argv' >&2
+        exit 126
+    fi
+done
+[[ "$1" == exec ]] || exit 2
+shift
+interactive=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -i) interactive=1; shift ;;
+        -e) export "$2"; shift 2 ;;
+        -w) cd "$2"; shift 2 ;;
+        --user) shift 2 ;;
+        *) shift; break ;;
+    esac
+done
+# Without -i Docker does not attach the supplied stdin.
+if [[ $interactive -eq 1 ]]; then exec "$@"; else exec "$@" < /dev/null; fi
+STUB
+chmod +x "$WORK/bin/docker"
+cat > "$WORK/driver_docker.sh" <<'DRV'
+set -uo pipefail
+source "$WORK/exec.sh"
+_SHELLM_DOCKER_MODE=1
+_SHELLM_CONTAINER=fixture
+code=$(cat "$WORK/docker_code")
+execute_code "$WORK" "$code" PATH="$PATH" WORK="$WORK"
+DRV
+{
+    printf '# '
+    head -c 200000 /dev/zero | tr '\0' x
+    printf '\nif read -r unexpected; then exit 91; fi\nprintf executed > "$WORK/docker_executed"\nexit 7\n'
+} > "$WORK/docker_code"
+bash "$WORK/driver_docker.sh" > "$WORK/docker_out" 2>&1; rc=$?
+if [[ $rc -eq 7 && "$(cat "$WORK/docker_executed" 2>/dev/null)" == executed ]]; then
+    ok "Docker transports large code off argv, preserves exit status and gives commands EOF"
+else
+    bad "Docker transports large code off argv, preserves exit status and gives commands EOF" "rc=$rc: $(tail -c 250 "$WORK/docker_out")"
+fi
+
+# A bounded producer lets a broken cancellation implementation fail without
+# leaving an endless process. The supervisor must wait for the producer to die.
+{
+    printf '# '
+    head -c 200000 /dev/zero | tr '\0' x
+    cat <<'CODE'
+
+printf '%s\n' "$$" > "$WORK/docker_pid"
+printf '%s\n' "$0" > "$WORK/docker_script"
+end=$((SECONDS + 10))
+while [[ $SECONDS -lt $end ]]; do
+    printf tick >> "$WORK/docker_heartbeat"
+    sleep 0.1
+done
+printf completed > "$WORK/docker_completed"
+CODE
+} > "$WORK/docker_code"
+bash "$WORK/driver_docker.sh" > "$WORK/docker_cancel_out" 2>&1 &
+client=$!
+for ((i=0; i<100; i++)); do
+    [[ -s "$WORK/docker_heartbeat" ]] && break
+    kill -0 "$client" 2>/dev/null || break
+    sleep 0.05
+done
+kill "$client" 2>/dev/null || true
+wait "$client"; rc=$?
+producer=$(cat "$WORK/docker_pid" 2>/dev/null || echo 0)
+before=$(wc -c 2>/dev/null < "$WORK/docker_heartbeat" || echo 0)
+sleep 0.2
+after=$(wc -c 2>/dev/null < "$WORK/docker_heartbeat" || echo 0)
+script=$(cat "$WORK/docker_script" 2>/dev/null || echo missing)
+if [[ $rc -eq 143 && "$producer" -gt 1 && "$before" -gt 0 && "$before" -eq "$after" && ! -f "$WORK/docker_completed" && ! -f "$script" ]] \
+    && ! kill -0 "$producer" 2>/dev/null; then
+    ok "Docker cancellation stops the large-code producer before returning"
+else
+    bad "Docker cancellation stops the large-code producer before returning" "rc=$rc, pid=$producer, bytes=$before/$after"
+fi
+
 r=$((pass+fail)); printf '\n%d checks: %d ok, %d failed\n' "$r" "$pass" "$fail"
 [[ $fail -eq 0 ]]
