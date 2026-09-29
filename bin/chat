@@ -116,6 +116,7 @@ cmd_send() {
 To message someone else: chat reply <their-name> <message>
 To keep a note for yourself, append a thought step instead of a message."
 
+    [[ -z "$key" ]] || _refuse_skipped_key "$key"
     [[ "$force" -eq 1 || -z "$key" ]] || _refuse_key "$key"
     # The repeat check guards the identity's OWN sends. A message a person
     # sends in (a bridge delivering "great" for the second time today) is
@@ -805,6 +806,75 @@ cmd_sent() {
                      + (if .key then " [\(.key)]" else "" end)
                      + "  " + ((.filename // .content // "") | gsub("\n"; " ") | if length > 80 then .[0:80] + "…" else . end)
           end' -R < "$idx"
+}
+
+# _skip_record_present <dir> <folded-name>: true when the receipts dir holds a
+# .skip record for this name. The comparison folds case, because the record
+# name carries the id verbatim and an id can be spelled in either case: a
+# probe on 2026-09-27 sent from '1AB0DEB4/2026-09-26-1700' against a record
+# named '1ab0deb4_2026-09-26-1700.skip'.
+_skip_record_present() {
+    local dir="$1" name="$2" f base want
+    [[ -e "$dir/$name.skip" ]] && return 0
+    want=$(printf '%s' "$name" | tr 'A-Z' 'a-z')
+    for f in "$dir"/*.skip; do
+        [[ -e "$f" ]] || continue
+        base=$(printf '%s' "${f##*/}" | tr 'A-Z' 'a-z')
+        [[ "$base" == "$want.skip" ]] && return 0
+    done
+    return 1
+}
+
+# _refuse_skipped_key <key>: die if papers-skip marked this window deliberately
+# skipped. The paper tools refuse such a window through papers-receipt, but
+# `chat send --key` is the exact command a scheduled window's DUE NOW line
+# prescribes and it never consulted the receipts dir, so on 2026-09-27 a
+# deliberately skipped window sent from here while every paper tool refused it
+# (scratch/skip-chat-hole-2026-09-27).
+#
+# A window key must also be spelled the one canonical way, the rule
+# papers-receipt already enforces: one slash, an id with no underscore, a
+# YYYY-MM-DD-HHMM window. The record name is the key with '/' folded to '_', so
+# an alias of the window lands on a name the skip never writes and this guard
+# would check a file that does not exist. The first fix checked the key as
+# given, its slash-collapsed spelling and the id/window form, and five aliases
+# still sent on 2026-09-27: a prefix ('x/id/win'), a dot prefix ('./id/win'), a
+# suffix ('id/win/x'), an id in the other case, and a trailing space. So a key
+# that names a window at all is refused unless it is canonical, and the record
+# lookup folds case.
+_refuse_skipped_key() {
+    local key="$1" here dir name c seg segt rest trimmed win count
+    [[ -n "$key" ]] || return 0
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    dir="${PAPERS_RECEIPTS_DIR:-${PAPERS_RECEIPTS:-$here/../notes/daily-papers/sent-receipts}}"
+
+    trimmed="$key"
+    trimmed="${trimmed#"${trimmed%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    rest="$trimmed"; win=""; count=0
+    while [[ -n "$rest" ]]; do
+        seg="${rest%%/*}"
+        if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+        segt="${seg#"${seg%%[![:space:]]*}"}"
+        segt="${segt%"${segt##*[![:space:]]}"}"
+        [[ -z "$segt" ]] && continue
+        count=$((count + 1))
+        if [[ "$segt" =~ ^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}-[0-9]{4}$ ]]; then win="$segt"; fi
+    done
+    if [[ -n "$win" ]] && [[ "$count" -ne 2 || "$key" != "$trimmed" || ! "$key" =~ ^[A-Za-z0-9.-]+/[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}$ ]]; then
+        die "refusing to send: '$key' is not a canonical window key. Use <id>/<YYYY-MM-DD-HHMM>, one slash, an id with no underscore, as in 1ab0deb4/2026-09-24-0900. Any other spelling of a window is refused here: the record name folds '/' to '_', so an alias would land on a name the skip never writes and a deliberately skipped window would send (2026-09-27)."
+    fi
+
+    local -a cands=("$key")
+    c=$(printf '%s' "$key" | tr -s '/' | sed 's|^/||; s|/$||')
+    [[ "$c" == "$key" ]] || cands+=("$c")
+    [[ -z "$win" ]] || cands+=("${key%%/*}/$win")
+    for name in "${cands[@]}"; do
+        c=$(printf '%s' "$name" | tr '/' '_')
+        if _skip_record_present "$dir" "$c"; then
+            die "refusing to send: '$name' was deliberately skipped (record ${c}.skip in $dir). That window is off on purpose; do not send it. Delete the .skip record if the skip is over."
+        fi
+    done
 }
 
 # _refuse_key <key>: die if a send with this key already went out and did not
