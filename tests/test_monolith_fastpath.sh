@@ -104,7 +104,8 @@ reset_state() { rm -f "$STATE" "$WAKE_AT" "$STUB_CAPTURE"; : > "$TRAJ"; : > "$WO
 FAST="$ID/run/monolith_fastpath.json"
 calls() { wc -l < "$STUB_CALLS" | tr -d ' '; }
 check_call() {
-    local before=$(calls)
+    local before
+    before=$(calls)
     run_step "$WAKE"
     if [[ $(calls) -eq $((before + 1)) ]]; then ok "$1"; else bad "$1"; fi
 }
