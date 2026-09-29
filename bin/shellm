@@ -2045,7 +2045,7 @@ extract_code() {
     if [[ "$toolcall_lifted" -eq 1 ]]; then
         local toolcall_notice
         toolcall_notice=$(cat <<'NOTICE'
-printf '%s\n' '[shellm: your reply used <tool_call>/<function=bash> markup. This runtime only reads ```bash fences; it lifted your code into one and ran it this time. Next time put the script inside a ```bash block, nothing else: start the reply with a line that is exactly ```bash and end the block with a line that is exactly ```.]' >&2
+printf '%s\n' '[shellm: your reply used tool-call markup (angle-bracket function-call tags). This runtime only reads ```bash fences; it lifted your code into one and ran it this time. Next time put the script inside a ```bash block, nothing else: start the reply with a line that is exactly ```bash and end the block with a line that is exactly ```.]' >&2
 NOTICE
 )
         code="$toolcall_notice"$'\n'"$code"
@@ -2078,7 +2078,7 @@ build_system_prompt() {
 You are running in shellm, headlong's bash agent loop: you solve tasks by generating and executing bash code.
 
 IMPORTANT: End your response with exactly ONE ```bash code block. Your response is NOT streamed — code blocks are not executed until your entire response is complete. Combine multiple steps into a single script. Only the first code block is executed; all others are silently discarded.
-Never use <tool_call>, <function=bash>, <parameter=...> or <bash> tags: this runtime is not a tool-calling API and only reads ```bash fences.
+Never use angle-bracket function-call tags (tool-call markup of any form, including single-word pseudo-tags): this runtime is not a tool-calling API and only reads ```bash fences.
 
 CRITICAL — the opening ```bash fence MUST start on its OWN new line. Put a
 newline after your prose, THEN the fence on a line by itself. Never append the
