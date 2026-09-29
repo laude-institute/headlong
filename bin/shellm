@@ -1949,6 +1949,9 @@ extract_code() {
         }
 
         BEGIN { in_block = 0; hd_top = 0; first_block_closed = 0 }
+        # CRLF input: a trailing \r would survive into the collected code
+        # and both break the closing-fence check and hand bash a bad line.
+        { sub(/\r$/, "", $0) }
 
         # After first block closed: look for another opening fence. A tagged
         # ```bash/```sh fence may be appended to the end of a prose line (see
@@ -2026,7 +2029,15 @@ extract_code() {
     # Strip [cmd]/[thought] markers that the model may emit instead of fences.
     local no_fence=0
     if [[ -z "$code" ]]; then
-        code=$(printf '%s\n' "$response" | sed '/^[[:space:]]*\[cmd\][[:space:]]*$/d; /^[[:space:]]*\[thought\]/d')
+        # Cut at the first provenance line: harness metadata ([served_by],
+        # [exec_s], [exit], [stdout], [stderr]) is structure from the run
+        # harness, never code to execute. Everything after it is metadata.
+        code=$(printf '%s\n' "$response" | awk '
+            /^\[(served_by|exec_s|exit|stdout|stderr)\]/ { exit }
+            /^[[:space:]]*\[cmd\][[:space:]]*$/ { next }
+            /^[[:space:]]*\[thought\]/ { next }
+            { print }
+        ')
         # A response with no bash block and real content is about to be run as
         # a shell command. That is almost always the model ending its turn with
         # a plain sentence (which fails "command not found") or forgetting the

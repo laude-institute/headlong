@@ -286,5 +286,35 @@ else
 fi
 
 echo
-echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]
+
+# CRLF: a Windows line ending must not survive into the extracted code, and
+# must not stop the closing fence from being recognized.
+resp=$'```bash\r\necho crlf\r\n```\r\n'
+out=$(extract_code "$resp")
+if [[ "$out" == "echo crlf" ]]; then
+    ok "CRLF line endings are stripped from the extracted code"
+else
+    bad "CRLF line endings are stripped from the extracted code" "$(printf '%s' "$out" | cat -A)"
+fi
+
+# Harness provenance lines ([served_by], [exit], [stdout], ...) pasted after a
+# fenceless reply are structure, not code. Cut at the first one so metadata is
+# never run as shell commands.
+resp=$'echo one\n[served_by]\nXiaomi\n[exit] 0\n[stdout]\nnoise'
+out=$(extract_code "$resp")
+if [[ "$out" == *"echo one"* && "$out" != *"Xiaomi"* && "$out" != *"noise"* ]]; then
+    ok "provenance trailer is cut from a fenceless reply"
+else
+    bad "provenance trailer is cut from a fenceless reply" "$(printf '%s' "$out" | head -c 160)"
+fi
+
+# The same words inside a fenced block are literal code and must survive.
+resp=$'```bash\necho before\n[exit] 1\necho after\n```'
+out=$(extract_code "$resp")
+if [[ "$out" == $'echo before\n[exit] 1\necho after' ]]; then
+    ok "provenance text inside a fence is literal code"
+else
+    bad "provenance text inside a fence is literal code" "$out"
+fi
+echo "$pass passed, $fail failed"
