@@ -276,12 +276,76 @@ test_stop_clears_wake_at() {
 # ---------------------------------------------------------------------------
 
 printf 'test_thinkers_wake_at: using tmp dir %s\n' "$TMP"
+# ---------------------------------------------------------------------------
+# Test 7: a stale claim that collides with an existing wake_at for the same
+# name is dropped and the scheduled wake_at keeps its own due time. The claim
+# due time is always in the past, so re-arming it over a future wake_at fires
+# the name early.
+# ---------------------------------------------------------------------------
+test_stale_claim_keeps_scheduled_wake_at() {
+    setup_identity
+    start_thinkers
+    local due later got
+    due=$(( $(now) - 3600 ))
+    later=$(( $(now) + 600 ))
+    mkdir -p "$RUN/claimed"
+    printf '%s' "$due" > "$RUN/claimed/napper"
+    touch -t 202001010000 "$RUN/claimed/napper" 2>/dev/null
+    printf '%s' "$later" > "$RUN/napper.wake_at"
+    wait_for_file_gone "$RUN/claimed/napper" 5
+    sleep 2
+    if [[ ! -f "$RUN/claimed/napper" ]]; then
+        ok "stale claim dropped when a wake_at already holds the name"
+    else
+        bad "stale claim dropped when a wake_at already holds the name"
+    fi
+    got=$(cat "$RUN/napper.wake_at" 2>/dev/null)
+    if [[ "$got" == "$later" ]]; then
+        ok "scheduled wake_at kept its own due time"
+    else
+        bad "scheduled wake_at kept its own due time" "want $later, got '$got'"
+    fi
+    if [[ "$(record_count)" == "0" ]]; then
+        ok "no wake fired early from the collision"
+    else
+        bad "no wake fired early from the collision" "$(record_count) triggers recorded"
+    fi
+    stop_thinkers
+}
+
+# ---------------------------------------------------------------------------
+# Test 8: a stale claim with no wake_at to defer to is still re-armed from its
+# own due time and fires exactly one wake.
+# ---------------------------------------------------------------------------
+test_stale_claim_rearm_fires_once() {
+    setup_identity
+    start_thinkers
+    mkdir -p "$RUN/claimed"
+    printf '%s' "$(( $(now) - 5 ))" > "$RUN/claimed/napper"
+    touch -t 202001010000 "$RUN/claimed/napper" 2>/dev/null
+    wait_for_record 1 10
+    sleep 2
+    if [[ "$(record_count)" == "1" ]]; then
+        ok "stale claim alone re-arms and fires exactly one wake"
+    else
+        bad "stale claim alone re-arms and fires exactly one wake" "$(record_count) triggers recorded"
+    fi
+    if [[ ! -f "$RUN/napper.wake_at" && ! -f "$RUN/claimed/napper" ]]; then
+        ok "the re-armed wake consumed both the claim and the wake file"
+    else
+        bad "the re-armed wake consumed both the claim and the wake file"
+    fi
+    stop_thinkers
+}
+
 test_due_wake_fires_once
 test_future_wake_waits
 test_busy_defers
 test_finished_step_reaped
 test_bad_files_dropped
 test_stop_clears_wake_at
+test_stale_claim_keeps_scheduled_wake_at
+test_stale_claim_rearm_fires_once
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
