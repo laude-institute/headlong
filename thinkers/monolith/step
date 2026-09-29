@@ -446,7 +446,10 @@ printf '  model %s (%s tier)\n' "$run_model" "$model_tier" >&2
 # "Argument list too long" (rc=126) before it started. See
 # design/monolith_run_health.md.
 prompt_file_tmp=$(mktemp "$state_dir/monolith_prompt.XXXXXX")
-printf '%s' "$route_prompt" > "$prompt_file_tmp"
+# Scrub credentials out of the prompt before it reaches a model: the sections
+# above quote the mind log verbatim, and a pasted token is re-quoted into every
+# future prompt covering its window. See prompt_redact in _lib/common.sh.
+prompt_redact "$route_prompt" > "$prompt_file_tmp"
 # Both of shellm's streams go to FILES, never to a pipe this step reads.
 # stdout is the run's response; stderr is copied so a run that dies with no
 # durable step can say why in its error step (19 "run failed (rc=1)" steps
