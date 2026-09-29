@@ -9,9 +9,9 @@
 # with a leftover command flag stores the flag line as the summary, and the
 # flag reaches the slug and the file name. A blanket refusal would break the
 # pipe path's purpose, so the fix warns on stderr and stores anyway. The
-# check is a case glob on the summary's first word, inlined on the summary
-# derivation line because bin/ + thinkers/ sits exactly at the cloc limit in
-# CI: the warning must add no code line. No LLM calls, no docker.
+# pattern rides a variable and uses ASCII classes only: a quoted =~ pattern
+# matches literally, and macOS Bash 3.2 rejects uncertain bracket
+# expressions. No LLM calls, no docker.
 
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; REPO="$(dirname "$HERE")"

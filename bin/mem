@@ -57,6 +57,23 @@ slugify() {
         | cut -c1-80
 }
 
+# A first body line that looks like a command flag is almost always a
+# leftover from the command that wrote the memory: a piped add or edit
+# stores the leftover as the summary, and the slug and filename are
+# built from the same opening (live instances 2026-09-28). The pipe path
+# exists so text that truly starts with a dash can be stored, so this
+# warns on stderr and never refuses: deliberate dash openings only
+# produce the warning.
+warn_flag_summary() {
+    # The pattern rides a variable: a quoted =~ pattern matches literally,
+    # and ASCII-only classes keep macOS Bash 3.2 happy.
+    local first re_flag='^(--[A-Za-z0-9][A-Za-z0-9_-]*|-[A-Za-z][A-Za-z0-9]*)(=.*)?$'
+    first=$(printf '%s' "$1" | awk '{print $1}')
+    if [[ "$first" =~ $re_flag ]]; then
+        printf 'mem: warning: the first line looks like a command flag (%s); storing it as the summary anyway\n' "$first" >&2
+    fi
+}
+
 # Extract a field from YAML frontmatter.
 # Usage: frontmatter_field <file> <field>
 frontmatter_field() {
@@ -139,13 +156,8 @@ action_add() {
     hex=$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')
     slug=$(slugify "$text")
     filename="${timestamp}_${hex}_${slug}"
-    # A summary opening with a flag-shaped word is almost always a leftover
-    # flag from the command that wrote the memory, and it reaches the slug
-    # and the file name too (live instances 2026-09-28). The pipe path exists
-    # so dash-opening text can be stored: warn on stderr, store anyway.
-    # Inlined on the summary line because bin/ + thinkers/ sits exactly at
-    # the cloc gate in CI; a helper function would push the total over it.
-    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | head -1 | cut -c1-80); case ${summary%%[[:space:]]*} in --*|-[A-Za-z]*) printf 'mem: warning: the first line looks like a command flag (%s); storing it as the summary anyway\n' "${summary%%[[:space:]]*}" >&2 ;; esac
+    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | head -1 | cut -c1-80)
+    warn_flag_summary "$summary"
     created=$(date +"%Y-%m-%d %H:%M:%S")
 
     cat > "$MEM_DIR/${filename}.md" << EOF
@@ -499,8 +511,8 @@ action_edit() {
     # edit: a todo shortlist that is appended to during the day must still
     # expire that night. So do `schedule:` and `tz:` (design/scheduled_goals.md).
     local summary type created id until _k _v
-    # The same flag-opening warning as action_add, inlined the same way.
-    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | head -1 | cut -c1-80); case ${summary%%[[:space:]]*} in --*|-[A-Za-z]*) printf 'mem: warning: the first line looks like a command flag (%s); storing it as the summary anyway\n' "${summary%%[[:space:]]*}" >&2 ;; esac
+    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | head -1 | cut -c1-80)
+    warn_flag_summary "$summary"
     type=$(frontmatter_field "$file" "type")
     created=$(frontmatter_field "$file" "created")
     id=$(frontmatter_field "$file" "id")
