@@ -70,6 +70,7 @@ run_step() {  # $1 = trigger json; extra env as VAR=VAL args after it
         IDENTITY_DIR="$ID" IDENTITY_NAME=testid MEM_DIR="$ID/memories" \
         TRAJ_DIR="$ID/trajectories" TRAJ_ID="$TRAJ_ID" HOME="$WORK/home" \
         MONOLITH_TIERED_MEMORY=0 MONOLITH_SHARE_HINT_EVERY=0 \
+        MONOLITH_IDLE_FASTPATH=0 \
         "${@:2}" "$STEP" >> "$WORK/step.log" 2>&1
 }
 WAKE='{"type":"monolith-wake","content":"wake","source":"monolith-timer"}'
