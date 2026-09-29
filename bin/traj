@@ -267,20 +267,6 @@ _get_summary() {
     printf '%s' "$raw"
 }
 
-# Check if a trajectory file is a root (first step is trajectory without parent).
-_is_root_file() {
-    local traj_file="$1"
-    [[ -f "$traj_file" ]] || return 1
-    local first_type first_parent
-    first_type=$(head -1 "$traj_file" | jq -r '.type // empty' 2>/dev/null)
-    if [[ "$first_type" == "trajectory" ]]; then
-        first_parent=$(head -1 "$traj_file" | jq -r '.parent_traj // .parent // empty' 2>/dev/null)
-        [[ -z "$first_parent" ]] && return 0 || return 1
-    fi
-    # Not a trajectory step — treat as root (legacy shellm-run files etc.)
-    return 0
-}
-
 # Resolve the parent traj file directly. Uses parent_ref (fast) or falls back to UUID search.
 # Prints the parent file path, or returns 1 if no parent.
 _resolve_parent_file() {
