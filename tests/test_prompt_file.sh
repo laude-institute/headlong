@@ -39,6 +39,9 @@ chmod +x "$WORK/toolbin/llm"
 export PATH="$WORK/toolbin:$PATH"
 export HOME="$WORK/home"
 export HEADLONG_HOME="$WORK/home/.headlong"
+# An inherited TRAJ_DIR (any run inside shellm) outranks HEADLONG_HOME in
+# bin/shellm, so the stub runs would write into the caller's real trajectory.
+unset TRAJ_DIR TRAJ_ID SHELLM_TRAJ_DIR
 export ANTHROPIC_API_KEY="test-key"
 export SHELLM_MODEL="test-model"
 export SHELLM_ENV=local
