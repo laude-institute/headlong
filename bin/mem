@@ -42,6 +42,18 @@ fi
 
 die() { echo "mem: error: $*" >&2; exit 1; }
 
+# Stdin intentionally accepts dash-leading text. Warn without rejecting it.
+warn_flag_summary() {
+    local first word
+    first=$(printf '%s' "$1" | sed -n '/[^[:space:]]/{p;q;}')
+    first="${first#"${first%%[![:space:]]*}"}"
+    word=${first%%[[:space:]]*}
+    case "$word" in
+        --*|-[A-Za-z]*)
+            printf 'mem: warning: the first line looks like a command flag (%s); storing the text anyway\n' "$word" >&2 ;;
+    esac
+}
+
 debug() {
     if [[ "$VERBOSE" -eq 1 ]]; then
         printf '[mem debug] %s\n' "$*" >&2
@@ -139,6 +151,7 @@ action_add() {
     hex=$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')
     slug=$(slugify "$text")
     filename="${timestamp}_${hex}_${slug}"
+    warn_flag_summary "$text"
     summary=$(printf '%s' "$text" | head -1 | cut -c1-80)
     created=$(date +"%Y-%m-%d %H:%M:%S")
 
@@ -493,6 +506,7 @@ action_edit() {
     # edit: a todo shortlist that is appended to during the day must still
     # expire that night. So do `schedule:` and `tz:` (design/scheduled_goals.md).
     local summary type created id until _k _v
+    warn_flag_summary "$text"
     summary=$(printf '%s' "$text" | head -1 | head -c 80)
     type=$(frontmatter_field "$file" "type")
     created=$(frontmatter_field "$file" "created")
