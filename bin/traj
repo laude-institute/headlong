@@ -2440,23 +2440,36 @@ CHECKHELP
     for f in "${files[@]}"; do
         [[ -f "$f" ]] || continue
         total_files=$((total_files + 1))
-        local line_num=0 bad=0 bad_lines=""
-        while IFS= read -r line; do
-            line_num=$((line_num + 1))
-            if ! printf '%s' "$line" | jq empty 2>/dev/null; then
-                bad=$((bad + 1))
-                bad_lines="${bad_lines:+$bad_lines }$line_num"
-                local preview="${line:0:80}"
-                printf '%s:%d: %s\n' "$f" "$line_num" "$preview"
-            fi
-        done < "$f"
+        # One predicate decides both passes: a line is malformed iff
+        # fromjson cannot parse it. The scan used to judge with `jq empty`,
+        # which passes a blank line and a line holding two JSON values,
+        # while the repair re-serialized through `fromjson? // empty`,
+        # which drops both and rewrites every survivor — one bad line let
+        # --fix silently remove lines check had called clean. `inputs`
+        # also reads a final unterminated line, which the read-loop this
+        # replaces never saw, so a torn tail reported OK.
+        local -a nums=()
+        local line_no preview
+        while IFS=$'\001' read -r line_no preview; do
+            [[ -n "$line_no" ]] || continue
+            nums+=("$line_no")
+            printf '%s:%d: %s\n' "$f" "$line_no" "$preview"
+        done < <(jq -rRn '[inputs]
+            | to_entries
+            | map(select(((try (.value | fromjson | true) catch false) | not)))
+            | .[]
+            | "\( .key + 1 )\u0001\( .value[0:80] )"' "$f" 2>/dev/null)
 
+        local bad=${#nums[@]}
         if [[ "$bad" -gt 0 ]]; then
             total_bad=$((total_bad + bad))
             if [[ "$fix" -eq 1 ]]; then
+                # Drop exactly the flagged lines by number; every other
+                # line keeps its bytes, spacing included.
                 local tmp="${f}.check_tmp"
-                jq -R -c 'fromjson? // empty' "$f" > "$tmp" 2>/dev/null
-                mv "$tmp" "$f"
+                awk -v drop="$(printf '%s ' "${nums[@]}")" \
+                    'BEGIN { n = split(drop, a, " "); for (i = 1; i <= n; i++) d[a[i]] = 1 }
+                     ! (NR in d)' "$f" > "$tmp" && mv "$tmp" "$f"
                 total_fixed=$((total_fixed + bad))
                 printf '  fixed: removed %d malformed line(s)\n' "$bad"
             fi
