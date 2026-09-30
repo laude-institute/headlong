@@ -68,12 +68,18 @@ check "prompt: correction requires shared input" \
     grep -q 'correcting evidence is also present in this input' "$LLM_LOG"
 check "prompt: unseen prefixes forbidden" \
     grep -q 'do not invent or infer a prefix for an unseen window' "$LLM_LOG"
+# Message rows carry an arrow the model could read backwards; the prompt
+# says which side is the sender. Sealed summaries flipped outbound to
+# inbound before this sentence existed.
+check "prompt: message-row direction documented" \
+    grep -q 'the name before the arrow is the sender' "$LLM_LOG"
 
-# 4. Sealed blocks are stamped with prompt_version 5.
+
+# 4. Sealed blocks are stamped with prompt_version 6.
 blk="$TRAJ_ROOT/supe0001/rollups/t1/000000000000-000000000010.json"
 check "sealed block exists" test -f "$blk"
-check "sealed block stamped prompt_version 5" \
-    jq -e '.prompt_version == 5' "$blk"
+check "sealed block stamped prompt_version 6" \
+    jq -e '.prompt_version == 6' "$blk"
 
 # 5. The stub was actually called (log has at least one CALL/SYSTEM record).
 check "rollup model invoked" grep -q '^SYSTEM$' "$LLM_LOG"
