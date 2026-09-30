@@ -77,19 +77,32 @@ clip_summary() (
     # Find where the character containing the 80th byte starts: a byte
     # under 0x80 stands alone, a lead byte (>= 0xC0) starts one, and a
     # continuation byte (0x80-0xBF) walks back to its lead.
-    local i=79 b len=1
-    b=$(printf '%d' "'${line:i:1}")
-    while (( b >= 128 && b < 192 && i > 0 )); do
-        i=$(( i - 1 ))
+    # `printf '%d' "'<byte>"` yields the byte as a C char, and a shell
+    # built where char is signed (bash 3.2 on macOS) sign-extends bytes
+    # >= 0x80 to negative, so every range test against 128+ was false and
+    # a lead byte split by the clip classified as ASCII, keeping the split
+    # byte. Normalize before comparing; both sign conventions then agree.
+    local i=79 b
+    while (( i >= 0 )); do
         b=$(printf '%d' "'${line:i:1}")
+        if (( b < 0 )); then b=$(( b + 256 )); fi
+        if (( b < 128 )); then break; fi
+        if (( b < 192 )); then i=$(( i - 1 )); continue; fi
+        break
     done
-    # The character starting at byte i is len bytes; keep the full 80 only
-    # if it completes inside them, otherwise stop just before it.
-    if (( b >= 240 && b <= 247 )); then len=4
-    elif (( b >= 224 && b <= 239 )); then len=3
-    elif (( b >= 192 && b <= 223 )); then len=2
+    # b is the lead byte of the character containing the 80th byte, or an
+    # ASCII byte that stands alone: keep the full 80 only when that
+    # character completes inside them, else stop just before it.
+    if (( i < 0 || b < 192 )); then
+        printf '%s\n' "${line:0:80}"
+        return 0
     fi
-    if (( i + len - 1 <= 79 )); then
+    local len=1
+    if (( b >= 240 )); then len=4
+    elif (( b >= 224 )); then len=3
+    else len=2
+    fi
+    if (( i + len <= 80 )); then
         printf '%s\n' "${line:0:80}"
     else
         printf '%s\n' "${line:0:i}"
