@@ -119,7 +119,15 @@ chat reply "$THEM" "still running" >/dev/null 2>&1 && ok "reply answers in2" || 
 msg in3 "$THEM" "$ME" "status??" 20
 # --reply-to given explicitly: the inference path needs `timeout`, which a
 # stock Mac lacks, and the exemption is about the stamp, not how it got there.
-chat reply --reply-to in3 "$THEM" "still running" >/dev/null 2>&1 && ok "the same answer to a second question is allowed" || bad "answer exempt"
+# The same text to the same person inside the short window is one answer even
+# when each reply is stamped to a different inbound (2026-09-21: three copies
+# in 100 seconds), so a second identical answer is refused unless deliberate.
+before=$(grep -c '"type":"message"' "$TRAJ")
+chat reply --reply-to in3 "$THEM" "still running" >/dev/null 2>&1; rc3=$?
+[[ $rc3 -ne 0 && $(grep -c '"type":"message"' "$TRAJ") -eq $before ]] && ok "the same answer to a second question inside the short window is refused" || bad "stamped repeat refused" "rc=$rc3"
+# A stamped answer stays exempt from the 24h exact-text check; --force sends
+# the deliberate second answer and marks in3 answered for the cases below.
+CHAT_REPLY_REPEAT_WINDOW=0 chat reply --reply-to in3 "$THEM" "still running" >/dev/null 2>&1 && ok "the same answer to a second question is allowed outside the short window" || bad "answer exempt"
 # Every inbound from THEM is now answered, so the next reply answers nothing
 # whether inference runs (CI, the box) or not (a Mac without `timeout`).
 before=$(grep -c '"type":"message"' "$TRAJ")
