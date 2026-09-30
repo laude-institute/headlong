@@ -301,6 +301,9 @@ Options:
   --docker-access MODE Docker access for generated code: none, broker, socket, dind
   --traj TRAJ_ID         Write steps to an existing trajectory (no child traj or fork)
   --resume               Shorthand for --traj with the most recent trajectory
+                         (refused inside a nested run unless --traj/--traj-dir
+                         names the target; a nested run inherits the parent's
+                         trajectory directory)
   --context-scope SCOPE  What the model sees of the trajectory: "traj" (default,
                          earlier steps included) or "run" (only this run's
                          steps, prompt pinned whole)
@@ -3416,6 +3419,7 @@ main() {
     local _SHELLM_ENV_NAME="${SHELLM_ENV:-}"
     local _new_env=0
     local _use_traj=""
+    local _SHELLM_TRAJ_DIR_EXPLICIT=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -3510,6 +3514,7 @@ main() {
                 ;;
             --traj-dir)
                 SHELLM_TRAJ_DIR="${2:?--traj-dir requires DIR}"
+                _SHELLM_TRAJ_DIR_EXPLICIT=1
                 shift 2
                 ;;
             --resume)
@@ -3557,6 +3562,19 @@ main() {
     if [[ "$_new_env" -eq 1 && -n "$_SHELLM_ENV_NAME" ]]; then
         die "--new-env and --env cannot be used together"
     fi
+    # A nested shellm run (generated code calling shellm) inherits the
+    # parent run's TRAJ_DIR, so a bare --resume resolves "latest" to the
+    # parent's own live trajectory and appends foreign rows to it
+    # (2026-09-30: 27 such rows landed in a live identity log this way).
+    # Resume is a caller-side act: refuse it inside a run unless the caller
+    # names what gets written (--traj ID) or re-roots the directory
+    # (--traj-dir), both explicit choices.
+    if [[ -n "${SHELLM_RUN_STEP_ID:-}" && "$_use_traj" == "__latest__" \
+        && -z "${_SHELLM_TRAJ_DIR_EXPLICIT:-}" ]]; then
+        die "--resume inside a nested run would continue the live trajectory; \
+pass --traj ID or --traj-dir, or run from outside a shellm run"
+    fi
+
 
     validate_docker_config
     case "$SHELLM_CONTEXT_SCOPE" in

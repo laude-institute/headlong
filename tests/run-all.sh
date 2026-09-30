@@ -19,6 +19,10 @@ set -uo pipefail
 # there instead of the test's own temp app dir. Every test unsets or exports its own
 # values, so the suite itself needs none of these.
 unset IDENTITY_NAME IDENTITY_DIR MEM_DIR SKILLS_DIR SKILLS_KERNEL_DIR TRAJ_ID TRAJ_DIR ROOT_TRAJ_ID
+# A nested-run marker would make bin/shellm refuse the tests' top-level
+# --resume calls (the resume guard), so clear it too: the suite must pass
+# the same way inside a shellm run as outside one.
+unset SHELLM_RUN_STEP_ID
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pattern="${1:-}"
