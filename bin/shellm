@@ -2469,13 +2469,28 @@ run_loop() {
 
         _run_traj_id="$_use_traj"
 
-        # Inherit workdir and env from the trajectory if not explicitly provided
-        # Tolerant parse (fromjson?): a corrupt line in the trajectory must
-        # not kill the run — jq exits 5 on a parse error and set -e would
-        # abort silently. The || true shields against traj tail's SIGPIPE.
+        # Resolve the trajectory file once: the inheritance scan and the run
+        # name both need it, and the scan must not depend on how many records
+        # the log has gained since the run started.
+        local _traj_file
+        _traj_file=$(traj show "$_use_traj" --traj_dir "$_run_traj_dir" 2>/dev/null \
+            | grep '^File:' | awk '{print $2}') || true
+        run_name=$(basename "$(dirname "$_traj_file")")
+
+        # Inherit workdir and env from the trajectory if not explicitly provided.
+        # The old read took the last 50 records and only then kept the
+        # shellm-run row, but that row is minted at run start, so once a run
+        # had written more than about 50 records (roughly 17 iterations) the
+        # window no longer contained it and resume silently fell back to a
+        # fresh workdir under the workdirs root. Scan the whole file instead:
+        # one pass, last match wins. Tolerant parse (fromjson?): a corrupt
+        # line in the trajectory must not kill the run — jq exits 5 on a
+        # parse error and set -e would abort silently.
         local _orig_meta
-        _orig_meta=$(traj tail -n 50 --raw --traj_dir "$_run_traj_dir" "$_use_traj" \
-            | jq -cR 'fromjson? | select(.type=="shellm-run")' 2>/dev/null | tail -1) || true
+        if [[ -n "$_traj_file" && -f "$_traj_file" ]]; then
+            _orig_meta=$(jq -cR 'fromjson? | select(.type=="shellm-run")' "$_traj_file" 2>/dev/null \
+                | tail -1) || true
+        fi
         if [[ -n "$_orig_meta" ]]; then
             local _orig_workdir _orig_env _orig_image
             _orig_workdir=$(printf '%s' "$_orig_meta" | jq -r '.workdir // empty')
@@ -2486,12 +2501,6 @@ run_loop() {
             SHELLM_DOCKER_IMAGE=$(_resume_docker_image \
                 "$_SHELLM_DOCKER_IMAGE_EXPLICIT" "$SHELLM_DOCKER_IMAGE" "$_orig_image")
         fi
-
-        # Resolve run_name from trajectory dir
-        local _traj_file
-        _traj_file=$(traj show "$_use_traj" --traj_dir "$_run_traj_dir" 2>/dev/null \
-            | grep '^File:' | awk '{print $2}') || true
-        run_name=$(basename "$(dirname "$_traj_file")")
 
         progress "Using trajectory: $_run_traj_id"
     else
