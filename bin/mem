@@ -489,22 +489,24 @@ action_edit() {
     local now
     now=$(date +"%Y-%m-%d %H:%M:%S")
 
-    # Extract frontmatter fields. `until:` (mem add --until) rides through an
-    # edit: a todo shortlist that is appended to during the day must still
-    # expire that night. So do `schedule:` and `tz:` (design/scheduled_goals.md).
-    local summary type created id until _k _v
-    summary=$(printf '%s' "$text" | head -1 | head -c 80)
-    type=$(frontmatter_field "$file" "type")
-    created=$(frontmatter_field "$file" "created")
-    id=$(frontmatter_field "$file" "id")
-    until=$(frontmatter_field "$file" "until")
+    # The summary is the new text's first line. Every other frontmatter
+    # field is cargo and rides the rewrite below through byte for byte, so
+    # `until:` (mem add --until), `schedule:`, `tz:` and anything a second
+    # writer stored (the responder's person_key, aliases) no longer need a
+    # per-key extraction-and-rebuild round trip to survive an edit.
+    local summary
+    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | head -1 | cut -c1-80)
 
     # Build updated: field — collect existing entries and append new one
     local updated_block=""
     local existing_updated
     existing_updated=$(sed -n '/^---$/,/^---$/p' "$file" | grep "^updated:" | sed 's/^updated:[[:space:]]*//' || true)
     local existing_list
-    existing_list=$(sed -n '/^---$/,/^---$/p' "$file" | grep "^  - " || true)
+    # The collector reads only the list items that belong to updated: itself,
+    # stopping at the next key, so a multiline list another field owns (the
+    # responder's aliases) does not bleed into the updated entries.
+    existing_list=$(sed -n '/^---$/,/^---$/p' "$file" \
+        | awk '/^updated:/{p=1; next} p && /^  - /{print; next} p{exit}' || true)
 
     if [[ -n "$existing_list" ]]; then
         # Already a list — append
@@ -517,28 +519,62 @@ action_edit() {
         updated_block=$(printf 'updated: %s' "$now")
     fi
 
-    # Reconstruct the file (preserve id and until if present)
-    local id_line="" until_line=""
-    [[ -n "$id" ]] && id_line="id: $id
-"
-    [[ -n "$until" ]] && until_line="until: $until
-"
-    for _k in schedule tz; do
-        _v=$(frontmatter_field "$file" "$_k")
-        [[ -n "$_v" ]] && until_line="${until_line}$_k: $_v
-"
-    done
-
-    cat > "$file" << EOF
----
-${id_line}summary: $summary
-type: $type
-created: $created
-${until_line}$updated_block
----
-
-$text
-EOF
+    # Rewrite the file: mem edit owns two frontmatter fields, summary and
+    # updated, and rewrites only those. Every other field is carried through
+    # byte for byte, whatever wrote it. The responder writes person files
+    # directly with person_key and aliases; a rebuild from mem's own key list
+    # dropped both on a successful edit (exit 0, id and type intact, nothing
+    # looked wrong), the responder stopped claiming the file, and that
+    # person's next message minted a duplicate while the edited body sat
+    # orphaned. A multiline list also bled: the updated: collector greps list
+    # items anywhere in the frontmatter, so alias items became updated
+    # entries. Fields a tool does not model are cargo, not clay.
+    local tmp
+    tmp=$(mktemp "$MEM_DIR/.mem-edit-XXXXXX") || die "edit: mktemp failed"
+    # Carry the original file's mode across the rewrite; cp -p is portable,
+    # chmod --reference is a GNU-only extension.
+    cp -p "$file" "$tmp" 2>/dev/null || true
+    : > "$tmp"
+    if [[ "$(head -1 "$file")" == "---" ]]; then
+        # A frontmatter block that opens but never closes is a corrupted store
+        # file. Refuse rather than mangle: a failed edit leaves the file as it
+        # was, an edit into a malformed file is not a repair.
+        if ! tail -n +2 "$file" | grep -q '^---$'; then
+            rm -f "$tmp"
+            die "edit: frontmatter in $(basename "$file") never closes; refusing to edit a corrupted file"
+        fi
+        NEW_SUMMARY="$summary" UPDATED_BLOCK="$updated_block" awk '
+            BEGIN { infm = 0; skip = 0; wrote = 0 }
+            infm == 0 && /^---$/ { infm = 1; print; next }
+            infm == 1 {
+                if ($0 ~ /^---$/) {
+                    if (!wrote)
+                        print "summary: " ENVIRON["NEW_SUMMARY"]
+                    print ENVIRON["UPDATED_BLOCK"]
+                    print "---"
+                    infm = 2
+                    next
+                }
+                if (skip) {
+                    if ($0 ~ /^  - /)
+                        next
+                    skip = 0
+                }
+                if ($0 ~ /^updated:/) { skip = 1; next }
+                if (!wrote && $0 ~ /^summary:/) {
+                    print "summary: " ENVIRON["NEW_SUMMARY"]
+                    wrote = 1
+                    next
+                }
+                print
+            }
+            infm == 2 { next }
+        ' "$file" > "$tmp" || { rm -f "$tmp"; die "edit: rewrite failed"; }
+    else
+        printf -- '---\nsummary: %s\n%s\n---\n' "$summary" "$updated_block" > "$tmp"
+    fi
+    printf '\n%s\n' "$text" >> "$tmp"
+    mv "$tmp" "$file"
 
     # Auto-update slug in filename. Always sanitize through slugify: sed is
     # line-oriented and lets embedded newlines through into the filename, and
