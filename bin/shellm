@@ -748,7 +748,11 @@ docker_prepare_container_tools() {
         local _bin_name
         _bin_name=$(basename "$_bin_path")
         local _dest="/usr/local/bin/$_bin_name"
-        if ! docker exec -w / "$_SHELLM_CONTAINER" test -x "$_dest" >/dev/null 2>&1; then
+        # The guard compares bytes, not just the name: test -x cannot tell the
+        # requested binary from an image-shipped namesake, so --bin jq next to
+        # an image jq was silently skipped and the container kept its own.
+        # Identical bytes on a rerun still skip, so the loop stays idempotent.
+        if ! docker exec -w / "$_SHELLM_CONTAINER" cat "$_dest" 2>/dev/null | cmp -s - "$_bin_path"; then
             docker cp "$_bin_path" "$_SHELLM_CONTAINER:$_dest" >/dev/null 2>&1 || \
                 die "Could not install $_bin_name in shellm container"
             docker exec --user 0:0 -w / "$_SHELLM_CONTAINER" chmod 0755 "$_dest" >/dev/null 2>&1 || \
