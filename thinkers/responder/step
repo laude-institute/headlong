@@ -541,7 +541,46 @@ notes and drop what the conversation shows is stale. At most 12 short lines of
 plain text, no headers, no bullet syntax. Output only the notes.
 NOTES
 }
-_redact_keys() { sed -E 's/(sk|xox[abp]|ghp|gho|AKIA)[-_A-Za-z0-9]{12,}/[redacted]/g' | _redact_card; }
+# Person notes are model output summarizing a conversation, and a conversation
+# can contain a pasted credential. Mask the configured credential env values by
+# value, then the shapes that arrive as text and so have no env var to match.
+_redact_keys() {
+    local s n v
+    s=$(cat)
+    for n in GITHUB_TOKEN GH_TOKEN HOMEBREW_GITHUB_API_TOKEN GITHUB_PAT \
+             ANTHROPIC_API_KEY LLM_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY \
+             GEMINI_API_KEY GOOGLE_API_KEY OPENCODE_API_KEY SLACK_BOT_TOKEN \
+             SLACK_APP_TOKEN SLACK_USER_TOKEN SLACK_TOKEN TELEGRAM_BOT_TOKEN \
+             HF_TOKEN HUGGING_FACE_HUB_TOKEN AWS_SECRET_ACCESS_KEY \
+             AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID STRIPE_SECRET_KEY \
+             SENDGRID_API_KEY TWILIO_AUTH_TOKEN DATABASE_URL REDIS_URL; do
+        v="${!n:-}"
+        [[ -n "$v" && ${#v} -ge 8 ]] && s="${s//"$v"/[redacted]}"
+    done
+    printf '%s' "$s" | sed -E \
+        -e 's/sk-ant-[A-Za-z0-9._-]+/[redacted]/g' \
+        -e 's/(^|[^A-Za-z0-9])(sk-[A-Za-z0-9_.=-]{12,})/\1[redacted]/g' \
+        -e 's/(^|[^A-Za-z0-9])(gh[pousr]_[A-Za-z0-9]{12,})/\1[redacted]/g' \
+        -e 's/(^|[^A-Za-z0-9])(github_pat_[A-Za-z0-9_]{12,})/\1[redacted]/g' \
+        -e 's/(^|[^A-Za-z0-9])(xox[a-z]-[A-Za-z0-9_.-]{8,})/\1[redacted]/g' \
+        -e 's/(^|[^A-Za-z0-9])(hf_[A-Za-z0-9]{12,})/\1[redacted]/g' \
+        -e 's/AIza[A-Za-z0-9_-]{25,}/[redacted]/g' \
+        -e 's/(AKIA|ASIA)[A-Z0-9]{16}/[redacted]/g' \
+        -e 's/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/[redacted]/g' \
+        -e 's#://[^/@[:space:]]+:[^/@[:space:]]+@#://[redacted]@#g' \
+        -e '/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/,/-----END [A-Z0-9 ]*PRIVATE KEY-----/c\
+[redacted]' \
+        -e 's#"auth"[[:space:]]*:[[:space:]]*"[A-Za-z0-9+/=]{16,}"#"auth": "[redacted]"#g' \
+        -e 's/(^|[^A-Za-z0-9])((sk|rk)_live_[A-Za-z0-9]{8,})/\1[redacted]/g' \
+        -e 's/(^|[^A-Za-z0-9])(whsec_[A-Za-z0-9]{8,})/\1[redacted]/g' \
+        -e 's/(^|[^A-Za-z0-9])(npm_[A-Za-z0-9]{20,})/\1[redacted]/g' \
+        -e 's/(^|[^A-Za-z0-9])(glpat-[A-Za-z0-9_-]{10,})/\1[redacted]/g' \
+        -e 's/(^|[^A-Za-z0-9])(dckr_pat-[A-Za-z0-9_.-]{10,})/\1[redacted]/g' \
+        -e 's/(^|[^A-Za-z0-9])(SG\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/\1[redacted]/g' \
+        -e 's/(^|[^A-Za-z0-9])(SK[0-9a-f]{32})/\1[redacted]/g' \
+        -e 's/(^|[^A-Za-z0-9])(key-[A-Za-z0-9]{20,})/\1[redacted]/g' \
+        -e 's/((aws|AWS)_secret_access_key)[[:space:]]*[=:][[:space:]]*[^[:space:]]+/\1=[redacted]/g' | _redact_card
+}
 _update_person_notes() {
     local key="$1" person="$2" hist prev_body prev_file system user new_body
     local lockdir="${MEM_DIR:-/tmp}/.person-notes.lock"
