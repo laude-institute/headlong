@@ -7,8 +7,9 @@
 # a few memories: a step that shares words with a memory gets an
 # observation appended to the trajectory naming that memory; unrelated
 # steps, its own observations, and a memory already surfaced recently do
-# not. Also checks the index rebuilds when a memory is added, and that the
-# bundled thinker ships with its `disabled` marker. No LLM calls, no docker.
+# not. Also checks the index rebuilds when a memory is added, that a deleted
+# memory leaves no ghost rows in the index, and that the bundled thinker
+# ships with its `disabled` marker. No LLM calls, no docker.
 
 set -uo pipefail
 unset IDENTITY_DIR IDENTITY_NAME MEM_DIR TRAJ_DIR TRAJ_ID RETRIEVAL_INDEX RETRIEVAL_SEMANTIC
@@ -90,14 +91,27 @@ step thought 7 "the snap aws cli wrote an empty file again after the redirect" |
 check "index rebuilt: new memory surfaces"  bash -c 'grep "\"source\":\"retrieval\"" "$1" | tail -1 | jq -e ".retrieved_mem == \"cccc3333\"" >/dev/null' _ "$TRAJ"
 check "three observations total"            test "$(obs_count)" = 3
 
+# --- a deleted memory must not resurface (ghost rows) -----------------------
+sleep 1   # mtime resolution: the new memory must be newer than the index
+mem_file 20260804_dddd_kafka "dddd4444" "kafka consumer groups lag when rebalancing" \
+    "The consumer group coordinator stalls a rebalance; restart the broker to clear the lag."
+step thought 8 "checking something unrelated like zebras and orbit" | run_step
+check "index includes the new memory"      grep -q "dddd4444" "$ID/retrieval/index.tsv"
+rm -f "$ID/memories/20260804_dddd_kafka.md"
+step thought 9 "the kafka consumer groups lag while rebalancing again" | run_step
+check "deleted memory does not resurface"  test "$(obs_count)" = 3
+check "index has no ghost rows"            bash -c '! grep -q "dddd4444" "$1"' _ "$ID/retrieval/index.tsv"
+
+
 # --- build-index.sh standalone ---------------------------------------------
 rows=$(MEM_DIR="$ID/memories" IDENTITY_DIR="$ID" "$REPO/thinkers/retrieval/build-index.sh" "$ID/memories" "$WORK/idx.tsv")
 check "build-index prints row count"        test "$rows" = "$(wc -l < "$WORK/idx.tsv" | tr -d ' ')"
 check "build-index skips stopwords"         bash -c '! cut -f1 "$1" | grep -qx "the"' _ "$WORK/idx.tsv"
+check "build-index records the store count"   test "$(cat "$WORK/idx.tsv.count")" = 3
 
 # --- no memories: quiet no-op ----------------------------------------------
 rm -f "$ID/memories"/*.md
-step thought 8 "colima docker mount" | run_step
+step thought 10 "colima docker mount" | run_step
 check "no memories: exits 0, no append"     test "$(obs_count)" = 3
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
