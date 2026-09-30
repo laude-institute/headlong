@@ -386,14 +386,22 @@ usage() {
 truncate_output() {
     local input="$1"
     local max="$SHELLM_TRUNCATE"
+    # 0, negative and non-numeric values are not a cap. Fall back to the
+    # default rather than print the whole input under a truncation marker
+    # (0 makes the tail slice ${input: -0}, the full string) or skip the
+    # cap entirely (a non-number reads as 0 in arithmetic context).
+    [[ "$max" =~ ^[1-9][0-9]*$ ]] || max=2000
     if [[ "${#input}" -gt "$max" ]]; then
         local half=$(( max / 2 ))
         local skipped=$(( ${#input} - max ))
-        echo "${input:0:$half}"
-        echo "[... truncated $skipped chars ...]"
-        echo "${input: -$half}"
+        local tail_start=$(( ${#input} - half ))
+        # printf, not echo: the slices arrive as the first argument, and an
+        # output that is exactly -n or -e is an echo option, not data.
+        printf '%s\n' "${input:0:$half}"
+        printf '[... truncated %s chars ...]\n' "$skipped"
+        printf '%s\n' "${input:$tail_start}"
     else
-        echo "$input"
+        printf '%s\n' "$input"
     fi
 }
 
