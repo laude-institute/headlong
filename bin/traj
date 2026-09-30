@@ -2448,17 +2448,25 @@ CHECKHELP
         # --fix silently remove lines check had called clean. `inputs`
         # also reads a final unterminated line, which the read-loop this
         # replaces never saw, so a torn tail reported OK.
+        # The numbers arrive alone and the preview is read from the file
+        # itself: the first cut piped N<SOH>preview records into a read
+        # with IFS set to that same control character, which split
+        # nothing under the macOS runner's bash 3.2, so printf %d got
+        # the whole record and set -e killed the scan at the first flag.
+        # jq clips the preview by character, so a multi-byte one does
+        # not split even where the shell has no UTF-8 locale.
         local -a nums=()
         local line_no preview
-        while IFS=$'\001' read -r line_no preview; do
-            [[ -n "$line_no" ]] || continue
+        while IFS= read -r line_no; do
+            [[ "$line_no" =~ ^[1-9][0-9]*$ ]] || continue
             nums+=("$line_no")
+            preview=$(sed -n "${line_no}p" "$f" 2>/dev/null | jq -Rr '.[0:80]' 2>/dev/null) || true
             printf '%s:%d: %s\n' "$f" "$line_no" "$preview"
         done < <(jq -rRn '[inputs]
             | to_entries
             | map(select(((try (.value | fromjson | true) catch false) | not)))
             | .[]
-            | "\( .key + 1 )\u0001\( .value[0:80] )"' "$f" 2>/dev/null)
+            | .key + 1' "$f" 2>/dev/null)
 
         local bad=${#nums[@]}
         if [[ "$bad" -gt 0 ]]; then
