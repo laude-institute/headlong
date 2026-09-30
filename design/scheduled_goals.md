@@ -197,3 +197,17 @@ window due, expired goal skipped). It passes under bash 3.2.
 - Weekday filters (`days: mon-fri`). Left out until someone needs them.
 - Whether the responder should see the clock line as well. It answers
   questions such as "what time is it for you" from the same missing data.
+
+## Closing a window without a send
+
+A window is done when its key is in the sent ledger, but a task can also
+decide a window needs no post at all and close it on its own: bin/papers-skip
+writes the key into notes/daily-papers/closed-keys.md, one key per line. The
+chat ledger does not know about those keys, so before 2026-09-30 the routing
+signals kept offering such a window as DUE NOW and the mind re-made the same
+skip decision on every wake.
+
+_schedule_signals therefore also reads SCHEDULE_CLOSED_KEYS, a path to a
+plain one-key-per-line manifest, and treats any key listed there as done,
+reported as "the window was closed without a post" so nobody waits for a
+delivery that is not coming. A missing or unset manifest changes nothing.
