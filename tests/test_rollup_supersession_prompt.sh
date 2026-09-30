@@ -74,6 +74,12 @@ check "prompt: unseen prefixes forbidden" \
 check "prompt: message-row direction documented" \
     grep -q 'the name before the arrow is the sender' "$LLM_LOG"
 
+# merge and shellm-run rows are dispatcher bookkeeping for nested runs;
+# sealed summaries narrated them as completed Git operations before this
+# sentence existed.
+check "prompt: merge/shellm-run bookkeeping gloss documented" \
+    grep -q 'dispatcher bookkeeping for nested runs' "$LLM_LOG"
+
 
 # 4. Sealed blocks are stamped with prompt_version 6.
 blk="$TRAJ_ROOT/supe0001/rollups/t1/000000000000-000000000010.json"
