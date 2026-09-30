@@ -84,5 +84,57 @@ mem edit "$id" "$X100 ascii long" >/dev/null 2>&1
 s=$(summary_of "$(only_file)")
 [[ "$s" == "$X80" ]] && ok "edit: ASCII summary clips at exactly 80 bytes" || bad "edit: ASCII clip" "$(hex_of "$s")"
 
+# unit: the boundary classifier must agree under signed and unsigned char
+# shells. printf '%d' "'<byte>" yields the byte as a C char: bash 5 is built
+# with unsigned char, but macOS /bin/bash 3.2 sign-extends bytes >= 0x80 to
+# negative, so the classifier's range tests against 128+ never fired, a lead
+# byte split by the clip classified as ASCII and was kept, and the first CI
+# run on this branch went red on macOS alone (6 passed, 5 failed, every
+# failing case keeping the split lead byte). The helper normalizes negative
+# values to 0-255 before comparing. This case emulates the signed
+# convention inside the shell so the suite catches that class of
+# regression on Linux as well; on a shell that already sign-extends, the
+# emulation is a no-op pass-through.
+helper=$(sed -n '/^clip_summary()/,/^)/p' "$REPO/bin/mem")
+if [[ "$helper" == "clip_summary() ("* ]]; then
+    sim="$WORK/sim_signed_char.sh"
+    cat > "$sim" <<'EOS'
+# Emulate the signed-char convention of bash 3.2 on macOS: quote-form
+# values for bytes >= 0x80 come back negative. On a shell that already
+# sign-extends, v >= 128 never holds and this is a pass-through.
+printf() {
+    if [[ "$1" == %d && "$2" == \'* ]]; then
+        local v
+        v=$(builtin printf '%d' "$2")
+        if (( v >= 128 )); then v=$(( v - 256 )); fi
+        builtin printf '%d\n' "$v"
+        return 0
+    fi
+    builtin printf "$@"
+}
+EOS
+    printf '%s\n' "$helper" >> "$sim"
+    cat >> "$sim" <<'EOS'
+r1=BAD; r2=BAD; r3=BAD; r4=BAD
+a=$(clip_summary "$(printf 'x%.0s' {1..79})$(printf '\303\251')$(printf '\303\251') tail")
+[[ "$a" == "$(printf 'x%.0s' {1..79})" ]] && r1=OK
+a=$(clip_summary "$(printf 'x%.0s' {1..79})$(printf '\360\237\230\200') tail")
+[[ "$a" == "$(printf 'x%.0s' {1..79})" ]] && r2=OK
+a=$(clip_summary "$(printf 'x%.0s' {1..78})$(printf '\303\251') completing at eighty")
+[[ "$a" == "$(printf 'x%.0s' {1..78})$(printf '\303\251')" ]] && r3=OK
+a=$(clip_summary "$(printf 'x%.0s' {1..100}) ascii")
+[[ ${#a} -eq 80 ]] && r4=OK
+echo "$r1 $r2 $r3 $r4"
+EOS
+    out=$(bash "$sim" 2>&1)
+    if [[ "$out" == "OK OK OK OK" ]]; then
+        ok "unit: classifier clips cleanly under a signed-char shell"
+    else
+        bad "unit: signed-char shell (3.2 emulation)" "$out"
+    fi
+else
+    bad "unit: clip_summary not found in bin/mem"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]
