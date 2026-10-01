@@ -2967,10 +2967,14 @@ run_loop() {
         # The block runs under xtrace so an operator watching the live
         # stream sees each command; PS4 prefixes every trace line with
         # a \001 byte so the storage strip below can drop trace and only
-        # trace, never output that merely looks like a trace line.
+        # trace, never output that merely looks like a trace line. The
+        # mark uses the backslash octal form, not a raw byte: bash 3.2
+        # expands PS4 as a prompt string and eats a raw control byte
+        # (CTLESC), which left every trace line unmarked on macOS and
+        # let trace, forwarded secrets included, reach storage.
         local wrapped_code
         # shellcheck disable=SC1078,SC1079  # one long double-quoted string, built across lines on purpose
-        wrapped_code="PS4=\$'\\001+ '
+        wrapped_code="PS4='\\001+ '
 set -x
 $code
 set +x"$'\n'"
