@@ -2963,10 +2963,15 @@ run_loop() {
             final_path="$workdir/.shellm_final"
         fi
 
-        # Build wrapped code that captures FINAL/FINAL_FILE after execution
+        # Build wrapped code that captures FINAL/FINAL_FILE after execution.
+        # The block runs under xtrace so an operator watching the live
+        # stream sees each command; PS4 prefixes every trace line with
+        # a \001 byte so the storage strip below can drop trace and only
+        # trace, never output that merely looks like a trace line.
         local wrapped_code
         # shellcheck disable=SC1078,SC1079  # one long double-quoted string, built across lines on purpose
-        wrapped_code="set -x
+        wrapped_code="PS4=\$'\\001+ '
+set -x
 $code
 set +x"$'\n'"
 __shellm_rc=\$?
@@ -3200,9 +3205,12 @@ exit \$__shellm_rc
             progress "\033[1;31mExit $exit_code\033[0m"
         fi
 
-        # Clean output: strip xtrace lines for storage
+        # Clean output: strip the wrapper's xtrace lines for storage.
+        # Trace carries the \001 PS4 mark set above, so genuine output
+        # that begins with a plus sign (diffs, "+ text") is kept and
+        # only marked trace lines are dropped.
         local clean_output
-        clean_output=$(printf '%s' "$output" | grep -v '^+\+ ' | grep -v '^+ ' || true)
+        clean_output=$(printf '%s' "$output" | grep -v "^"$'\001' || true)
         # Write to temp file to avoid ARG_MAX when passing large output to jq
         local _stdout_tmp
         _stdout_tmp=$(mktemp)
