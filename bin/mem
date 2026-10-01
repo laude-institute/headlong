@@ -134,12 +134,17 @@ action_add() {
 
     mkdir -p "$MEM_DIR"
 
-    local timestamp hex slug filename summary created
+    local timestamp hex slug filename summary created first_line
     timestamp=$(date +%Y-%m-%d-%H-%M-%S)
     hex=$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')
     slug=$(slugify "$text")
     filename="${timestamp}_${hex}_${slug}"
-    summary=$(printf '%s' "$text" | head -1 | cut -c1-80)
+    # First line without a pipeline: head -1 exits as soon as it has
+    # its line, and a large body leaves printf holding megabytes, so
+    # printf takes EPIPE and pipefail kills the command before the
+    # write. A here-string has no pipe to close.
+    IFS= read -r first_line <<< "$text"
+    summary=${first_line:0:80}
     created=$(date +"%Y-%m-%d %H:%M:%S")
 
     cat > "$MEM_DIR/${filename}.md" << EOF
@@ -492,8 +497,12 @@ action_edit() {
     # Extract frontmatter fields. `until:` (mem add --until) rides through an
     # edit: a todo shortlist that is appended to during the day must still
     # expire that night. So do `schedule:` and `tz:` (design/scheduled_goals.md).
-    local summary type created id until _k _v
-    summary=$(printf '%s' "$text" | head -1 | head -c 80)
+    local summary type created id until _k _v first_line
+    # Same race as action_add's summary line: head -c 80 and head -1
+    # both exit early, and a large body EPIPEs printf under pipefail,
+    # killing the edit before the file write (2026-10-01, 28.6KB body).
+    IFS= read -r first_line <<< "$text"
+    summary=${first_line:0:80}
     type=$(frontmatter_field "$file" "type")
     created=$(frontmatter_field "$file" "created")
     id=$(frontmatter_field "$file" "id")
