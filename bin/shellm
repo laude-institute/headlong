@@ -2400,10 +2400,14 @@ ${combined}"
     printf '%s' "$summary_json" | traj append --traj_dir "$traj_dir" "$traj_id" >/dev/null 2>/dev/null || true
 }
 
-# Stream lines past $2 from $1 to stderr (redacted), then print the new
-# total line count on stdout so the caller can update its cursor.
 _stream_new_output() {
-    local output_file="$1" lines_read="$2"
+    # FILE is the stream to tail, LINES_READ the caller's line cursor.
+    # IS_TRACE=1 marks FILE as the trace channel: every line renders as
+    # the cyan command view. Otherwise FILE is program output and
+    # renders gray, except a trace line that reached this stream anyway
+    # (bash 3.2, or a generated block that closed fd 9): those carry the
+    # \001 PS4 mark, stripped here for display, and render like trace.
+    local output_file="$1" lines_read="$2" is_trace="${3:-0}"
     local total_lines
     total_lines=$(wc -l < "$output_file" 2>/dev/null || echo 0)
     total_lines=$(echo "$total_lines" | tr -d ' ')
@@ -2414,13 +2418,14 @@ _stream_new_output() {
         # subshell: the output file is written CONCURRENTLY by the running
         # command, so `head` can close after $new_count lines while `tail` is
         # still reading freshly-appended lines → SIGPIPE to tail. Under the
-        # global `set -o pipefail` that made the whole run exit rc=141 (on macOS
-        # every streaming run died this way). See design/monolith_run_health.md.
+        # global `set -o pipefail` that made the whole run exit rc=141 (on
+        # macOS every streaming run died this way). See design/monolith_run_health.md.
         ( set +o pipefail; tail -n +"$skip_n" "$output_file" | head -n "$new_count" ) | while IFS= read -r line; do
             local redacted_line
             redacted_line=$(redact_sensitive "$line")
+            redacted_line=${redacted_line#$'\001'}
             if [[ "$QUIET" -eq 0 ]]; then
-                if [[ "$redacted_line" == +* ]]; then
+                if [[ "$is_trace" -eq 1 || "$redacted_line" == +* ]]; then
                     printf '\033[36m  $ %s\033[0m\n' "${redacted_line#+ }" >&2
                 else
                     printf '\033[90m  │ %s\033[0m\n' "$redacted_line" >&2
@@ -2789,7 +2794,7 @@ run_loop() {
         # Clean up temp dir
         rm -rf "$_cleanup_rundir"
         # Clean up Docker-mode final file from workdir
-        rm -f "$_cleanup_workdir/.shellm_final" 2>/dev/null
+        rm -f "$_cleanup_workdir/.shellm_final" "$_cleanup_workdir/.shellm_trace" 2>/dev/null
         # Docker teardown: only if --temp-docker was passed
         if [[ "${_cleanup_temp:-0}" -eq 1 ]] && [[ "${_SHELLM_DOCKER_MODE:-0}" -eq 1 ]]; then
             docker_teardown
@@ -2962,11 +2967,33 @@ run_loop() {
         if [[ "${_SHELLM_DOCKER_MODE:-0}" -eq 1 ]]; then
             final_path="$workdir/.shellm_final"
         fi
+        # The trace channel's file. In Docker mode it must live in the
+        # mounted workdir, same rule as the final file, so the parent
+        # can read it from the host.
+        local trace_file="$rundir/.trace"
+        if [[ "${_SHELLM_DOCKER_MODE:-0}" -eq 1 ]]; then
+            trace_file="$workdir/.shellm_trace"
+        fi
 
-        # Build wrapped code that captures FINAL/FINAL_FILE after execution
+        # Build wrapped code that captures FINAL/FINAL_FILE after execution.
+        # The block runs under xtrace so an operator watching the live
+        # stream sees each command. The trace channel is a seam, not a
+        # filter: on bash 4.1 and newer the wrapper points BASH_XTRACEFD
+        # at fd 9 and the trace file above, so trace never shares the
+        # captured output stream, and a traced multiline argument can
+        # leave neither continuation lines in storage nor glue onto an
+        # unterminated output line. BASH_XTRACEFD does not exist in bash
+        # 3.2 and a generated block may close fd 9, so PS4 keeps the
+        # \001 mark (backslash octal: bash 3.2 expands PS4 as a prompt
+        # string and eats a raw control byte) and the storage strip
+        # below drops marked lines as the fallback for both.
         local wrapped_code
         # shellcheck disable=SC1078,SC1079  # one long double-quoted string, built across lines on purpose
-        wrapped_code="set -x
+        wrapped_code="PS4='\\001+ '
+if [ -n \"$trace_file\" ] && { [ \"\${BASH_VERSINFO[0]}\" -gt 4 ] || { [ \"\${BASH_VERSINFO[0]}\" -eq 4 ] && [ \"\${BASH_VERSINFO[1]}\" -ge 1 ]; }; }; then
+    if exec 9>>\"$trace_file\"; then BASH_XTRACEFD=9; fi
+fi
+set -x
 $code
 set +x"$'\n'"
 __shellm_rc=\$?
@@ -3055,6 +3082,7 @@ exit \$__shellm_rc
         local timeout_marker="$rundir/.timeout"
         local activity_file="$rundir/.activity"
         : > "$output_file"
+        : > "$trace_file"
         : > "$activity_file"
         rm -f "$timeout_marker" "$exec_pid_file" "$watchdog_pid_file"
         local exit_code=0
@@ -3089,9 +3117,16 @@ exit \$__shellm_rc
             local started=$SECONDS
             while kill -0 "$exec_pid" 2>/dev/null; do
                 sleep 1
-                local cur_size
+                local cur_size _trace_size
                 cur_size=$(wc -c < "$output_file" 2>/dev/null || echo 0)
                 cur_size=$(echo "$cur_size" | tr -d ' ')
+                # Trace went to its own file (bash 4.1+), so a busy but
+                # silent block would read idle if staleness watched the
+                # output file alone. Sum both files; on the joined
+                # stream the two sizes were one number already.
+                _trace_size=$(wc -c < "$trace_file" 2>/dev/null || echo 0)
+                _trace_size=$(echo "$_trace_size" | tr -d ' ')
+                cur_size=$((cur_size + _trace_size))
                 if [[ "$cur_size" -eq "$last_size" ]]; then
                     stale_seconds=$((stale_seconds + 1))
                     quiet_seconds=$((quiet_seconds + 1))
@@ -3145,9 +3180,10 @@ exit \$__shellm_rc
         printf '%s' "$watchdog_pid" > "$watchdog_pid_file"
 
         # Foreground: poll output file and stream new lines to stderr
-        local lines_read=0
+        local lines_read=0 trace_read=0
         while kill -0 "$exec_pid" 2>/dev/null; do
             lines_read=$(_stream_new_output "$output_file" "$lines_read")
+            trace_read=$(_stream_new_output "$trace_file" "$trace_read" 1)
             sleep 0.2
         done
 
@@ -3160,6 +3196,7 @@ exit \$__shellm_rc
 
         # Drain any remaining output lines
         _stream_new_output "$output_file" "$lines_read" >/dev/null
+        _stream_new_output "$trace_file" "$trace_read" >/dev/null
 
         # Check if we timed out. The marker carries why, so the feedback the
         # model gets names the real cause instead of guessing at a prompt.
@@ -3180,7 +3217,7 @@ exit \$__shellm_rc
 
         local output
         output=$(cat "$output_file")
-        rm -f "$output_file" "$exec_pid_file" "$watchdog_pid_file" "$timeout_marker" "$activity_file"
+        rm -f "$output_file" "$exec_pid_file" "$watchdog_pid_file" "$timeout_marker" "$activity_file" "$trace_file"
         local _exec_s=$(( $(date +%s) - _exec_t0 ))
 
         debug "Exit code: $exit_code, timed_out: $timed_out"
@@ -3200,9 +3237,14 @@ exit \$__shellm_rc
             progress "\033[1;31mExit $exit_code\033[0m"
         fi
 
-        # Clean output: strip xtrace lines for storage
+        # Clean output for storage. On bash 4.1 and newer the trace went
+        # to its own fd and never touched this stream; this strip is the
+        # fallback for bash 3.2 and for a block that closed fd 9, where
+        # marked trace lines do reach the stream. Trace carries the
+        # \001 PS4 mark, so genuine output that begins with a plus sign
+        # (diffs, "+ text") is kept and only marked lines are dropped.
         local clean_output
-        clean_output=$(printf '%s' "$output" | grep -v '^+\+ ' | grep -v '^+ ' || true)
+        clean_output=$(printf '%s' "$output" | grep -v "^"$'\001' || true)
         # Write to temp file to avoid ARG_MAX when passing large output to jq
         local _stdout_tmp
         _stdout_tmp=$(mktemp)
