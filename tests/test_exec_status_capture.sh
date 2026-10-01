@@ -43,8 +43,10 @@ ok "wrapper block extracted from bin/shellm"
 run_wrapped() {
     # Build and run exactly as production does: same locals in scope, same
     # bash -e -c path, stdin /dev/null.
+    # The extracted wrapper reads these locals through eval.
+    # shellcheck disable=SC2034
     local code="$1" final_path="$2"
-    # shellcheck disable=SC1078,SC1079  # one long double-quoted string, built across lines on purpose
+    local wrapped_code
     eval "$wrapper_src"
     bash -e -c "$wrapped_code" </dev/null >/dev/null 2>&1
 }
