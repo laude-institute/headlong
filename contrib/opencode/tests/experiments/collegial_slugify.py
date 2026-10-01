@@ -42,7 +42,7 @@ def main():
 
     identity = out / "identity"
     identity.mkdir()
-    (identity / "core_identity_prompt.md").touch()
+    (identity / "info.txt").write_text("name=experiment\n")
     run([ROOT / "bin/headlong-opencode", "install", "--identity", identity])
     env["PATH"] = str(identity / "extensions/opencode/bin") + os.pathsep + env["PATH"]
 
