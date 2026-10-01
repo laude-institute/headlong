@@ -2966,10 +2966,13 @@ run_loop() {
         # Build wrapped code that captures FINAL/FINAL_FILE after execution
         local wrapped_code
         # shellcheck disable=SC1078,SC1079  # one long double-quoted string, built across lines on purpose
+        # __shellm_rc reads $? on the line right after the model's code and
+        # before set +x runs: set +x clobbers $? with its own status (zero),
+        # so code ending in set +e and a failing command reported success.
         wrapped_code="set -x
 $code
-set +x"$'\n'"
 __shellm_rc=\$?
+set +x"$'\n'"
 set +e
 [ -n \"\${FINAL+x}\" ] && printf '%s' \"\$FINAL\" > \"$final_path\"
 [ -n \"\${FINAL_FILE+x}\" ] && cat \"\$FINAL_FILE\" > \"$final_path\"
