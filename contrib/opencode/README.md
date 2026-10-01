@@ -31,7 +31,9 @@ manager="$identity_dir/extensions/opencode/bin/headlong-opencode"
 ```
 
 Install works without OpenCode. Enable checks executable availability in the
-current local environment. Doctor reports the selected executable and missing
+current local environment. `coding-agent -h` and `coding-agent --help` show usage
+before enablement or dependency checks; task execution still requires admission.
+Doctor reports the selected executable and missing
 requirements without calling a model or printing credentials; it does not
 prove provider authentication. Set `CODING_AGENT_OPENCODE_BIN` to select an
 executable and `CODING_AGENT_MODEL` to select a model, or use the wrapper's
