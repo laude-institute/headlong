@@ -19,3 +19,8 @@ and `telegram/`, the viewer tests/typecheck/build, `cargo check` for the TUI,
 and shellcheck at warning level.
 
 `test_contrib_opencode.sh` runs the optional package’s offline lifecycle, integrity, and scripted rejection/revision tests. See [package setup](../contrib/opencode/README.md).
+
+`test_responder_reply_guard.sh` exercises bounded model calls and reply parsing
+against a scratch identity with a scripted backend. Standalone `<skills show ...>`
+replies defer the original request to the mind and send a holding message;
+quoted commands, examples and ordinary prose remain valid replies.

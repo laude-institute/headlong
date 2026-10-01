@@ -16,6 +16,8 @@
 #   - a timed-out call is not retried as plain text
 #   - every decision observation carries llm_ms / llm_calls / out_tok and
 #     every failure names its kind (failure: timeout|truncated|parse|...)
+#   - a standalone <skills show ...> reply hands the original request to
+#     the mind, while quoted commands, examples and ordinary prose pass
 
 set -uo pipefail
 unset IDENTITY_DIR IDENTITY_NAME MEM_DIR TRAJ_DIR TRAJ_ID ROOT_TRAJ_ID THINK_CONTEXT_TAIL 2>/dev/null
@@ -183,6 +185,90 @@ STUB_MODE=truncated_empty run_step t7
 [[ $(grep -c '^CALL' "$STUB_CALLS") -eq 1 ]] && ok "a structured call that spent the cap with no text is not retried as plain text" || bad "no retry after truncation" "$(cat "$STUB_CALLS")"
 o=$(obs_for t7)
 [[ "$(field "$o" .decision)" == "reply-failed" && "$(field "$o" .failure)" == "truncated" && "$(field "$o" .served_by)" == "Novita" ]] && ok "the observation says failure=truncated and names the host" || bad "truncated obs" "$o"
+
+# --- 8. skills command tags are a handoff, never a chat reply ---------------
+action_for() {
+    jq -c --arg t "$1" 'select(.type == "action" and .source == "responder"
+                              and (.trigger_step // "") == $t)' "$TRAJ" | tail -1
+}
+command_tag_case() {  # command_tag_case <trigger> <reply> <structured>
+    local t="$1" text="$2" mode="$3" sent act obs act_line sent_line
+    msg "$t" "Please delegate the implementation to opencode."
+    if [[ "$mode" == 1 ]]; then
+        jq -nc --arg text "$text" '{action:"reply", message:$text, request:""}' > "$STUB_REPLY_FILE"
+    else
+        printf '%s' "$text" > "$STUB_REPLY_FILE"
+    fi
+    STUB_MODE=reply run_step "$t" RESPONDER_STRUCTURED="$mode"
+    sent=$(sent_for "$t"); act=$(action_for "$t"); obs=$(obs_for "$t")
+    [[ "$(field "$sent" .content)" == "Let me look into that and get back to you." ]] \
+        && ok "$t: command tag is replaced by the holding message" || bad "$t: holding message" "$sent"
+    [[ "$(field "$act" .request)" == "Please delegate the implementation to opencode." \
+       && "$(field "$act" .person)" == "$THEM" ]] \
+        && ok "$t: pending action keeps the original request and sender" || bad "$t: pending action" "$act"
+    [[ "$(field "$obs" .decision)" == replied && "$(field "$obs" .deferred)" == true \
+       && "$(field "$obs" .llm_calls)" == 1 ]] \
+        && ok "$t: observation records the deferral and single model call" || bad "$t: deferral metrics" "$obs"
+    act_line=$(grep -nF "\"trigger_step\":\"$t\"" "$TRAJ" | grep '"type":"action"' | cut -d: -f1 | tail -1)
+    sent_line=$(grep -nF "\"reply_to\":\"$t\"" "$TRAJ" | cut -d: -f1 | tail -1)
+    [[ -n "$act_line" && -n "$sent_line" && "$act_line" -lt "$sent_line" ]] \
+        && ok "$t: pending action precedes the holding message" || bad "$t: action before reply"
+    STUB_MODE=reply run_step "$t" RESPONDER_STRUCTURED="$mode"
+    n=$(jq -s --arg t "$t" '[.[] | select(.type == "action" and .trigger_step == $t)] | length' "$TRAJ")
+    replies=$(jq -s --arg t "$t" '[.[] | select(.type == "message" and .from == "testid" and .reply_to == $t)] | length' "$TRAJ")
+    [[ ! -s "$STUB_CALLS" && "$n" == 1 && "$replies" == 1 ]] \
+        && ok "$t: redelivery repeats neither the model call, action nor reply" || bad "$t: redelivery" "actions=$n replies=$replies"
+}
+command_tag_case tag-structured '<skills show opencode>' 1
+command_tag_case tag-text '<skills show opencode>' 0
+command_tag_case tag-whitespace $' \t\n<skills\tshow\topencode>\r\n ' 1
+
+# Newlines are flattened into a single request; a DEFER mention in the
+# user's text is data, not another handoff protocol emitted by the model.
+jq -nc --arg from "$THEM" --arg to "$ME" --arg ts "$(ago 5)" \
+    '{step_id:"tag-original", type:"message", from:$from, to:$to, ts:$ts,
+      source:"chat", content:"Please use opencode.\nExplain DEFER: in the documentation."}' >> "$TRAJ"
+printf '{"action":"reply","message":"<skills show opencode>"}' > "$STUB_REPLY_FILE"
+STUB_MODE=reply run_step tag-original
+act=$(action_for tag-original)
+[[ "$(field "$act" .request)" == "Please use opencode. Explain DEFER: in the documentation." ]] \
+    && ok "the original multiline request is handed off without reinterpreting DEFER" || bad "original request" "$act"
+
+# A structured defer already carries a request; keep it when its holding
+# message is another command tag rather than creating a second handoff.
+msg tag-defer "Please delegate the implementation."
+printf '{"action":"defer","request":"Implement the requested change using opencode.","message":"<skills show opencode>"}' > "$STUB_REPLY_FILE"
+STUB_MODE=reply run_step tag-defer
+sent=$(sent_for tag-defer); act=$(action_for tag-defer)
+[[ "$(field "$sent" .content)" == "Let me look into that and get back to you." \
+   && "$(field "$act" .request)" == "Implement the requested change using opencode." ]] \
+    && ok "command tag in a holding message keeps the existing deferral" || bad "existing deferral" "$sent $act"
+n=$(jq -c 'select(.type == "action" and .trigger_step == "tag-defer")' "$TRAJ" | wc -l | tr -d ' ')
+[[ "$n" == 1 ]] && ok "the existing deferral is recorded once" || bad "single deferral" "got $n"
+
+# Explicitly quoted commands and explanatory text remain useful replies.
+i=0
+for text in '`<skills show opencode>`' '"<skills show opencode>"' \
+    $'```bash\n<skills show opencode>\n```' \
+    'Use `skills show opencode` to read its instructions.' \
+    '<skills show opencode> is the pseudo-command it returned.' \
+    $'<skills show opencode>\nThis is an example, not a tool call.' \
+    '<status>ready</status>' '<3'; do
+    i=$((i + 1)); t="literal-$i"
+    msg "$t" "Explain the command syntax."
+    jq -nc --arg text "$text" '{action:"reply", message:$text, request:""}' > "$STUB_REPLY_FILE"
+    STUB_MODE=reply run_step "$t"
+    sent=$(sent_for "$t")
+    [[ "$(field "$sent" .content)" == "$text" && -z "$(action_for "$t")" ]] \
+        && ok "$t: quoted command, prose or example is sent unchanged" || bad "$t: literal reply" "$sent"
+done
+
+msg tool-markup "Please look up the instructions."
+printf '{"action":"reply","message":"<function=skills>show opencode</function>"}' > "$STUB_REPLY_FILE"
+STUB_MODE=reply run_step tool-markup
+o=$(obs_for tool-markup)
+[[ -z "$(sent_for tool-markup)" && "$(field "$o" .failure)" == markup ]] \
+    && ok "the existing tool-call markup guard still rejects function calls" || bad "existing markup guard" "$o"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]
