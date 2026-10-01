@@ -10,9 +10,12 @@ PACKAGE = Path(__file__).resolve().parents[1]
 ROOT = PACKAGE.parents[1]
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
-    env = dict(os.environ, PATH=str(ROOT / 'bin') + os.pathsep + os.environ['PATH'],
-               SHELLM_THINKER_ENV='local')
-    for key in ['TRAJ_DIR', 'TRAJ_ID', 'SKILLS_KERNEL_DIR']:
+    (root / 'home').mkdir()
+    (root / 'state').mkdir()
+    env = dict(os.environ, PATH=os.pathsep.join([str(ROOT / 'bin'), str(ROOT / 'tools'), os.environ['PATH']]),
+               HOME=str(root / 'home'), HEADLONG_HOME=str(root / 'state'), SHELLM_HOME=str(root / 'state'),
+               IDENTITY_DIR=str(root / '.identities'), SHELLM_THINKER_ENV='local')
+    for key in ['IDENTITY_NAME', 'MEM_DIR', 'SKILLS_DIR', 'TRAJ_DIR', 'TRAJ_ID', 'ROOT_TRAJ_ID', 'SKILLS_KERNEL_DIR']:
         env.pop(key, None)
     backend = root / 'backend'
     backend.write_text('''#!/usr/bin/env python3
@@ -29,11 +32,10 @@ if os.environ.get('HOLD'):
     backend.chmod(0o755)
     env.update(CODING_AGENT_OPENCODE_BIN=str(backend), PROMPT_CAPTURE=str(root / 'prompt'))
     manager = PACKAGE / 'bin/headlong-opencode'
-    identity = root / 'identity'
+    identity = root / '.identities/opencode-test'
     other = root / 'other'
-    for item in [identity, other]:
-        item.mkdir()
-        (item / 'core_identity_prompt.md').touch()
+    other.mkdir()
+    (other / 'info.txt').write_text('name=other\n')
     package = identity / 'extensions/opencode'
     wrapper = package / 'bin/coding-agent'
     registration = identity / 'skills/opencode'
@@ -50,11 +52,47 @@ if os.environ.get('HOLD'):
     def prompt(target=identity):
         return run(['skills', 'prompt'], env=dict(env, SKILLS_DIR=str(target / 'skills')), cwd=root).stdout
 
+    def identity_prompt():
+        return run([ROOT / 'tools/identity', 'prompt', '--identity-dir', identity], cwd=root).stdout
+
+    run([ROOT / 'tools/identity', 'new', 'opencode-test'], cwd=root)
+    assert (identity / 'info.txt').is_file()
+    assert not (identity / 'core_identity_prompt.md').exists()
+    persona = identity_prompt()
+    assert persona.startswith('I am opencode-test,')
+    skills_before = prompt()
     missing = dict(env, CODING_AGENT_OPENCODE_BIN='/missing/opencode')
     manage('install', env=missing)
+    for name in ['arbitrary', 'persona-only', 'directory-marker']:
+        invalid = root / name
+        invalid.mkdir()
+        if name == 'persona-only':
+            (invalid / 'core_identity_prompt.md').touch()
+        elif name == 'directory-marker':
+            (invalid / 'info.txt').mkdir()
+        assert 'info.txt' in manage('install', False, target=invalid).stderr
+        assert not (invalid / 'extensions').exists()
+    # The new marker must not bypass existing directory/symlink protections.
+    redirected = root / 'redirected'
+    redirected.mkdir()
+    for name in ['extensions', 'skills']:
+        child = other / name
+        child.write_text('unrelated')
+        assert 'non-directory or symlink' in manage('install', False, target=other).stderr
+        assert child.read_text() == 'unrelated'
+        child.unlink()
+        child.symlink_to(redirected, target_is_directory=True)
+        assert 'non-directory or symlink' in manage('install', False, target=other).stderr
+        assert child.is_symlink() and not list(redirected.iterdir())
+        child.unlink()
+
     manage('install', target=other, env=missing)
     assert (package / 'VERSION').read_text().startswith('sha256:')
     assert package.is_dir() and not registration.exists()
+    installed = json.loads(manage('status', env=missing).stdout)
+    assert installed['installed'] and not installed['enabled'] and not installed['skill_registered']
+    assert identity_prompt() == persona and prompt() == skills_before
+    assert not (identity / 'core_identity_prompt.md').exists()
     assert 'opencode' not in prompt()
     manage('install', False)
     assert 'missing executable' in manage('doctor', False, env=missing).stdout
@@ -67,6 +105,7 @@ if os.environ.get('HOLD'):
     manage('enable')
     assert 'opencode' in prompt() and 'opencode' not in prompt(other)
     assert json.loads(manage('status').stdout)['enabled']
+    assert identity_prompt() == persona and not (identity / 'core_identity_prompt.md').exists()
     # Evidence paths through symlinks must fail before creating directories.
     alias = root / 'alias'
     alias.symlink_to(package, target_is_directory=True)
@@ -161,4 +200,5 @@ if os.environ.get('HOLD'):
     manage('uninstall', env=missing)
     manage('install')
     assert not (package / 'enabled').exists()
-    print('ok   lifecycle, isolation, discovery, retained evidence, active-run removal guard, large task, successful descendants')
+    assert identity_prompt() == persona and not (identity / 'core_identity_prompt.md').exists()
+    print('ok   real identity creation, optional persona, identity validation, lifecycle, isolation, discovery, retained evidence, active-run removal guard, large task, successful descendants')

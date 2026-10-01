@@ -108,7 +108,7 @@ FAKE
 chmod +x "$WORK/bin/opencode-fake"
 export CODING_AGENT_OPENCODE_BIN="$WORK/bin/opencode-fake"
 mkdir -p "$WORK/identity"
-touch "$WORK/identity/core_identity_prompt.md"
+printf 'name=test\n' > "$WORK/identity/info.txt"
 "$REPO/bin/headlong-opencode" install --identity "$WORK/identity" >/dev/null
 "$REPO/bin/headlong-opencode" enable --identity "$WORK/identity" >/dev/null
 export PATH="$WORK/identity/extensions/opencode/bin:$PATH"

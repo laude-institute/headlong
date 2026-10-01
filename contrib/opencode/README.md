@@ -8,7 +8,10 @@ extension manager, or default prompt change is involved.
 
 ## Local setup and lifecycle
 
-Use a dedicated local test identity created by Headlong. This initial package
+Use a dedicated local test identity created by Headlong (for example,
+`tools/identity new opencode-test`). Installation recognizes the identity's
+`info.txt`; no custom `core_identity_prompt.md` is required, and the built-in
+persona remains unchanged when that file is absent. This initial package
 supports local execution only, with Python 3.8+, Bash 3.2+, Git, jq, Perl, and
 Headlong's `traj` on PATH. Install OpenCode separately using its
 [CLI documentation](https://opencode.ai/docs/cli/). Configure the dedicated
