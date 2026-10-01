@@ -41,11 +41,13 @@ strip_src=$(grep '^        clean_output=' "$REPO/bin/shellm" | sed 's/^        /
 # Execute a generated block the way the agent loop does: the real wrapper
 # text, both streams merged into one capture, then the real storage strip.
 run_block() {
+    # shellcheck disable=SC2034  # code and final_path are expanded into wrapped_code by the sourced wrapper build
     local code="$1" final_path="$WORK/final" merged="$WORK/merged"
     local wrapped_code="" output="" clean_output=""
     # shellcheck disable=SC1090
     source "$WORK/wrapper.src"
     bash -c "$wrapped_code" > "$merged" 2>&1
+    # shellcheck disable=SC2034  # output is read by $strip_src, eval'd below
     output=$(cat "$merged")
     eval "$strip_src"
     printf '%s' "$clean_output"
