@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -60,13 +61,34 @@ if os.environ.get('HOLD'):
     assert 'missing executable' in manage('doctor', False, env=missing).stdout
     manage('enable', False, env=missing)
     assert not registration.exists() and not (package / 'enabled').exists()
+    # Help is read-only and must work before activation or dependency admission.
+    help_bin = root / 'help-bin'
+    help_bin.mkdir()
+    for name in ['bash', 'cat', 'dirname']:
+        (help_bin / name).symlink_to(shutil.which(name))
+    help_env = dict(PATH=str(help_bin), HOME=str(root), LANG='C')
+    for dependency in ['python3', 'traj', 'opencode']:
+        assert shutil.which(dependency, path=help_env['PATH']) is None
+    for entrypoint in [wrapper, PACKAGE / 'bin/coding-agent']:
+        for flag in ['-h', '--help']:
+            help_result = run([entrypoint, flag], env=help_env, cwd=root)
+            assert help_result.stdout.startswith('Usage:\n')
+            assert '--task-file FILE' in help_result.stdout and '--verify COMMAND' in help_result.stdout
+            assert help_result.stderr == ''
+    assert not registration.exists() and not (package / 'enabled').exists()
     out = root / 'disabled-output'
-    run([wrapper, '--out', out], False)
+    assert 'disabled' in run([wrapper, '--out', out], False).stderr
+    assert 'disabled' in run([wrapper, '--task', '--help', '--out', out], False).stderr
     assert not out.exists()
     manage('enable')
     manage('enable')
     assert 'opencode' in prompt() and 'opencode' not in prompt(other)
     assert json.loads(manage('status').stdout)['enabled']
+    # Actual execution still needs admission, even when help needs no tools.
+    (help_bin / 'python3').symlink_to(shutil.which('python3'))
+    blocked = run([wrapper, '--out', out], False, env=dict(help_env, SHELLM_THINKER_ENV='local'), cwd=root)
+    assert 'missing executable: traj' in blocked.stderr and 'missing executable: opencode' in blocked.stderr
+    assert not out.exists()
     # Evidence paths through symlinks must fail before creating directories.
     alias = root / 'alias'
     alias.symlink_to(package, target_is_directory=True)
@@ -161,4 +183,4 @@ if os.environ.get('HOLD'):
     manage('uninstall', env=missing)
     manage('install')
     assert not (package / 'enabled').exists()
-    print('ok   lifecycle, isolation, discovery, retained evidence, active-run removal guard, large task, successful descendants')
+    print('ok   help before admission, lifecycle, isolation, discovery, retained evidence, active-run removal guard, large task, successful descendants')
