@@ -372,7 +372,7 @@ if [[ "$worktree_rc" -eq 0 ]]; then
         {
             printf '%s\n\n' 'Implement this bounded software-engineering task in the current Git worktree:'
             cat "$task_file"
-            printf '\n\nAcceptance criteria are evaluated independently after you stop with:\n%s\n' "$verify"
+            printf '\n\nA separate verification step will run after you finish.\n'
             printf '%s\n' 'You may edit files and run tests in this worktree. Do not access files outside' 'the current worktree. Do not push, deploy, merge, or modify another checkout.' 'Finish after producing the best implementation you can; do not merely propose it.'
         } > "$out/executor.prompt"
         model_args=()
