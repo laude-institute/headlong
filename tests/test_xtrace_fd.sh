@@ -56,8 +56,9 @@ run_block() {
 
 # The real storage strip, applied to the captured stream.
 stored() {
-    # shellcheck disable=SC2034  # output is read by $strip_src, eval'd below
     local output="" clean_output=""
+    # output is consumed by $strip_src, eval'd below
+    # shellcheck disable=SC2034
     output=$(cat "$WORK/merged")
     eval "$strip_src"
     printf '%s' "$clean_output"
