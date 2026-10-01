@@ -91,8 +91,13 @@ longer needed, and then remove the artifact directory. Review trajectory
 references before deleting their targets.
 
 Passing verification yields only a candidate with `accepted:false`. The wrapper
-does not merge, push, deploy, or accept. Integrity checks cover Git-visible
-checkout content, not remote side effects or the entire shared ref namespace;
+does not merge, push, deploy, or accept. The executor prompt and task arguments
+omit the verification command and its path; the wrapper runs it separately
+after the executor finishes. This does not isolate hidden tests: verifier files
+readable by the same user remain readable by the executor, even outside the
+worktree. Keep verifier details out of task text if they should not be disclosed.
+Integrity checks cover Git-visible checkout content, not remote side effects
+or the entire shared ref namespace;
 a backend push can escape that check. Worktrees and model permission rules are
 not an OS sandbox. Ordinary process-group descendants are terminated after
 success and timeout before evidence is evaluated; deliberately detached sessions

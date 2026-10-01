@@ -27,6 +27,10 @@ printf 'executor diagnostic: %s\n' "${OPENROUTER_API_KEY:-}" >&2
 if [[ -n "${CONFIG_CAPTURE:-}" ]]; then
     printf '%s' "$OPENCODE_CONFIG_CONTENT" > "$CONFIG_CAPTURE"
 fi
+if [[ -n "${PROMPT_CAPTURE:-}" ]]; then
+    cat > "$PROMPT_CAPTURE"
+    printf '%s\0' "$@" > "$ARGS_CAPTURE"
+fi
 case "${FAKE_OPENCODE_MODE:-success}" in
     inline-key)
         printf 'implemented\n' > delegated.txt
@@ -104,6 +108,9 @@ PY_CHILD
         exit 17
         ;;
 esac
+if [[ -n "${FAKE_PHASE_LOG:-}" ]]; then
+    printf 'executor-finished\n' >> "$FAKE_PHASE_LOG"
+fi
 FAKE
 chmod +x "$WORK/bin/opencode-fake"
 export CODING_AGENT_OPENCODE_BIN="$WORK/bin/opencode-fake"
@@ -144,7 +151,8 @@ run_case() {
     esac
     [[ "$mode" == dirty-unchanged ]] && mode=success
     local out="$WORK/$name/artifacts"
-    CASE_JSON=$(FAKE_OPENCODE_MODE="$mode" FAKE_SOURCE_REPO="$FIXTURE_REPO" FAKE_TIMEOUT_MARKER="$WORK/timeout-leaked" OPENROUTER_API_KEY='test-secret-value' \
+    CASE_JSON=$(PROMPT_CAPTURE="$WORK/$name/backend.prompt" ARGS_CAPTURE="$WORK/$name/backend.args" FAKE_PHASE_LOG="$WORK/$name/phases.log" \
+        FAKE_OPENCODE_MODE="$mode" FAKE_SOURCE_REPO="$FIXTURE_REPO" FAKE_TIMEOUT_MARKER="$WORK/timeout-leaked" OPENROUTER_API_KEY='test-secret-value' \
         coding-agent --repo "$FIXTURE_REPO" \
         --task 'Create delegated.txt containing exactly implemented.' \
         --verify "$verify_command" --timeout "$timeout" \
@@ -157,8 +165,34 @@ run_case() {
     CASE_PARENT_FILE=$(TRAJ_DIR="$FIXTURE_TRAJ_DIR" TRAJ_ID="$FIXTURE_PARENT" traj path)
 }
 
+# The verifier lives outside the source/worktree and has unique path/command markers.
+VERIFIER_PATH="$WORK/undisclosed-verifier-7c91e2.sh"
+cat > "$VERIFIER_PATH" <<'VERIFY'
+#!/usr/bin/env bash
+[[ "$1" == acceptance-token-d4938a ]] || exit 2
+[[ "$(cat "$2")" == executor-finished ]] || exit 3
+printf 'verification-started\n' >> "$2"
+test "$(cat delegated.txt)" = implemented && printf 'verified\n'
+VERIFY
+VERIFIER_COMMAND="bash '$VERIFIER_PATH' acceptance-token-d4938a"
+
+check_verifier_disclosure() {
+    local name="$1" marker
+    check "$name: backend receives the generated prompt exactly" cmp "$CASE_OUT/executor.prompt" "$WORK/$name/backend.prompt"
+    is "$name: backend receives only execution/model arguments" '--pure run --format json --model fake/provider' \
+        "$(tr '\0' ' ' < "$WORK/$name/backend.args" | sed 's/ $//')"
+    for marker in "$VERIFIER_COMMAND" "$VERIFIER_PATH" acceptance-token-d4938a; do
+        check "$name: verifier marker absent from backend prompt/arguments ($marker)" \
+            bash -c 'test -s "$1" && test -s "$2" && ! grep -aFq -- "$3" "$1" "$2"' \
+            _ "$WORK/$name/backend.prompt" "$WORK/$name/backend.args" "$marker"
+    done
+    is "$name: verification runs after executor completion" 'executor-finished verification-started' \
+        "$(tr '\n' ' ' < "$WORK/$name/phases.log" | sed 's/ $//')"
+}
+
 # A. Passing executor + independent check produces a retained candidate.
-run_case success success
+run_case success success "$VERIFIER_COMMAND '$WORK/success/phases.log'"
+check_verifier_disclosure success
 is "success: CLI exits zero" 0 "$CASE_RC"
 is "success: result status is candidate" candidate "$(printf '%s' "$CASE_JSON" | jq -r '.status')"
 is "success: candidate true, accepted false" 'true false' "$(printf '%s' "$CASE_JSON" | jq -r '[.candidate,.accepted] | join(" ")')"
@@ -182,7 +216,8 @@ check "success: provider key redacted from executor log" bash -c '! grep -qF "$2
 check "success: provider key absent from trajectories" bash -c '! grep -R -qF "$2" "$1"' _ "$FIXTURE_TRAJ_DIR" test-secret-value
 
 # B. A mechanically failing change is retained but is not a candidate.
-run_case verification_failure verify-fail
+run_case verification_failure verify-fail "$VERIFIER_COMMAND '$WORK/verification_failure/phases.log'"
+check_verifier_disclosure verification_failure
 check "verification failure: CLI is nonzero" test "$CASE_RC" -ne 0
 is "verification failure: status recorded" verification_failed "$(printf '%s' "$CASE_JSON" | jq -r '.status')"
 is "verification failure: check exit recorded" 1 "$(printf '%s' "$CASE_JSON" | jq -r '.verification_exit_status')"
