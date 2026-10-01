@@ -25,7 +25,7 @@ sed -n '/^        wrapped_code="/,/^"$/p' "$REPO/bin/shellm" | sed 's/^        /
 wlines=()
 while IFS= read -r w; do wlines+=("$w"); done < "$WORK/wrapper.src"
 wlast=${#wlines[@]}
-if [[ "$wlast" -lt 5 || "$wlast" -gt 12 \
+if [[ "$wlast" -lt 5 || "$wlast" -gt 15 \
       || "${wlines[0]}" != 'wrapped_code="'* || "${wlines[$((wlast-1))]}" != '"' ]]; then
     printf 'FAIL wrapper build extraction drifted (%s lines, first: %s); re-read run_agent_loop\n' \
         "$wlast" "${wlines[0]:-<empty>}" >&2
@@ -41,9 +41,10 @@ strip_src=$(grep '^        clean_output=' "$REPO/bin/shellm" | sed 's/^        /
 # Execute a generated block the way the agent loop does: the real wrapper
 # text, both streams merged into one capture, then the real storage strip.
 run_block() {
-    # shellcheck disable=SC2034  # code and final_path are expanded into wrapped_code by the sourced wrapper build
-    local code="$1" final_path="$WORK/final" merged="$WORK/merged"
+    # shellcheck disable=SC2034  # code, final_path and trace_file are expanded into the sourced wrapper build
+    local code="$1" final_path="$WORK/final" trace_file="${2:-}" merged="$WORK/merged"
     local wrapped_code="" output="" clean_output=""
+    [[ -n "$trace_file" ]] && : > "$trace_file" || true
     # shellcheck disable=SC1090
     source "$WORK/wrapper.src"
     bash -c "$wrapped_code" > "$merged" 2>&1
@@ -90,6 +91,21 @@ if [[ -z "$res_c" ]]; then
     ok "trace residue does not reach storage"
 else
     bad "trace residue does not reach storage: [$res_c]"
+fi
+
+# --- fallback: with the trace fd unset (bash 3.2, or a blank trace path)
+# marked trace reaches the captured stream; the strip must drop it and
+# keep genuine plus-prefixed output.
+res_d=$(run_block 'printf "%s\n" "+ no trace file"' "")
+if grep -qx -- '+ no trace file' <<<"$res_d"; then
+    ok "plus prefixed output survives the no-fd fallback"
+else
+    bad "plus prefixed output swallowed in the no-fd fallback"
+fi
+if grep -q "^"$'\001' <<<"$res_d"; then
+    bad "marked trace line survived the strip in the no-fd fallback"
+else
+    ok "marked trace lines dropped by the strip in the no-fd fallback"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
