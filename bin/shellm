@@ -1909,46 +1909,126 @@ extract_code() {
 
     # Extract the FIRST fenced code block (```bash, ```sh, or bare ```).
     # Heredoc-aware: lines like ``` inside an open heredoc do NOT close the
-    # outer code fence.  We track heredoc opens (<<[-]DELIM) and closes
-    # (delimiter alone on a line) so nested markdown fences pass through.
+    # outer code fence.  Opens are found by lexically scanning the code line
+    # by line (quotes, word-start # comments and $(( )) arithmetic all
+    # suppress <<), closes are the FIFO delimiter lines, so nested markdown
+    # fences pass through.
     # If extra fenced blocks follow the first, awk writes a "TRUNCATED" line
     # to stderr so we can prepend a notice that the model can see next turn.
     local truncation_file
     truncation_file=$(mktemp)
     local code
     code=$(printf '%s\n' "$response" | awk -v sq="'" '
-        # ── try_open_heredoc: inspect a line for <<[-]DELIM and push delimiter
-        function try_open_heredoc(line,    rest, delim) {
-            if (!match(line, /<<-?/)) return
-            rest = substr(line, RSTART + RLENGTH)
-            sub(/^[[:space:]]*/, "", rest)
-            if (substr(rest, 1, 1) == "\"") {
-                # <<"DELIM"
-                sub(/^"/, "", rest)
-                if (match(rest, /^[^"]+/)) {
-                    hd_stack[++hd_top] = substr(rest, 1, RLENGTH)
-                }
-            } else if (substr(rest, 1, 1) == sq) {
-                # <<'DELIM' — use string pattern since sq cant go in //
-                sub("^" sq, "", rest)
-                if (match(rest, "^[^" sq "]+")) {
-                    hd_stack[++hd_top] = substr(rest, 1, RLENGTH)
-                }
-            } else if (substr(rest, 1, 1) == "\\") {
-                # <<\DELIM
-                sub(/^\\/, "", rest)
+        # ── lex_heredoc: parse the delimiter after << or <<- at pos, push it
+        # onto the pending FIFO, and leave lx_i just past it. Unterminated
+        # quoted delimiters and a bare << with no word after it open nothing.
+        function lex_heredoc(line, pos,    n, c, rest, k) {
+            n = length(line)
+            while (pos <= n) {
+                c = substr(line, pos, 1)
+                if (c != " " && c != "\t") break
+                pos++
+            }
+            c = substr(line, pos, 1)
+            if (c == "\"" || c == sq) {
+                rest = substr(line, pos + 1)
+                k = index(rest, c)
+                if (k == 0) { lx_i = n + 1; return }
+                hd_stack[++hd_top] = substr(rest, 1, k - 1)
+                lx_i = pos + k + 1
+            } else if (c == "\\") {
+                rest = substr(line, pos + 1)
                 if (match(rest, /^[A-Za-z_][A-Za-z_0-9]*/)) {
                     hd_stack[++hd_top] = substr(rest, 1, RLENGTH)
-                }
+                    lx_i = pos + 1 + RLENGTH
+                } else lx_i = pos + 1
             } else {
-                # <<DELIM (unquoted)
+                rest = substr(line, pos)
                 if (match(rest, /^[A-Za-z_][A-Za-z_0-9]*/)) {
                     hd_stack[++hd_top] = substr(rest, 1, RLENGTH)
+                    lx_i = pos + RLENGTH
+                } else lx_i = pos
+            }
+        }
+
+        # ── lex_line: scan one collected code line character by character so
+        # << only opens a heredoc where the shell itself would read one: not
+        # inside single, double or ANSI-C dollar quotes (which span lines),
+        # not after a word-start hash comment, not inside arithmetic $(( ))
+        # where << is a shift. Dollar-paren inside double quotes resumes
+        # command lexing, so a heredoc opened there is real; heredoc bodies
+        # are never lexed, the FIFO below owns them.
+        function lex_line(line,    i, n, c, d, m) {
+            n = length(line); i = 1; lx_word = 1
+            while (i <= n) {
+                c = substr(line, i, 1)
+                m = lx_top > 0 ? lx_stack[lx_top] : 0
+                if (m == 1) {
+                    if (c == sq) lx_top--
+                    lx_word = 0; i++
+                } else if (m == 3) {
+                    if (c == "\\") i += 2
+                    else { if (c == sq) lx_top--; i++ }
+                    lx_word = 0
+                } else if (m == 2) {
+                    if (c == "\\") {
+                        d = substr(line, i + 1, 1)
+                        if (d == "\"" || d == "\\" || d == "$" || d == "`") i += 2
+                        else i++
+                    } else if (c == "\"") { lx_top--; i++ }
+                    else if (c == "$" && substr(line, i + 1, 1) == "(") {
+                        if (substr(line, i + 2, 1) == "(") { lx_stack[++lx_top] = 5; lx_arith = 2; i += 3 }
+                        else { lx_stack[++lx_top] = 4; i += 2 }
+                    } else i++
+                    lx_word = 0
+                } else if (m == 5) {
+                    if (c == "(") lx_arith++
+                    else if (c == ")") {
+                        lx_arith--
+                        if (lx_arith == 0) lx_top--
+                    }
+                    lx_word = 0; i++
+                } else {
+                    if (c == "\\") { i += 2; lx_word = 0 }
+                    else if (c == sq) { lx_stack[++lx_top] = 1; i++; lx_word = 0 }
+                    else if (c == "\"") { lx_stack[++lx_top] = 2; i++; lx_word = 0 }
+                    else if (c == "$") {
+                        d = substr(line, i + 1, 1)
+                        if (d == sq) { lx_stack[++lx_top] = 3; i += 2 }
+                        else if (d == "\"") { lx_stack[++lx_top] = 2; i += 2 }
+                        else if (d == "(" && substr(line, i + 2, 1) == "(") { lx_stack[++lx_top] = 5; lx_arith = 2; i += 3 }
+                        else if (d == "(") { lx_stack[++lx_top] = 4; i += 2 }
+                        else i++
+                        lx_word = 0
+                    }
+                    else if (c == "(") {
+                        if (substr(line, i + 1, 1) == "(") { lx_stack[++lx_top] = 5; lx_arith = 2; i += 2 }
+                        else if (m == 4) { lx_stack[++lx_top] = 4; i++ }
+                        else i++
+                        lx_word = 1
+                    }
+                    else if (c == ")") {
+                        if (m == 4) lx_top--
+                        i++; lx_word = 0
+                    }
+                    else if (c == "#" && lx_word) return
+                    else if (c == "<") {
+                        if (substr(line, i + 1, 1) == "<") {
+                            d = substr(line, i + 2, 1)
+                            if (d == "<" || d == "=") { i += 3; lx_word = 0 }
+                            else if (d == "-") { lex_heredoc(line, i + 3); i = lx_i; lx_word = 0 }
+                            else { lex_heredoc(line, i + 2); i = lx_i; lx_word = 0 }
+                        } else { i++; lx_word = 1 }
+                    }
+                    else {
+                        i++
+                        lx_word = (c == " " || c == "\t" || c == ";" || c == "&" || c == "|" || c == ">" || c == "{") ? 1 : 0
+                    }
                 }
             }
         }
 
-        BEGIN { in_block = 0; hd_top = 0; first_block_closed = 0 }
+        BEGIN { in_block = 0; hd_top = 0; first_block_closed = 0; lx_top = 0; lx_arith = 0; lx_word = 1 }
 
         # After first block closed: look for another opening fence. A tagged
         # ```bash/```sh fence may be appended to the end of a prose line (see
@@ -1980,25 +2060,30 @@ extract_code() {
 
         # Inside the code block
         in_block {
-            # Check for heredoc close (delimiter alone on its own line)
+            # A pending heredoc makes this line literal body: only its FIFO
+            # delimiter can end it, so a ``` line inside the body never
+            # closes the fence. Queued heredocs (cat <<A <<B) are read in the
+            # order their operators appeared, so the OLDEST pending delimiter
+            # is the one a body line matches, not the most recent.
             if (hd_top > 0) {
                 stripped = $0
                 gsub(/^[[:space:]]+/, "", stripped)
                 gsub(/[[:space:]]+$/, "", stripped)
-                if (stripped == hd_stack[hd_top]) {
+                if (stripped == hd_stack[1]) {
+                    for (j = 1; j < hd_top; j++) hd_stack[j] = hd_stack[j + 1]
                     hd_top--
                 }
-            }
+            } else {
+                # A bare ``` only closes the fence when no heredoc is open
+                if ($0 ~ /^```[[:space:]]*$/) {
+                    in_block = 0
+                    first_block_closed = 1
+                    next
+                }
 
-            # A bare ``` only closes the fence when no heredoc is open
-            if ($0 ~ /^```[[:space:]]*$/ && hd_top == 0) {
-                in_block = 0
-                first_block_closed = 1
-                next
+                # Scan lexically so only a REAL heredoc open lands on the FIFO
+                lex_line($0)
             }
-
-            # Track heredoc opens inside the code we are collecting
-            try_open_heredoc($0)
 
             print
         }
