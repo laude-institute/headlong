@@ -54,7 +54,12 @@ export PATH="$WORK/toolbin:$PATH"
 export LLM_COUNT="$WORK/count"
 export LLM_SCRIPT="$WORK/script"
 export HOME="$WORK/home"
+# The suites assert on trajectories, so the state home must stay inside WORK:
+# an inherited TRAJ_DIR or SHELLM_TRAJ_DIR would move every spawned run's log
+# out of the fixture and the feedback-step assertions below would go red for
+# a reason that has nothing to do with the watchdog under test.
 export HEADLONG_HOME="$WORK/home/.headlong"
+unset TRAJ_DIR SHELLM_TRAJ_DIR
 export ANTHROPIC_API_KEY="test-key"
 export SHELLM_MODEL="test-model"
 export SHELLM_BEACON_INTERVAL=1
