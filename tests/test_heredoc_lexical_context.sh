@@ -26,7 +26,7 @@ check() {
     response=$(printf '```bash\n%s\n```\nTAIL_MUST_NOT_APPEAR\n' "$code")
     actual=$(extract_code "$response")
     if [[ "$actual" == "$code" ]]; then ok "$label extract"; else bad "$label extract"; fi
-    _fs_buf="" _fs_in=0 _fs_hd=() _fs_bytes=0
+    _fs_buf="" _fs_in=0 _fs_hd=() _fs_bytes=0 _fs_hd_top=0 _fs_lex_top=0 _fs_arith=0 _fs_word=1
     # Each case forks from the freshly sourced parent, so lexer state
     # cannot leak from an earlier case, even if the fix adds more globals.
     {
