@@ -500,7 +500,18 @@ _traj_header_id() {
 _file_ino() { stat -c %i -- "$1" 2>/dev/null || stat -f %i -- "$1" 2>/dev/null || echo ""; }
 
 _index_update() {
-    local tf="$1" idx="$2" off="$2.offset" lock="$2.lock"
+    local tf="$1" idx="$2" lock="$2.lock" rc
+    # Lock before reading the offset or deciding to rebuild. Otherwise two
+    # readers can snapshot the same offset and the later lock holder can
+    # append the range that the earlier one already indexed.
+    mkdir "$lock" 2>/dev/null || return 0
+    if _index_update_locked "$tf" "$idx"; then rc=0; else rc=$?; fi
+    rmdir "$lock" 2>/dev/null
+    return "$rc"
+}
+
+_index_update_locked() {
+    local tf="$1" idx="$2" off="$2.offset"
     local header have_off have_header have_ino size ino why=""
     header=$(_traj_header_id "$tf")
     have_off=0; have_header=""; have_ino=""
@@ -538,12 +549,7 @@ _index_update() {
         fi
         return 0
     fi
-    # One updater at a time; a concurrent reader just uses what is there.
-    mkdir "$lock" 2>/dev/null || return 0
     _index_apply "$tf" "$idx" "$off" "$header" "$have_off"
-    local rc=$?
-    rmdir "$lock" 2>/dev/null
-    return $rc
 }
 
 # The locked part of _index_update: read the new bytes, index the complete
