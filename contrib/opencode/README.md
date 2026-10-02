@@ -12,13 +12,12 @@ Use a dedicated local test identity created by Headlong. This initial package
 supports local execution only, with Python 3.8+, Bash 3.2+, Git, jq, Perl, and
 Headlong's `traj` on PATH. Install OpenCode separately using its
 [CLI documentation](https://opencode.ai/docs/cli/). Configure the dedicated
-identity to use `SHELLM_THINKER_ENV=local` and export that setting in the shell
-where you run these commands. The package never changes containment settings.
+identity to use `SHELLM_THINKER_ENV=local` in its `.env`.
+The package never changes containment settings.
 Docker execution is unsupported; checking a host binary cannot validate a
 container environment.
 
 ```bash
-export SHELLM_THINKER_ENV=local
 identity_dir=/absolute/path/to/existing-test-identity
 contrib/opencode/bin/headlong-opencode install --identity "$identity_dir"
 manager="$identity_dir/extensions/opencode/bin/headlong-opencode"
@@ -30,8 +29,40 @@ manager="$identity_dir/extensions/opencode/bin/headlong-opencode"
 "$manager" uninstall --identity "$identity_dir"
 ```
 
-Install works without OpenCode. Enable checks executable availability in the
-current local environment. Doctor reports the selected executable and missing
+`--identity` accepts a name in the app's `.identities/` directory or an absolute
+or relative path (use `./name` to distinguish a relative path from a name).
+Names use the manager's checkout, or `HEADLONG_APP_DIR` / legacy `SHELLM_APP_DIR`
+when explicitly supplied. An installed manager uses its identity's checkout;
+standalone copies fall back to the state home's `app_dir` record or `app/`.
+A path inside `<app>/.identities/` selects that app even if another checkout
+is configured in the caller. Names work from an unrelated working directory.
+
+Enable, status and doctor resolve the selected identity's environment with the
+CLI activation layering: existing caller exports first, then app `.env` and
+state-home `.env` fill unset variables, then the selected identity's `activate`
+applies its paths, defaults and `.env` overrides. Older identities without
+`activate` still load their `.env`. The state home honors `HEADLONG_HOME`, then
+legacy `SHELLM_HOME`, otherwise `~/.headlong` (or `~/.shellm` when only that
+directory exists). PATH starts with app `bin/`, app `tools/` and
+`~/.local/bin`, followed by caller PATH; identity configuration may override it.
+Configuration uses trusted Bash syntax, just as core activation does; its
+stdout, stderr and shell tracing are withheld.
+
+An activated caller's identity paths, package/execution/provider settings and
+variables assigned by its app/state/identity configuration are discarded
+before resolving the target, including when inspecting that same identity
+after edits. Its app's PATH entries are removed. Bash exports carry no
+provenance: supply deliberate environment overrides from an unactivated shell.
+Clean-caller exports, including empty values, retain
+the CLI's precedence over app/state defaults; identity `.env` assignments win.
+The service launcher loads app and identity configuration directly; this
+management probe uses the CLI contract and does not prove a service's runtime
+environment. Delegation admission continues to check the running caller's
+environment, so configuration changes still require a dispatcher restart.
+
+Install works without OpenCode or valid configuration. Disable and uninstall
+do not source configuration. Enable checks executable availability in the
+resolved local environment. Doctor reports the selected executable and missing
 requirements without calling a model or printing credentials; it does not
 prove provider authentication. Set `CODING_AGENT_OPENCODE_BIN` to select an
 executable and `CODING_AGENT_MODEL` to select a model, or use the wrapper's
