@@ -852,6 +852,7 @@ struct SettingsView: View {
     @ObservedObject var model: ChatModel
     @State private var cfSecretField = ""
     @State private var recordingHotkey = false
+    @State private var hotkeyMonitor: Any?
     @State private var connStatus: String?
     @State private var connOk = false
     @State private var testing = false
@@ -916,15 +917,15 @@ struct SettingsView: View {
                     Spacer()
                     Button(recordingHotkey ? "Cancel" : "Record") {
                         if recordingHotkey {
-                            recordingHotkey = false
+                            stopRecordingHotkey()
                         } else {
                             recordingHotkey = true
-                            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                            hotkeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                                 guard self.recordingHotkey else { return event }
                                 self.model.hotkeyCode = Int(event.keyCode)
                                 self.model.hotkeyMods = Int(event.modifierFlags.intersection(.deviceIndependentFlagsMask).rawValue)
                                 self.model.registerHotkey()
-                                self.recordingHotkey = false
+                                self.stopRecordingHotkey()
                                 return nil
                             }
                         }
@@ -935,6 +936,15 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 400, height: 380)
         .onAppear { model.refreshIdentities(); testConnection() }
+        .onDisappear { stopRecordingHotkey() }
+    }
+
+    private func stopRecordingHotkey() {
+        if let monitor = hotkeyMonitor {
+            NSEvent.removeMonitor(monitor)
+            hotkeyMonitor = nil
+        }
+        recordingHotkey = false
     }
 
     private func testConnection() {
