@@ -19,3 +19,8 @@ and `telegram/`, the viewer tests/typecheck/build, `cargo check` for the TUI,
 and shellcheck at warning level.
 
 `test_contrib_opencode.sh` runs the optional package’s offline lifecycle, integrity, and scripted rejection/revision tests. See [package setup](../contrib/opencode/README.md).
+
+`test_traj_redaction.sh` requires Python 3 and checks credential masking before
+JSONL and blob writes, sanitizer failure, and context/recap replay. It also runs
+real `shellm` traces with a scripted LLM in a temporary HOME; all credentials
+are synthetic and no inference or network calls are made.
