@@ -136,6 +136,12 @@ else
 fi
 systemctl daemon-reload
 
+# Keep deployment warnings separate from any existing box login message.
+mkdir -p /etc/update-motd.d
+bash "$APP_DIR/deploy/check-deploy.sh" --render-motd "$APP_DIR" "$SHELLM_HOME" \
+    > /etc/update-motd.d/61-headlong-deploy
+chmod 0755 /etc/update-motd.d/61-headlong-deploy
+
 # Signal auditing: kernel-level attribution for process kills (see
 # deploy/audit-headlong-signals.rules — added after the 2026-08-12
 # unattributed dispatcher death). ausearch -k headlong-sig names the sender.
