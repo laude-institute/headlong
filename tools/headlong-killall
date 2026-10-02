@@ -139,14 +139,14 @@ fi
 # tied to (now-dead) host agent pids; safe to remove. Broker containers
 # (label shellm.broker=1) are shared/persistent — report, don't touch.
 if command -v docker >/dev/null 2>&1; then
-    containers=$(docker ps -q --filter 'name=^shellm-' 2>/dev/null) || containers=""
+    containers=$(docker ps -q --filter 'name=^shellm-' --filter 'label!=shellm.broker=1' 2>/dev/null) || containers=""
     if [[ -n "$containers" ]]; then
         if [[ "$DRY_RUN" -eq 1 ]]; then
             echo "Would remove docker container(s):"
-            docker ps --filter 'name=^shellm-' --format '  {{.Names}} ({{.Status}})' 2>/dev/null || true
+            docker ps --filter 'name=^shellm-' --filter 'label!=shellm.broker=1' --format '  {{.Names}} ({{.Status}})' 2>/dev/null || true
         else
             echo "Removing docker container(s):"
-            docker ps --filter 'name=^shellm-' --format '  {{.Names}} ({{.Status}})' 2>/dev/null || true
+            docker ps --filter 'name=^shellm-' --filter 'label!=shellm.broker=1' --format '  {{.Names}} ({{.Status}})' 2>/dev/null || true
             # shellcheck disable=SC2086
             docker rm -f $containers >/dev/null 2>&1 || true
         fi
