@@ -101,6 +101,13 @@ LLM_RETRY_BACKOFF="${LLM_RETRY_BACKOFF:-1}"   # seconds; grows linearly per atte
 # for a whole minute is stuck. Each is 0 to disable.
 LLM_CONNECT_TIMEOUT="${LLM_CONNECT_TIMEOUT:-10}"
 LLM_MAX_TIME="${LLM_MAX_TIME:-600}"
+# Streaming calls carry no wall clock by default (0 = none). A flat
+# whole-transfer ceiling is the wrong bound for a stream: a healthy 3.5 MB
+# answer that was still being written got cut dead at 600s (curl 28), and the
+# partial output could not be retried because text had already been emitted.
+# Total output is bounded by max_tokens and progress by the speed pair above,
+# so set this to a positive second count only as an explicit safety valve.
+LLM_STREAM_MAX_TIME="${LLM_STREAM_MAX_TIME:-0}"
 # Stop reading the stream once the first fenced code block closes (see
 # _fs_line below). Off by default: only callers that execute the first block
 # and discard the rest (bin/shellm) should set it.
@@ -1415,6 +1422,13 @@ get_url_headers
 _max_attempts=$(( LLM_RETRIES + 1 ))
 
 # Network guard flags for curl (see the LLM_CONNECT_TIMEOUT block above).
+# Wall clock per call shape: streaming takes the stream budget (0 disables),
+# non-streaming keeps the flat LLM_MAX_TIME ceiling. The guard below drops
+# --max-time entirely when the value is 0.
+if [[ "$LLM_STREAM" -eq 1 ]]; then
+    LLM_MAX_TIME="$LLM_STREAM_MAX_TIME"
+fi
+
 _net_args=()
 [[ "$LLM_CONNECT_TIMEOUT" =~ ^[0-9]+$ && "$LLM_CONNECT_TIMEOUT" -gt 0 ]] \
     && _net_args+=(--connect-timeout "$LLM_CONNECT_TIMEOUT")
