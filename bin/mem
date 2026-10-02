@@ -175,6 +175,12 @@ mem_prefilter() {
         | awk 'length($0) >= 3' | grep -vxE 'the|and|for|not|from|with|that|this|are|was|what|when|how|about|into|has|have|had|its|but|all|any|can|out|one|two|then|than|they|them|will|were|been|being|also|just|only|some|such|there|their|which|while|would|could|should' \
         | sort -u | tr '\n' ' ')
     [[ -n "${terms// /}" ]] || return 0
+    # The tail cuts with awk, not `head -n`: head exits once it has $top
+    # lines while sort is still writing, and under pipefail the writer's
+    # SIGPIPE becomes the function's exit 2, "sort: write failed: Broken
+    # pipe". That fired live twice on 2026-10-02 against a healthy 250-file
+    # store, and a 3000-file store kills every trial. awk drains the sort,
+    # so the writer fails only on its own terms.
     LC_ALL=C awk -v terms="$terms" '
         BEGIN { n = split(terms, T, " ") }
         FNR == 1 { nf++; files[nf] = FILENAME }
@@ -191,7 +197,7 @@ mem_prefilter() {
                   tf = cnt[f, i]
                   s += idf[i] * (tf * 2.2) / (tf + 1.2 * (0.25 + 0.75 * len[f] / avg)) }
               if (s > 0) printf "%f\t%s\n", s, files[f] }
-        }' "$MEM_DIR"/*.md | sort -t "$(printf '\t')" -k1,1 -gr | head -n "$top" | cut -f2-
+        }' "$MEM_DIR"/*.md | sort -t "$(printf '\t')" -k1,1 -gr | awk -v n="$top" 'NR <= n' | cut -f2-
 }
 
 # `mem prefilter <query> [--top N]`: the candidate paths stage 1 would hand

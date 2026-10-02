@@ -176,6 +176,33 @@ n=$(mem prefilter "dispatcher token" | wc -l | tr -d ' ')
 z=$(mem prefilter "zzz qqq" | wc -l | tr -d ' ')
 [[ "$z" == 0 ]] && ok "mem prefilter prints nothing with no term overlap" || bad "prefilter no overlap" "got $z"
 
+
+# --- a big store must not SIGPIPE stage 1's own sort ----------------------
+# `head -n $top` after `sort` exits early and the writer dies on the closed
+# pipe: exit 2, "sort: write failed: Broken pipe", under pipefail. Live
+# twice on 2026-10-02 on a 250-file store; a 3000-file store (more ranked
+# lines than a pipe buffer holds) killed 26 of 26 trials before the fix,
+# `mem search` included. The cut is `awk NR <= n`, which drains the sort.
+mkdir -p "$WORK/membig"; export MEM_DIR="$WORK/membig"
+awk -v d="$MEM_DIR" 'BEGIN {
+    for (i = 1; i <= 3000; i++) {
+        f = sprintf("%s/2026-08-05-00-00-%04d.md", d, i)
+        printf "---\nid: %04x\nsummary: filler\ntype: note\n---\n\nneedle occurrence in a padded body long enough to score\n", i > f
+        close(f)
+    }}'
+pipes=0; badrc=0; last=""
+for _ in $(seq 6); do
+    last=$(mem prefilter needle --top 40 2>"$WORK/pf.err"); rc=$?
+    [[ "$rc" -eq 0 ]] || badrc=$((badrc+1))
+    grep -q "Broken pipe" "$WORK/pf.err" && pipes=$((pipes+1))
+done
+n=$(printf '%s\n' "$last" | grep -c .)
+if [[ "$pipes" -eq 0 && "$badrc" -eq 0 && "$n" -eq 40 ]]; then
+    ok "prefilter ranks a 3000-file store without killing its sort (6 trials)"
+else
+    bad "prefilter survives a big store" "broken_pipes=$pipes nonzero_rc=$badrc lines=$n"
+fi
+
 # `until:` survives `mem edit` (2026-09-05): a todo shortlist appended to
 # during the day must still expire that night.
 mkdir -p "$WORK/mem3"; export MEM_DIR="$WORK/mem3"
