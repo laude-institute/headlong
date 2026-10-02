@@ -180,6 +180,14 @@ with tempfile.TemporaryDirectory() as temporary:
     manage('enable', success=False)
     assert not (identity / 'extensions/opencode/enabled').exists()
     assert not (identity / 'skills/opencode').exists()
+    (identity / '.env').write_text('SHELLM_THINKER_ENV=local\n'
+                                 'OPENCODE_CONFIG_CONTENT=\'{"apiKey":"synthetic-private-value",}\'\n'
+                                 'CODING_AGENT_OPENCODE_BIN=synthetic-private-value/missing\n')
+    manage(success=False)
+    (identity / '.env').write_text('SHELLM_THINKER_ENV=local\n'
+                                 'OPENCODE_CONFIG_CONTENT=\'["synthetic-private-value"]\'\n'
+                                 'CODING_AGENT_OPENCODE_BIN=synthetic-private-value/missing\n')
+    manage(success=False)
     (identity / '.env').write_text('echo synthetic-private-value >&2\nBROKEN="unterminated\n')
     manage(success=False)
     manage('disable')

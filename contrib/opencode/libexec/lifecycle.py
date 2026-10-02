@@ -188,6 +188,14 @@ def readiness(identity=None):
         return 'opencode', [str(error)]
     except OSError:
         return 'opencode', ['could not load selected configuration; check .env/activate syntax and permissions']
+    # Invalid inline configuration cannot be parsed for credential redaction.
+    # Withhold executable metadata rather than exposing a credential-bearing path.
+    try:
+        config = json.loads(environment.get('OPENCODE_CONFIG_CONTENT', '{}'))
+        if not isinstance(config, dict):
+            raise ValueError
+    except ValueError:
+        return 'opencode', ['OPENCODE_CONFIG_CONTENT must be a valid JSON object; executable diagnostics withheld']
     problems = []
     if environment.get('SHELLM_THINKER_ENV', environment.get('SHELLM_ENV')) != 'local':
         problems.append('set SHELLM_THINKER_ENV=local in the dedicated local identity environment; Docker is unsupported')
