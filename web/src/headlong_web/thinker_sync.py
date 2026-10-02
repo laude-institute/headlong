@@ -21,6 +21,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 from hashlib import sha256
 from pathlib import Path
@@ -154,11 +155,19 @@ def status(identity_dir: Path) -> dict:
 
 def _atomic_copy(src: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.parent / f".{dest.name}.sync-tmp"
-    tmp.write_bytes(src.read_bytes())
-    if dest.name in _EXECUTABLE or os.access(src, os.X_OK):
-        tmp.chmod(0o755)
-    os.replace(tmp, dest)
+    content = src.read_bytes()
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{dest.name}.sync-tmp-", dir=dest.parent
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+        executable = dest.name in _EXECUTABLE or os.access(src, os.X_OK)
+        tmp.chmod(0o755 if executable else 0o644)
+        os.replace(tmp, dest)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _install_subscriptions(bundled_dir: Path, installed_dir: Path, identity_dir: Path) -> None:
