@@ -164,7 +164,13 @@ class PushWatcher(threading.Thread):
             size = traj.stat().st_size
         except OSError:
             return
-        if size <= offset:
+        if size < offset:
+            # A rebuilt or truncated trajectory must not leave the cursor
+            # beyond EOF forever. As on first discovery, skip existing
+            # history so the replacement log does not replay old pushes.
+            self._cursors[traj] = (identity_id, size)
+            return
+        if size == offset:
             return
         with traj.open("rb") as fh:
             fh.seek(offset)
