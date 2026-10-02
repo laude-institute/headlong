@@ -745,6 +745,12 @@ cmd_show() {
 _collect_recursive_files() {
     local traj_file="$1"
     [[ -f "$traj_file" ]] || return 0
+    # Fork records are stored data and may contain cycles (including legacy
+    # or hand-edited trajectories). Track only the current ancestry so shared
+    # children can still appear under each fork, while recursion always ends.
+    local _traj_ancestors="${_traj_ancestors:-$'\n'}"
+    case "$_traj_ancestors" in *$'\n'"$traj_file"$'\n'*) return 0 ;; esac
+    _traj_ancestors+="$traj_file"$'\n'
     printf '%s\n' "$traj_file"
 
     local parent_dir fork_lines
@@ -2032,6 +2038,9 @@ _list_collect_children() {
     local traj_file="$1" traj_dir="$2" max_depth="$3" cur_depth="$4"
     [[ -f "$traj_file" ]] || return
     [[ "$cur_depth" -ge "$max_depth" ]] && return
+    local _traj_ancestors="${_traj_ancestors:-$'\n'}"
+    case "$_traj_ancestors" in *$'\n'"$traj_file"$'\n'*) return ;; esac
+    _traj_ancestors+="$traj_file"$'\n'
 
     local fork_lines
     fork_lines=$(jq -R -c 'fromjson? // empty | select(.type == "fork")' "$traj_file" 2>/dev/null || true)
@@ -2068,6 +2077,9 @@ _list_collect_children() {
 _render_steps_inline() {
     local file="$1" step_prefix="$2" traj_dir="$3" max_depth="$4" cur_depth="$5"
     [[ -f "$file" ]] || return
+    local _traj_ancestors="${_traj_ancestors:-$'\n'}"
+    case "$_traj_ancestors" in *$'\n'"$file"$'\n'*) return ;; esac
+    _traj_ancestors+="$file"$'\n'
 
     # Batch-process all steps with a single jq call.
     # Use \u001f (unit separator) as delimiter since tabs can appear in content.

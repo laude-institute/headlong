@@ -276,6 +276,11 @@ RUN_TRAJ="$(resolve_run_id "$RUN_ID")" || die "No matching run found: $_run_inpu
 
 find_root() {
     local traj_file="$1"
+    local _root_ancestors="${_root_ancestors:-$'\n'}"
+    case "$_root_ancestors" in
+        *$'\n'"$traj_file"$'\n'*) printf '%s\n' "$traj_file"; return 0 ;;
+    esac
+    _root_ancestors+="$traj_file"$'\n'
 
     # Check if the first step is trajectory with parent (meaning this is a child/sub-run)
     local first_line
@@ -332,6 +337,7 @@ ROOT_TRAJ="$(find_root "$RUN_TRAJ")"
 print_tree() {
     local root_traj="$1"
     local target_traj="$2"
+    local _explore_ancestors=$'\n'
 
     # Build tree by walking fork references starting from root
     local -a depths=() files=() names=() sums=()
@@ -341,6 +347,9 @@ print_tree() {
         local depth="$2"
 
         [[ -f "$traj_file" ]] || return
+        local _explore_ancestors="${_explore_ancestors:-$'\n'}"
+        case "$_explore_ancestors" in *$'\n'"$traj_file"$'\n'*) return ;; esac
+        _explore_ancestors+="$traj_file"$'\n'
 
         # Parse hex ID from either directory-based or legacy format
         local bn hex=""
@@ -468,6 +477,7 @@ print_tree() {
 generate_report() {
     local root_traj="$1"
     local target_traj="$2"
+    local _context_ancestors=$'\n'
 
     # Build the tree visualization
     local tree_output
@@ -479,6 +489,9 @@ generate_report() {
     _collect_contexts() {
         local traj_file="$1"
         [[ -f "$traj_file" ]] || return
+        local _context_ancestors="${_context_ancestors:-$'\n'}"
+        case "$_context_ancestors" in *$'\n'"$traj_file"$'\n'*) return ;; esac
+        _context_ancestors+="$traj_file"$'\n'
 
         # Display name: directory name for trajectory.jsonl, basename for legacy
         local display_name
