@@ -547,12 +547,11 @@ async fn run(
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .kill_on_drop(true)
             .spawn()
         else {
             return;
         };
-        child.kill_on_drop(true);
-
         let Some(stdout) = child.stdout.take() else {
             return;
         };
