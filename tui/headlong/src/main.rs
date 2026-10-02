@@ -551,6 +551,7 @@ async fn run(
         else {
             return;
         };
+        child.kill_on_drop(true);
 
         let Some(stdout) = child.stdout.take() else {
             return;
