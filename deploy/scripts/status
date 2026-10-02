@@ -47,13 +47,18 @@ if [[ "$state" == "running" ]]; then
         fi'
     fi
     run_script_on_box "$unit_resolver"'
-        echo "health:   $(curl -fsS localhost:8080/api/health 2>/dev/null || echo DOWN)"
+        echo "web:      $(curl -fsS localhost:8080/api/health 2>/dev/null || echo DOWN)"
         echo "service:  $(systemctl is-active "$(u web)")"
         echo "deployed: $(sudo -u shellm git -C /opt/shellm/app log -1 --oneline)"
         if has slack-bridge; then
             echo "bridge:   $(systemctl is-active "$(u slack-bridge)")"
             echo "persona:  $(systemctl is-active "$(u slack-agent)")"
-        fi'"$telegram_check"
+        fi'"$telegram_check"'
+        if [ -f /opt/shellm/app/deploy/check-deploy.sh ]; then
+            bash /opt/shellm/app/deploy/check-deploy.sh /opt/shellm/app || true
+        else
+            echo "Deploy configuration: checks unavailable — run deploy/scripts/update to install them."
+        fi'
     echo  # box output arrives without a trailing newline (--output text strips it)
 else
     info "start it with: deploy/scripts/start"

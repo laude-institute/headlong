@@ -109,10 +109,49 @@ terraform deploy writes this drop-in automatically.)
 **Updating:**
 
 ```bash
-sudo -u shellm git -C /opt/shellm/app pull
-sudo -u shellm rm -rf /opt/shellm/app/web/src/headlong_web/static  # forces frontend rebuild
-sudo systemctl restart headlong-web
+sudo bash /opt/shellm/app/deploy/update.sh
 ```
+
+This pulls the code, installs the deployment configuration, rebuilds the
+frontend and restarts the web service. Running thinker dispatchers keep
+running. The dashboard's "Pull latest & restart" updates the checkout and
+web app; run `deploy/update.sh` to apply system configuration changes.
+
+**Upgrading from an older updater:** if the copy of `update.sh` you start
+predates its re-exec guard, it keeps running its old steps after pulling
+the new copy. It can print `Healthy` while skipping newer steps. Run the
+command above a second time once to apply them. Later updates re-exec the
+pulled script when it changes.
+
+`Web application is responding` refers to the HTTP health endpoint.
+The separate `Deploy configuration` result checks installed thinker unit
+files, the sandbox flag against the presence of its systemd configuration,
+and whether Slack bridge token assignments remain in the shared `.env`.
+Pending steps name the missing configuration and print the update command;
+the current updater returns nonzero even if the web app responds. The
+operator command `deploy/scripts/update` also checks after an old updater
+finishes, using the newly pulled copy.
+
+Check without updating using `deploy/scripts/status` from your laptop, or
+on the box:
+
+```bash
+sudo bash /opt/shellm/app/deploy/check-deploy.sh /opt/shellm/app
+```
+
+The check changes nothing and never sources `.env` or displays token
+values. It exits 0 for the checked installed configuration, 1 for pending
+steps and 2 when it cannot inspect the configuration. After setup/update,
+login also shows pending steps through `/etc/update-motd.d/61-headlong-deploy`.
+
+A deliberately disabled sandbox (`HEADLONG_SANDBOX=0`) with no sandbox
+configuration is valid. The check does not prove that a running thinker
+has loaded installed settings: sandbox changes take effect after an
+explicit `headlong-thinkersctl restart <identity>`. It also does not check
+whether silence timers are running, or prove full credential isolation.
+Bridge-file isolation depends on sandboxing; the bridge migration initially
+copies the bot token into `HEADLONG_ALERT_TOKEN` until an operator replaces
+it with a dedicated alert-only token (see `deploy/split-bridge-env.sh`).
 
 **Thinker dispatchers run as per-identity systemd units.** When the dash
 (or the Slack bootstrap) starts an identity's thinkers, the dispatcher runs

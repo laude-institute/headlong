@@ -19,3 +19,8 @@ and `telegram/`, the viewer tests/typecheck/build, `cargo check` for the TUI,
 and shellcheck at warning level.
 
 `test_contrib_opencode.sh` runs the optional package’s offline lifecycle, integrity, and scripted rejection/revision tests. See [package setup](../contrib/opencode/README.md).
+
+`test_deploy_update.sh` uses Python 3 and local git repositories to reproduce
+an upgrade from the historical pre-guard updater (fixture from `bbb1104`).
+System commands and HTTP are stubbed; tests check pending/applied deployment
+files, login/status warnings, disabled sandbox behavior and secret-free output.
