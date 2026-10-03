@@ -1,0 +1,1384 @@
+#!/usr/bin/env bash
+# sc_tmpdir_bootstrap
+# sc_tmpdir_bootstrap v2: keep TMPDIR on durable scratch, never under the
+# ephemeral /tmp/shellm-run.* tree. That tree is reaped when the wake that
+# created it ends, and a compile running in tmux outlives its wake, so every
+# later teacher request died at mktemp with a dead template dir.
+SC_TMP_BASE="${SC_TMP_BASE:-${SHELLM_WORKDIR:-${HOME:-/tmp}}/scratch/sc-tmp}"
+mkdir -p "$SC_TMP_BASE"
+TMPDIR=$(mktemp -d "$SC_TMP_BASE/XXXXXX")
+export TMPDIR
+if [ -n "${SHELLM_RUNDIR:-}" ]; then mkdir -p "$SHELLM_RUNDIR/tmp" 2>/dev/null || true; fi
+set -euo pipefail
+
+# skill-compiler — Compile a skill specification into a validated, cached adapter
+# by synthesizing test cases with a teacher model, executing them, and storing
+# working few-shots as a compiled adjunct.
+
+# Resolve our own directory without depending on realpath, which is not on
+# stock macOS PATH (Homebrew coreutils installs it prefixed). Same idiom as
+# bin/shellm: try realpath, fall back to the invocation path.
+_sc_self=$(realpath "${BASH_SOURCE[0]:-$0}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]:-$0}")
+SCRIPT_DIR="$(cd "$(dirname "$_sc_self")" && pwd)"
+COMPILED_DIR="$SCRIPT_DIR/.compiled"
+if [[ -z "${SKILLS_DIR:-}" ]]; then
+    for _sc_cand in "$SCRIPT_DIR/.." "${HOME:-/tmp}/.skills"; do
+        if [[ -d "$_sc_cand" ]]; then SKILLS_DIR="$(cd "$_sc_cand" && pwd)"; break; fi
+    done
+    SKILLS_DIR="${SKILLS_DIR:-${HOME:-/tmp}/.skills}"
+fi
+KERNEL_DIR="${SKILLS_KERNEL_DIR:-$SCRIPT_DIR/../../kernel}"
+
+mkdir -p "$COMPILED_DIR"
+
+usage() {
+    cat <<'USAGE'
+skill-compiler — Compile a skill specification into a validated, cached adapter
+
+Usage:
+  skill-compiler compile --skill <name> [--teacher-model <model>] [--num-tests <n>]
+  skill-compiler list
+  skill-compiler pool --skill <name>
+  skill-compiler show --skill <name>
+  skill-compiler clean --skill <name>
+
+Options:
+  --skill NAME            Skill to compile (directory name under skills/ or kernel/)
+  --teacher-model MODEL   Teacher model for test synthesis (default: nvidia/nemotron-3-ultra-550b-a55b)
+  --num-tests N           Number of test cases to synthesize (default: 8)
+  --max-iterations N      Max shellm iterations per test (default: 10)
+
+Commands:
+  compile                 Compile a skill
+  list                    List compiled skills
+  pool --skill NAME       Print the phrase pool a compile would hand the teacher
+  show --skill NAME       Show compiled cache for a skill
+  clean --skill NAME      Remove compiled cache for a skill
+USAGE
+}
+
+info() { printf '[skill-compiler] %s\n' "$*"; }
+die() { printf '[skill-compiler] ERROR: %s\n' "$*" >&2; exit 1; }
+
+# STORE-ISOLATION 2026-09-22: skills we refuse to compile. Auth skills need
+# credentials; side-effect skills write the live identity store or message
+# humans; git-diff-summarizer has no runnable command for a test to execute.
+COMPILE_SKIP_SKILLS="github-api telegram googleworkspace chat slack mem traj recap goal-review git-diff-summarizer"
+
+assert_compile_allowed() {
+    local skill_name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --skill) skill_name="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [[ -n "$skill_name" ]] || return 0
+    if [[ " $COMPILE_SKIP_SKILLS " == *" $skill_name "* ]]; then
+        die "skill $skill_name is on the compile skip-list (auth, live-store writes, messaging humans, or no runnable command)"
+    fi
+}
+
+# Parse SKILL.md into JSON spec
+parse_skill_spec() {
+    local skill_dir="$1"
+    local skill_file="$skill_dir/SKILL.md"
+    [[ -f "$skill_file" ]] || die "SKILL.md not found in $skill_dir"
+
+    local frontmatter body
+    frontmatter=$(sed -n '1,/^---$/p' "$skill_file" | sed '1d;$d')
+    body=$(sed -n '/^---$/,${//!p;}' "$skill_file" | sed '1d')
+
+    local name description
+    name=$(printf '%s' "$frontmatter" | grep '^name:' | sed 's/^name: *//' | tr -d '"')
+    description=$(printf '%s' "$frontmatter" | grep '^description:' | sed 's/^description: *//' | tr -d '"')
+
+    # Extract Usage section from body (between ## Usage and next ## or end)
+    local usage_section=""
+    if printf '%s' "$body" | grep -q '^## Usage'; then
+        usage_section=$(printf '%s' "$body" | sed -n '/^## Usage$/,/^## /p' | sed '$d')
+    fi
+
+    # Check if skill has a CLI tool/command (Usage section with code blocks)
+    local has_cli_tool=false
+    if printf '%s' "$body" | grep -q '```bash'; then
+        has_cli_tool=true
+    fi
+
+    # Check if skill is a reference/documentation skill (explains concepts)    # DEPENDENCY-FIX 2026-09-27: declared binaries, so the teacher can see which
+    # ones the test environment actually has (rule 18).
+    local bins_csv
+    bins_csv=$(printf '%s\n' "$frontmatter" | awk '
+        /^[A-Za-z_]*[Bb]ins:/ { sub(/^[^:]*:[[:space:]]*/, ""); grab = 1 }
+        grab {
+            if ($0 ~ /^[[:space:]]*$/) next
+            if ($0 !~ /^[[:space:]]*(-|\[)/) { grab = 0; next }
+            line = $0
+            gsub(/[\[\]",:]/, " ", line)
+            n = split(line, a, /[[:space:]]+/)
+            for (i = 1; i <= n; i++)
+                if (a[i] ~ /^[A-Za-z0-9._+][A-Za-z0-9._+-]*$/) printf "%s,", a[i]
+        }
+    ' | sed 's/,$//')
+
+
+    local is_reference_skill=false
+    if printf '%s' "$body" | grep -qiE '(reference|overview|architecture|how.*works|concept|design)'; then
+        is_reference_skill=true
+    fi
+
+    jq -n         --arg name "$name"         --arg description "$description"         --arg body "$body"         --arg usage_section "$usage_section"         --arg has_cli_tool "$has_cli_tool"         --arg bins "$bins_csv"         --arg is_reference_skill "$is_reference_skill"         '{name:$name, description:$description, body:$body, usage_section:$usage_section, has_cli_tool:($has_cli_tool=="true"), is_reference_skill:($is_reference_skill=="true"), bins:([$bins|split(",")[]|select(length>0)])}'
+}
+
+# Synthesize test cases using teacher model
+# DIGIT-GLUE-FIX 2026-09-22, matcher rule v2: a multi-word phrase matches as a
+# literal substring (GLUE-FIX), but a phrase edge that is a digit must not be
+# welded to another digit. So "5 tests passed" cannot ride on "15 tests passed",
+# "test 2" cannot ride on "test 21", while letter welds like
+# "Example Domainbody{...}" keep matching as GLUE-FIX requires and a clean
+# occurrence later in the same text still wins. Single words keep whole-word
+# matching via grep -w in the single-word branch.
+_phrase_match() {
+    local out
+    out=$(PHRASE="$1" awk '
+        BEGIN { p = ENVIRON["PHRASE"]; if (length(p) == 0) exit }
+        {
+            n = length(p); hay = $0; off = 0
+            fw = substr(p, 1, 1); lw = substr(p, n, 1)
+            while (1) {
+                i = index(substr(hay, off + 1), p)
+                if (i == 0) break
+                s = off + i; e = s + n - 1
+                prev = (s > 1) ? substr(hay, s - 1, 1) : ""
+                nxt = substr(hay, e + 1, 1)
+                okp = (fw !~ /[0-9]/ || prev !~ /[0-9]/)
+                okn = (lw !~ /[0-9]/ || nxt !~ /[0-9]/)
+                if (okp && okn) { found = 1; exit }
+                off = s
+            }
+        }
+        END { print (found ? "match" : "nomatch") }
+    ')
+    [[ "$out" == "match" ]]
+}
+
+# PHRASE-POOL v2 2026-09-27: the pool is the tool's own output vocabulary, so a
+# synthesized expect_contains entry can be pinned to a string the tool really
+# prints. v1 only ran the script with --help in a temp dir: that captured
+# argparse noise and never the verdict/report lines the tools build with
+# out.append/format_report, so the teacher invented plausible literals
+# ("No violations", "2 violations", "no conflict found") that no tool emits and
+# four clean-case tests failed against skills that worked.
+# Sources now: (a) string literals on output-producing lines of every script in
+# the skill (print/echo/printf/append/write), report text included; (b) a live
+# run of the script the SKILL.md Usage names, not whichever file sorts first.
+# HARVEST-AUTO 2026-10-02 (wiring the real-harvest experiment into the default
+# path): capture_phrase_pool reached real tool vocabulary only when someone
+# hand-built a pool file and pointed SKILL_HISTORY_POOL at it, so the default
+# teacher pool was static vocabulary alone and expected literals were optimized
+# against strings the tool never prints (scratch/skill-compiler-realharvest-
+# 2026-10-01/FINDING.md). The history live-run pool is now harvested by default
+# from the mind trajectory: the stdout half of (cmd, stdout) pairs whose command
+# actually executes the skill's own script. Line acceptance is by OUTPUT SHAPE,
+# not command text, per the contamination rule in RECLASSIFY.md: a line is kept
+# when it looks like report text and is not a verbatim line of the skill's own
+# source, which is the class that put 29 Python source lines in the counterpoint
+# pool. Cache at $SKILL_HARVEST_CACHE/pool-history-<skill>.json with a TTL
+# (SKILL_HARVEST_TTL, default 3600s; SKILL_HARVEST_REFRESH=1 forces a rebuild).
+# SKILL_HISTORY_POOL still wins when set, SKILL_AUTO_HARVEST=0 turns this off.
+harvest_history_pool() {
+    local skill_abs="${1:-}"
+    [[ -n "$skill_abs" && -d "$skill_abs" ]] || return 1
+    local skill_name script
+    skill_name=$(basename "${skill_abs%/}")
+    script=""
+    if [[ -f "$skill_abs/SKILL.md" ]]; then
+        script=$(grep -oE '[A-Za-z0-9_.-]+\.(py|sh)' "$skill_abs/SKILL.md" | head -1 || true)
+    fi
+    if [[ -z "$script" || ! -f "$skill_abs/$script" ]]; then
+        script=$(find "$skill_abs" -maxdepth 1 -type f \( -name '*.py' -o -name '*.sh' \) ! -name '*.bak*' 2>/dev/null | head -1 || true)
+        script=$(basename "${script:-}")
+    fi
+    [[ -n "$script" ]] || return 1
+    local cache_dir="${SKILL_HARVEST_CACHE:-${TMPDIR:-/tmp}/skill-harvest-cache}"
+    mkdir -p "$cache_dir" 2>/dev/null || return 1
+    local cache="$cache_dir/pool-history-$skill_name.json"
+    local ttl="${SKILL_HARVEST_TTL:-3600}"
+    [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=3600
+    if [[ -f "$cache" && -z "${SKILL_HARVEST_REFRESH:-}" ]]; then
+        local now mtime
+        now=$(date +%s 2>/dev/null || echo 0)
+        mtime=$(stat -c %Y "$cache" 2>/dev/null || stat -f %m "$cache" 2>/dev/null || echo 0)
+        if [[ "$now" -gt 0 && "$mtime" -gt 0 && $((now - mtime)) -lt "$ttl" ]]; then
+            printf '%s\n' "$cache"
+            return 0
+        fi
+    fi
+    local traj_dir="${SKILL_HARVEST_TRAJ_DIR:-${TRAJ_DIR:-$HOME/.headlong/trajectories}}"
+    [[ -d "$traj_dir" ]] || return 1
+    local files_list="$cache_dir/files-$skill_name.txt"
+    grep -rlF --include='*.jsonl' -m1 "$script" "$traj_dir" 2>/dev/null | head -300 > "$files_list" || true
+    [[ -s "$files_list" ]] || return 1
+    SKILL_HARVEST_SKILL_ABS="$skill_abs" SKILL_HARVEST_SCRIPT="$script" \
+    SKILL_HARVEST_FILES="$files_list" SKILL_HARVEST_OUT="$cache" \
+    SKILL_HARVEST_MIN_COUNT="${SKILL_HARVEST_MIN_COUNT:-2}" \
+    SKILL_HARVEST_MAX_ENTRIES="${SKILL_HARVEST_MAX_ENTRIES:-600}" python3 - <<'PY' 2>/dev/null || return 1
+import json, os, re, collections
+skill_abs = os.environ["SKILL_HARVEST_SKILL_ABS"]
+script = os.environ["SKILL_HARVEST_SCRIPT"]
+out_path = os.environ["SKILL_HARVEST_OUT"]
+min_count = int(os.environ.get("SKILL_HARVEST_MIN_COUNT", "2"))
+max_entries = int(os.environ.get("SKILL_HARVEST_MAX_ENTRIES", "600"))
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+BAD = re.compile(r"(/[\w.\-]+){2,}|[0-9a-f]{10,}|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}|\b\d{6,}\b|<@|https?://", re.I)
+CODEY = re.compile(r"^\s*(def |class |import |from |return |if |elif |for |while |try:|except|pass\b|#!|\$\s|echo |printf |grep |sed |awk )|\$\(|\bprint\(|=>|;\s*$")
+
+NOTE_TOK = re.compile(r'^[A-G](?:#|b)?\d$')
+INTERVAL_TOK = re.compile(r'^(?:major-|minor-|perfec|octave|unison|triton)$')
+LABELED_TOK = re.compile(r"^[A-Za-z][A-Za-z' ]*:\s*(.*)$")
+def is_input_echo(s):
+    # rule A+C: a labeled line whose remainder is a run of pure note tokens
+    # OR a run of pure interval tokens (Intervals: echoes), same as
+    # skills/skill-compiler/skill-deletion-gate (in this branch) is_echo / _echo_class.
+    m = LABELED_TOK.match(s)
+    rest = m.group(1) if m else s
+    toks = rest.split()
+    if not toks:
+        return False
+    return all(NOTE_TOK.match(t) for t in toks) or all(INTERVAL_TOK.match(t) for t in toks)
+src = set()
+for fn in sorted(os.listdir(skill_abs)):
+    if not (fn.endswith(".py") or fn.endswith(".sh")):
+        continue
+    if ".bak" in fn:
+        continue
+    try:
+        for line in open(os.path.join(skill_abs, fn), errors="replace"):
+            t = ANSI.sub("", line).strip()
+            if t:
+                src.add(t)
+    except Exception:
+        pass
+cnt = collections.Counter()
+echo_dropped = 0
+invocations = 0
+for path in open(os.environ["SKILL_HARVEST_FILES"], errors="replace"):
+    path = path.strip()
+    if not path:
+        continue
+    cmd = None
+    try:
+        fh = open(path, errors="replace")
+    except Exception:
+        continue
+    for line in fh:
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        t = r.get("type")
+        if t == "reasoning" and isinstance(r.get("cmd"), str):
+            cmd = r["cmd"]
+        elif t == "shell-output" and cmd is not None:
+            if script in cmd and re.search(r"python|bash|\./", cmd):
+                invocations += 1
+                for ln in (r.get("stdout") or "").splitlines():
+                    st = ANSI.sub("", ln).strip().strip("\u2502").strip()
+                    if not (4 <= len(st) <= 160):
+                        continue
+                    if is_input_echo(st):
+                        echo_dropped += 1
+                        continue
+                    if BAD.search(st) or CODEY.search(st) or st in src:
+                        continue
+                    if len(re.findall(r"[A-Za-z]", st)) < 5:
+                        continue
+                    cnt[st] += 1
+            cmd = None
+    fh.close()
+entries = [{"line": l, "count": c} for l, c in sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0])) if c >= min_count][:max_entries]
+blob = {"echo_dropped": echo_dropped, "pool": "history live-run literals from real tool stdout (auto-harvest)", "skill": os.path.basename(skill_abs.rstrip("/")), "script": script, "min_count": min_count, "invocations": invocations, "distinct_lines": len(cnt), "entries": entries}
+tmp = out_path + ".tmp"
+open(tmp, "w").write(json.dumps(blob, indent=1))
+os.replace(tmp, out_path)
+PY
+    [[ -s "$cache" ]] || return 1
+    printf '%s\n' "$cache"
+}
+capture_phrase_pool() {
+    local skill_abs="$1"
+    [[ -d "$skill_abs" ]] || { printf '[]'; return 0; }
+    local src_pool
+    src_pool=$(SKILL_ABS="$skill_abs" python3 - <<'PY' 2>/dev/null || printf '[]'
+import os, re, json, glob
+d = os.environ["SKILL_ABS"]
+out = []
+PLACEHOLDER_SCAFFOLD_RE = re.compile(r"(substring[0-9]|short-identifier|exact prompt)", re.I)
+def emit(s):
+    s = s.strip()
+    if PLACEHOLDER_SCAFFOLD_RE.search(s):
+        return
+    if "\x01" in s:
+        for frag in s.split("\x01"):
+            emit(frag)
+        return
+    if len(s) < 4 or not re.search(r"[A-Za-z]{3}", s):
+        return
+    out.append(s)
+files = [f for f in glob.glob(os.path.join(d, "*.py")) + glob.glob(os.path.join(d, "*.sh"))
+         if ".bak" not in os.path.basename(f)]
+for fn in sorted(files):
+    for line in open(fn, errors="replace"):
+        if not re.search(r"\b(print|echo|printf|append|write|say)\b", line):
+            continue
+        for m in re.finditer(r'"([^"]*)"|\x27([^\x27]*)\x27', line):
+            lit = m.group(1) if m.group(1) is not None else m.group(2)
+            if not lit:
+                continue
+            lit = re.sub(r"\{[^}]*\}", "\x01", lit)
+            lit = re.sub(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?", "\x01", lit)
+            lit = re.sub(r"%[sd]", "\x01", lit)
+            lit = lit.replace("\\n", " ")
+            emit(lit)
+            for seg in re.split(r"[:;,|]|—", lit):
+                emit(seg.strip(" .·✓✗⚠ℹ→*\"'\x60"))
+seen = set()
+uniq = []
+for s in out:
+    if s not in seen:
+        seen.add(s)
+        uniq.append(s)
+print(json.dumps(uniq[:int(os.environ.get("SKILL_POOL_SRC_CAP", "200"))]))
+PY
+)
+    local script="" live_pool="[]"
+    if [[ -f "$skill_abs/SKILL.md" ]]; then
+        script=$(grep -oE '[A-Za-z0-9_.-]+\.(py|sh)' "$skill_abs/SKILL.md" | head -1 || true)
+    fi
+    if [[ -z "$script" || ! -f "$skill_abs/$script" ]]; then
+        script=$(find "$skill_abs" -maxdepth 1 -type f \( -name '*.py' -o -name '*.sh' \) ! -name '*.bak*' 2>/dev/null | head -1 || true)
+    fi
+    if [[ -n "$script" ]]; then
+        local tmp
+        tmp=$(mktemp -d 2>/dev/null || echo /tmp/phrase-pool.$$)
+        mkdir -p "$tmp"
+        case "$script" in
+            *.py) ( cd "$tmp" && _sc_bounded 15 python3 "$script" --help; cd "$tmp" && _sc_bounded 15 python3 "$script" ) 2>/dev/null || true ;;
+            *.sh) ( cd "$tmp" && _sc_bounded 15 bash "$script" --help; cd "$tmp" && _sc_bounded 15 bash "$script" ) 2>/dev/null || true ;;
+        esac | sed '/^[[:space:]]*$/d' | awk '!seen[$0]++' | head -n "${SKILL_POOL_LIVE_CAP:-80}" | jq -Rsc 'split("\n") | map(select(length>0))' > "$tmp/live.json" 2>/dev/null || printf '[]' > "$tmp/live.json"
+        live_pool=$(cat "$tmp/live.json")
+        rm -rf "$tmp"
+    fi
+    local doc_pool
+    # PHRASE-POOL v3 2026-09-27: script-less skills (SKILL.md only) had an empty
+    # pool, so every expect_contains literal the teacher emitted was invented and
+    # the pool-exact guarantee was vacuous for 15 of 20 skills (notes/skill-compiler/
+    # pool-vacuity-map-2026-09-27.md). Harvest the output vocabulary the skill's own
+    # SKILL.md documents: non-command lines of fenced examples plus quoted prose
+    # literals. Script and live-run pools keep priority.
+    doc_pool=$(SKILL_ABS="$skill_abs" python3 - <<'PY' 2>/dev/null || printf '[]'
+import os, re, json
+d = os.environ["SKILL_ABS"]
+out = []
+PLACEHOLDER_SCAFFOLD_RE = re.compile(r"(substring[0-9]|short-identifier|exact prompt)", re.I)
+def emit(s):
+    s = s.strip()
+    if PLACEHOLDER_SCAFFOLD_RE.search(s):
+        return
+    if "\x01" in s:
+        for frag in s.split("\x01"):
+            emit(frag)
+        return
+    if len(s) < 4 or not re.search(r"[A-Za-z]{3}", s):
+        return
+    out.append(s)
+p = os.path.join(d, "SKILL.md")
+text = open(p, errors="replace").read() if os.path.isfile(p) else ""
+# PHRASE-POOL v3.1 2026-09-27: a metadata-only skill carries its whole content in
+# the YAML frontmatter (requires: env/bins/anyBins/os), so stripping the
+# frontmatter left the pool empty and every literal invented (pool-vacuity map,
+# test-skill 8/8 INVENTED). Harvest the metadata key names and scalar values too.
+_m = re.match(r"\A---\n(.*?)\n---\n", text, flags=re.S)
+_fm = _m.group(1) if _m else ""
+if _m:
+    text = text[_m.end():]
+def emit_meta(s):
+    s = s.strip(" []{}\"'\x60,;")
+    if PLACEHOLDER_SCAFFOLD_RE.search(s):
+        return
+    if len(s) < 2 or not re.search(r"[A-Za-z]", s):
+        return
+    out.append(s)
+for _line in _fm.splitlines():
+    _line = _line.strip()
+    if not _line or _line.startswith("#"):
+        continue
+    if ":" in _line:
+        _k, _, _v = _line.partition(":")
+        emit_meta(_k)
+        emit_meta(_v)
+    for _tok in re.split(r"[\[\]{}\",]+", _line):
+        emit_meta(_tok.strip(" :"))
+
+text = re.sub(r"\A---\n.*?\n---\n", " ", text, count=1, flags=re.S)
+for block in re.findall(r"\x60\x60\x60[A-Za-z0-9_-]*\n(.*?)\x60\x60\x60", text, flags=re.S):
+    for line in block.splitlines():
+        line = line.strip()
+        if not line or line.startswith("$") or line.startswith("#"):
+            continue
+        emit(line)
+        for seg in re.split(r"[:;,|]", line):
+            emit(seg.strip(" .*'"))
+body = re.sub(r"\x60\x60\x60.*?\x60\x60\x60", " ", text, flags=re.S)
+for m in re.finditer("\x60([^\x60\n]{1,})\x60", body):
+    emit(m.group(1))
+for m in re.finditer(r'"([^"\n]{1,})"', body):
+    emit(m.group(1))
+# PHRASE-POOL v3.2 2026-09-27: span misalignment. The backtick and quote span
+# regexes required 4+ chars, so a short span (shellm's \x60mem\x60) made the matcher
+# start at its CLOSING delimiter and swallow the rest of the line up to the next
+# one, gluing unrelated text and dropping every later span on that line (shellm's
+# 'mem add --type TYPE <text>' never entered the pool -> INVENTED label). Take
+# every span and let emit() apply the length floor to each span separately.
+# Also harvest parenthetical doc phrases: pre-draft-check documents its recipient
+# argument as '(substring match)', vocabulary the harvest missed entirely.
+for m in re.finditer(r"\(([^)\n]{4,200})\)", body):
+    emit(m.group(1))
+seen = set()
+uniq = []
+for s in out:
+    if s not in seen:
+        seen.add(s)
+        uniq.append(s)
+print(json.dumps(uniq[:int(os.environ.get("SKILL_POOL_SRC_CAP", "200"))]))
+PY
+)
+    # POOL-CAP FIX 2026-10-02 (review follow-up on the pool attestation): the
+    # caps above used to drop real phrases invisibly. unique sorts, so .[:200]
+    # kept the entries that sort first, and a real phrase sorting later was
+    # dropped from the pool and then labeled INVENTED downstream, a false
+    # negative in the instrument's own reference frame. The offer to the teacher
+    # is unchanged (the same entries as before, so the vocabulary and every
+    # existing expectation stay identical), but the truncation is recorded
+    # instead of hidden: pool-<skill>.json carries the offered entries, the whole
+    # dropped tail and the counts, and write_cache labels a dropped-but-real
+    # literal POOL-DROPPED rather than INVENTED. SKILL_POOL_CAP overrides the cap
+    # (the offline suite uses it to reach the truncation); SKILL_POOL_SRC_CAP and
+    # SKILL_POOL_LIVE_CAP override the per-source caps above.
+    # HARVEST-AUTO 2026-10-02: when no SKILL_HISTORY_POOL is supplied, harvest
+    # one from real tool stdout in the trajectory (harvest_history_pool above).
+    # Default on: the static pools alone cannot express what the tool prints on
+    # real runs. SKILL_HISTORY_POOL still wins, SKILL_AUTO_HARVEST=0 opts out.
+    local hist_pool="[]" hist_src="${SKILL_HISTORY_POOL:-}"
+    if [[ -z "$hist_src" && "${SKILL_AUTO_HARVEST:-1}" != "0" ]]; then
+        hist_src=$(harvest_history_pool "$skill_abs" || true)
+    fi
+    if [[ -n "$hist_src" && -f "$hist_src" ]]; then
+        hist_pool=$(jq -c 'if type=="array" then . else [(.entries // [])[] | .line // empty] end | map(select(type=="string")) | unique | .[:300]' "$hist_src" 2>/dev/null || printf '[]')
+    fi
+    local cap="${SKILL_POOL_CAP:-400}"
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=400
+    local pool_json
+    pool_json=$(jq -cn --argjson src "$src_pool" --argjson live "$live_pool" --argjson doc "$doc_pool" --argjson hist "$hist_pool" --argjson cap "$cap" '
+        ($src + $live + $doc + $hist) | unique | . as $all
+        | {offered: ($all[:$cap]),
+           dropped: ($all[$cap:]),
+           pool_total: ($all | length),
+           pool_offered: ($all[:$cap] | length),
+           pool_dropped: (($all | length) - ($all[:$cap] | length)),
+           pool_version: "v5-poolcap-2026-10-02"}' 2>/dev/null || printf '{}')
+    if [[ -n "${COMPILED_DIR:-}" ]]; then
+        mkdir -p "$COMPILED_DIR" 2>/dev/null || true
+        printf '%s' "$pool_json" > "$COMPILED_DIR/pool-$(basename "${skill_abs%/}").json" 2>/dev/null || true
+    fi
+    printf '%s' "$pool_json" | jq -c '.offered // []' 2>/dev/null || printf '[]'
+}
+
+synthesize_tests() {
+    local spec_json="$1"
+    local teacher_model="${2:-${SHELLM_MODEL:-nvidia/nemotron-3-ultra-550b-a55b}}"
+    local num_tests="${3:-8}"
+    local skill_abs="${4:-}"
+    local phrase_pool="${5:-}"
+    if [[ -z "$phrase_pool" ]]; then
+        phrase_pool="[]"
+        if [[ -n "$skill_abs" && -d "$skill_abs" ]]; then
+            phrase_pool=$(capture_phrase_pool "$skill_abs" || printf '[]')
+        fi
+    fi
+
+    local skill_spec
+    skill_spec=$(printf '%s' "$spec_json" | jq -c .)    # DEPENDENCY-FIX 2026-09-27: tell the teacher which declared binaries the
+    # test environment has (rule 18). A test that needs a missing binary dies at
+    # exit 127 and the stall guard kills the run before any expected line.
+    local bins_status="none declared"
+    local declared_bin
+    declared_bin=$(printf '%s' "$spec_json" | jq -r '[.bins[]?] | join(" ")')
+    if [[ -n "$declared_bin" ]]; then
+        local -a bin_arr=()
+        local b
+        read -r -a bin_arr <<< "$declared_bin"
+        bins_status=""
+        for b in "${bin_arr[@]}"; do
+            if command -v "$b" >/dev/null 2>&1; then
+                bins_status="${bins_status}${b}: installed"$'\n'
+            else
+                bins_status="${bins_status}${b}: NOT INSTALLED"$'\n'
+            fi
+        done
+        bins_status="${bins_status%$'\n'}"
+    fi
+
+
+
+    # Build the teacher prompt from a quoted heredoc. Portable form: bash 3.2 mis-lexes
+    # read -r -d '' var <<'EOF' (the empty -d word defeats here-doc recognition) and
+    # then parses the heredoc body as code, so use command substitution + cat instead.
+    local prompt
+    prompt=$(cat <<'PROMPT_EOF'
+You are a skill compiler for the Headlong agent framework. A skill is a markdown file with YAML frontmatter that defines a capability for an LLM-in-bash agent.
+
+IMPORTANT: In Headlong, skills are NOT CLI commands. They are procedural documentation (SKILL.md files) that the agent reads on demand via \x60skills show <name>\x60. When a skill is relevant, the agent loads it and follows its guidance.
+
+CRITICAL RULES for test prompts:
+1. If the skill involves git operations, the prompt MUST include "initialize a git repository first in a NEW SUBDIRECTORY you create (mkdir repo, then cd repo)" - the temp dir has no git history, and the repo must NOT sit at the top of the run directory: the run harness appends to its own log file there while the test is executing, so a repo created at the top level is dirtied mid-test and a clean-tree check (nothing to commit, working tree clean) can never pass no matter how the agent stages and commits.
+2. If the skill creates files, use relative paths in the temp directory.
+3. If the skill reads files, the prompt must create them first.
+4. Test realistic usage: what would a user actually ask the agent to do with this skill?
+5. For REFERENCE/DOCUMENTATION skills (no CLI tool, just explains concepts): The agent should just explain the concept from the skill. The prompt should be a direct question like "Based on the X skill: What does it say about Y? Answer in plain text without code blocks." The agent should ANSWER DIRECTLY without running shell commands - the skill content is already in context.
+6. For PROCEDURAL/TOOL skills (has CLI commands in code blocks): The agent will run commands AND give a final summary. Prompt should describe the task.
+7. If a test prompt runs a script that ships inside the skill, give that script its ABSOLUTE path written as __SKILL_ABS__/<script-file>. A relative path never resolves, because the agent runs in a fresh empty workdir. Example shape: python3 __SKILL_ABS__/counterpoint.py 1 "C4 D4" "E5 F5"
+
+8. CLEAN-FIX: For a CLEAN case (the expected outcome is that nothing is wrong: the tool reports no violations, no errors, a valid result), the expect_contains list must use the exact all-clear phrase the tool prints (for example "No violations found") and must NOT contain bare words like "violation", "violations", "error" or "fail" that only ever appear inside a negated line. A clean case carrying such a bare term is impossible and will be rejected.
+9. EXACT-PHRASE FIX 2026-09-22: every expect_contains entry must be an exact phrase or whole line the tool actually prints (for example "No violations found", "found 3 violations in run r2"), never a bare single word like "violation", "check" or "report". A bare word matches by accident anywhere in the agent's answer text. Quote the tool's own printed vocabulary.
+
+10. FIXTURE-AS-INPUT FIX 2026-09-22: when a test authors its own fixture trajectory or input file, the command it runs must hand that fixture file to the skill's script as its input (for example: bash __SKILL_ABS__/verify-before-speak.sh ./fixture.jsonl after writing the fixture into the temp directory). Never point the script at a live or global trajectory: it may already contain real violations, so a test expecting the all-clear could not pass even when the skill works perfectly.
+11. PHRASE-POOL FIX v2 2026-09-27: the PHRASE POOL below is the tool's own output vocabulary, harvested from the string literals in the skill's own scripts and from a live run of its tool. Every expect_contains entry MUST be copied VERBATIM from one of those lines: the checker matches the tool's vocabulary literally, so a phrase you invent, reword, or paraphrase never matches and the test fails against a skill that works. If no pool line fits the expected outcome, do not demand that literal at all: leave expect_contains out and rely on expect. Two entries that can never pass are forbidden: a count or wording the tool does not print (for example '2 violations' where the tool prints 'N message(s) with factual claims'), and text the test's own fixture wrote (the checker subtracts fixture rows as echoes).
+12. EXTERNAL-CLI FIX 2026-09-27: for a skill that ships no script and wraps an external command (git, gh, gws), the expected literal must be a documented output line of that command, and the prompt must build the exact state that produces it. A clean-tree check must stage and commit every file first (git add -A) so git status has nothing pending: requiring 'nothing to commit, working tree clean' while untracked files can exist makes the test fail against a correct run. The repo itself must live in a subdirectory the test creates, never at the top of the run directory, because the harness's own log file is written there during execution and dirties the tree after the last commit (observed 2026-09-27: 'modified: shellm-run.iqcSkp/.output' made an exactly-correct run report a dirty tree).
+
+13. REPORT-AS-TEXT FIX 2026-09-27: when a test asks the agent to report tool output, the prompt must tell it to state that output as plain text in its final answer and never paste the output inside a code block. The agent's whole reply is one bash code block, so pasted output text is EXECUTED as a command: 'Hello, World! Current time: ...' exits 127, three times over, and the stall guard kills the run before any final is written (observed on hello-world 'greeting-with-timestamp' and shellm 'explain-identity' on 2026-09-22, both skills running correctly at the time of the kill). Phrase such prompts as 'state the result in your final answer' or 'report the output as plain text, not as shell commands', and never as 'show me the output in a code block'. A test whose prompt says 'report the output' without this wording is forbidden.
+14. COUNT-FREE FRAGMENTS 2026-09-27: when the expected output line carries a count or any per-case value (for example a tool that prints 'N violation(s):'), never pin the whole rendered line. Pin a fragment that is stable across cases (for example 'violation(s):') or leave expect_contains out. A literal containing a value that varies by case fails against every other case.
+
+15. PROMPT-EXPECT AGREEMENT FIX 2026-09-27: every expect_contains literal must be text the test's own prompt asks the agent to produce. A prompt that tells the agent to report the result as plain text and never paste commands (rule 13) can never make the agent emit a command line, so demanding a command line as expected output is impossible by construction (observed 2026-09-27 on the skill-compiler self test, which pinned the exact command line it told the agent never to paste: the agent answered correctly and the literal was absent). Choose every literal from what the answer will say, never from what the agent will run.
+
+16. NO PLACEHOLDER SCAFFOLDING FIX 2026-09-27: the example blocks in skill docs carry placeholder slot names (short-identifier, substring1, substring2, exact prompt to send to shellm). Those are scaffolding for the reader, not output vocabulary, and the phrase pool now rejects them even where the docs list them. Never copy a placeholder or an example slot name into expect_contains. Pin only lines a real run prints.
+
+17. EXPECT THE OUTPUT NOT THE COMMAND FIX 2026-09-27: never pin a whole command line as expected output. The same command written with the other quote style or an extra flag produces identical results (verified 2026-09-27: the single-quote and double-quote spellings of the same sed strip command strip exactly the same text), so pinning one spelling fails against a run that is correct (observed 2026-09-27 on the web research fetch and extract tests). Pin the data the command produces (the extracted names, the stripped text), or pin a fragment that survives a change of quote style.
+
+18. DEPENDENCY FIX 2026-09-27: a test must never depend on a binary the test environment does not have. The binaries this skill declares and whether each one is installed are listed below. For any NOT INSTALLED binary the test must not run a command that needs it and must not pin frontmatter lines or output that depend on it: either take a path that avoids the binary, or expect the graceful missing-binary report if the skill documents one. A command that exits 127 is not a test (observed 2026-09-27 on the skill author cowsay scaffold test: cowsay is not installed, the validation command exited 127 three times and the stall guard killed the run before any expected line was reached).
+
+
+
+SKILL SPECIFICATION (JSON):
+__SKILL_SPEC__
+
+The skill spec includes:
+- name, description: from frontmatter
+- body: full markdown body
+- usage_section: the ## Usage section if present (contains CLI syntax, examples)
+- has_cli_tool: true if skill has bash code blocks with commands
+- is_reference_skill: true if skill explains concepts (reference docs)
+
+For skills with has_cli_tool=true, the usage_section shows the EXACT command syntax and note format. Use it PRECISELY in test prompts. The agent will run the exact command shown in usage_section.
+
+EXAMPLE GOOD TEST for REFERENCE skill (shellm):
+{
+  "name": "explain-shellm-architecture-layers",
+  "prompt": "Based on the shellm skill: What are the layers of the shellm architecture stack from bottom to top, and what is the purpose of each layer? Answer in plain text without code blocks.",
+  "expect": "final",
+  "expect_contains": ["llm", "shellm", "traj", "context", "mem", "skills", "identity", "think", "chat", "focus", "recursive", "autonomous", "agent"]
+}
+
+EXAMPLE GOOD TEST for PROCEDURAL skill with CLI (git-diff-summarizer):
+{
+  "name": "summarize-unstaged-changes",
+  "prompt": "Initialize a git repository in the current directory. Create a file 'src/auth.py' with a simple authenticate function. Then modify it to rename a method and add a new function. Summarize the unstaged changes using git-diff-summarizer (the skill uses 'llm' command).",
+  "expect": "final",
+  "expect_contains": ["summary", "files affected", "key changes", "impact", "auth.py"]
+}
+
+EXAMPLE GOOD TEST for CLI tool skill (counterpoint):
+{
+  "name": "check-first-species-clean",
+  "prompt": "Check a clean first species counterpoint. Run: python3 __SKILL_ABS__/counterpoint.py 1 "C4 D4 E4 F4 G4 A4 B4 C5" "E5 F5 G5 A5 B5 C6 D6 C6" (note: explicit octaves required - CF octave 4, CP octave 5). Report the result.",
+  "expect": "final",
+  "expect_contains": ["No violations. Clean line."]
+}
+
+PHRASE POOL (verbatim source for every expect_contains entry):
+__PHRASE_POOL__
+
+BINARIES THIS SKILL DECLARES, AND WHETHER THE TEST ENVIRONMENT HAS THEM:
+__BINS_STATUS__
+
+Return ONLY a JSON array of test case objects. No markdown, no explanation.
+
+Skill specification: __SKILL_SPEC__
+Number of tests to generate: __NUM_TESTS__
+PROMPT_EOF
+)
+    prompt=${prompt//__PHRASE_POOL__/$phrase_pool}
+
+    # Replace placeholders
+    prompt="${prompt/__SKILL_SPEC__/$skill_spec}"
+    prompt="${prompt/__NUM_TESTS__/$num_tests}"
+    prompt="${prompt//__BINS_STATUS__/$bins_status}"
+    [ -n "$skill_abs" ] || skill_abs="${SKILLS_DIR:-}"
+    prompt="${prompt//__SKILL_ABS__/$skill_abs}"
+
+    local tests_json llm_rc attempt
+    for attempt in 1 2 3 4; do
+        llm_err_file="${TMPDIR:-/tmp}/teacher-stderr.$$"; tests_json=$(llm --provider openrouter -m "$teacher_model" "$prompt" 2>"$llm_err_file")
+        llm_rc=$?
+        [ "$llm_rc" -eq 0 ] && [ -n "$tests_json" ] && break
+        sleep $((attempt * 5))
+    done
+    [ "$llm_rc" -eq 0 ] || die "Teacher model call failed (rc=$llm_rc, model=$teacher_model): ${tests_json:0:500} stderr: $(head -c 300 "$llm_err_file" 2>/dev/null)"
+    [ -n "$tests_json" ] || die "Teacher model returned empty output (model=$teacher_model)"
+
+    # Extract JSON array from response (handle potential markdown fences)
+    extracted=$(printf '%s' "$tests_json" | python3 -c '
+import sys,json
+s = sys.stdin.read()
+i = s.find(chr(91))
+if i < 0: raise SystemExit
+obj, _ = json.JSONDecoder().raw_decode(s[i:])
+print(json.dumps(obj))
+' 2>/dev/null) || extracted=""
+    [ -n "$extracted" ] && tests_json="$extracted"
+
+    # Validate JSON
+    printf '%s' "$tests_json" | jq . >/dev/null || die "Teacher returned invalid JSON: $tests_json"
+
+    printf '%s' "$tests_json"
+}
+
+# Execute a single test case
+# GNU timeout is not on stock macOS. Bound a command when timeout exists, and
+# run it directly otherwise (still inside a || true caller, so a hung script
+# can only cost the phase's own budget).
+_sc_bounded() {
+    local _sc_secs="$1"; shift
+    if command -v timeout >/dev/null 2>&1 && timeout 1 true 2>/dev/null; then
+        timeout "$_sc_secs" "$@"
+    else
+        "$@"
+    fi
+}
+
+execute_test() {
+    local test_json="$1"
+    local skill_name="$2"
+    local max_iterations="${3:-15}"
+
+    local test_name prompt expect expect_contains
+    test_name=$(printf '%s' "$test_json" | jq -r '.name')
+    prompt=$(printf '%s' "$test_json" | jq -r '.prompt')
+    # Deterministic fallback: rewrite relative skill paths to absolute so the
+    # checker script resolves even if the teacher ignored rule 7.
+    _rel="skills/"
+    # ABS-PREFIX-FIX: rewrite only standalone relative skill paths. An already
+    # absolute path must not get the skills dir prefix a second time (that is
+    # what produced the doubled detector script path in synthesized prompts).
+    if [[ -n "$_rel" ]]; then
+        _rel_re=$(printf '%s' "$_rel" | sed 's@[][\\.*^$/&]@\\&@g')
+        prompt=$(printf '%s' "$prompt" | sed "s#\(^\|[^/A-Za-z0-9_.-]\)${_rel_re}#\1${SKILLS_DIR%/}/#g")
+    fi
+    expect=$(printf '%s' "$test_json" | jq -r '.expect')
+    expect_contains=$(printf '%s' "$test_json" | jq -c '.expect_contains // []')
+    # CLEAN-RUN-SYNTH-FIX 2026-09-22: teacher synthesis sometimes pairs a bare
+    # violation term with a clean fixture, which can never legitimately pass.
+    # Drop such impossible terms from clean cases.
+    if printf '%s %s' "$test_name" "$expect" | grep -Eiq 'clean|legit|valid|no[ _-]?violation|no[ _-]?(issue|error|problem)|nothing[ _-]?wrong'; then
+        expect_contains=$(printf '%s' "$expect_contains" | jq '[.[] | select((ascii_downcase | test("^(violation|violations|error|errors|fail|failed|failure|failing)$")) | not)]')
+    fi
+
+    info "Executing test: $test_name" >&2
+
+    local test_traj_id
+    test_traj_id="test-$(uuidgen 2>/dev/null || printf 'test-%s-%s' "$$" "$RANDOM")"
+
+    # Fresh per-test run dir under a known-good scratch path. The old mktemp -d
+    # inherited TMPDIR; when TMPDIR pointed at a stale path mktemp failed, the
+    # rundir came out empty, and mkdir hit /traj, so every test died in harness
+    # setup before the skill ever ran.
+    local runs_base="${SC_RUNS_BASE:-${SHELLM_WORKDIR:-${HOME:-/tmp}}/scratch/skill-compiler-runs}"
+    mkdir -p "$runs_base" || die "cannot create runs base: $runs_base"
+    local rundir="$runs_base/$test_traj_id"
+    local traj_dir="$rundir/traj"
+    mkdir -p "$traj_dir" || die "cannot create rundir: $rundir"
+    export TMPDIR="$rundir"
+
+    export SKILLS_DIR="$SKILLS_DIR"
+    export SKILLS_KERNEL_DIR="$KERNEL_DIR"
+    export TRAJ_DIR="$traj_dir"
+    export TRAJ_ID="$test_traj_id"
+    export SHELLM_TRAJ_DIR="$traj_dir"
+    export SHELLM_RUNDIR="$rundir"
+
+    # STORE-ISOLATION 2026-09-22: give the test agent a throwaway memory store.
+    # Test runs used to inherit MEM_DIR pointing at my live identity memories, so
+    # skills like goal-review wrote fabricated goals straight into the real store.
+    local test_mem_dir="$rundir/memories"
+    mkdir -p "$test_mem_dir" || die "cannot create test mem dir: $test_mem_dir"
+    export MEM_DIR="$test_mem_dir"
+
+    # Get skills prompt to include in the test
+    local skills_prompt
+    skills_prompt=$(skills prompt 2>/dev/null || echo "")
+
+    # For reference skills, pre-load the skill content so the agent can answer directly
+    local skill_content=""
+    local skill_path="${SKILLS_DIR}/${skill_name}/SKILL.md"
+    if [[ -f "$skill_path" ]]; then
+        skill_content=$(cat "$skill_path")
+    elif [[ -f "${KERNEL_DIR}/${skill_name}/SKILL.md" ]]; then
+        skill_content=$(cat "${KERNEL_DIR}/${skill_name}/SKILL.md")
+    fi
+
+    local full_prompt="${skills_prompt}
+
+${prompt}"
+    if [[ -n "$skill_content" ]]; then
+        full_prompt="${full_prompt}
+
+---
+
+**Skill content for ${skill_name} (pre-loaded for reference):**
+${skill_content}"
+    fi
+
+    # Run shellm
+    local rc=0
+    # Pass through LLM API environment variables
+    export OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
+    export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+    export GEMINI_API_KEY="${GEMINI_API_KEY:-}"
+    export LLM_API_KEY="${LLM_API_KEY:-}"
+    export LLM_API_URL="${LLM_API_URL:-}"
+    export LLM_PROVIDER="${LLM_PROVIDER:-}"
+
+    shellm --max-iterations "$max_iterations" --workdir "$rundir" "$full_prompt" >/dev/null 2>&1 || rc=$?
+
+    # Find the trajectory file
+    local actual_traj_file
+    actual_traj_file=$(find "$traj_dir" -name "*.jsonl" -o -name "*.json" 2>/dev/null | head -1)
+
+    local last_step_type="" last_step_content="" last_step_json="" final_content=""
+    if [[ -n "$actual_traj_file" && -f "$actual_traj_file" ]]; then
+        # Get the last step type and content
+        local last_line
+        last_line=$(tail -1 "$actual_traj_file")
+        last_step_type=$(printf '%s' "$last_line" | jq -r '.type // empty')
+        last_step_content=$(printf '%s' "$last_line" | jq -r '.content // empty')
+        last_step_json="$last_line"
+        
+        # Also get the final answer if present
+        final_content=$(grep '"type":"final"' "$actual_traj_file" | tail -1 | jq -r '.content // empty' 2>/dev/null || true)
+        [[ -z "$final_content" ]] && final_content=$(grep '"type":"final"' "$actual_traj_file" | tail -1 | jq -r '.details // empty' 2>/dev/null || true)
+        
+        # If there's a final step, use its type for pass/fail determination
+        if [[ -n "$final_content" ]]; then
+            local final_step_type
+            final_step_type=$(grep '"type":"final"' "$actual_traj_file" | tail -1 | jq -r '.type // empty')
+            if [[ "$final_step_type" == "final" ]]; then
+                last_step_type="final"
+                last_step_content="$final_content"
+                # Get the full JSON of the final step
+                last_step_json=$(grep '"type":"final"' "$actual_traj_file" | tail -1)
+            fi
+        fi
+    fi
+
+    # Determine pass/fail
+    local pass=false
+    local check_content="${final_content:-$last_step_content}"
+    
+    # For shell-output steps, extract stdout content
+    if [[ "$last_step_type" == "shell-output" ]]; then
+        check_content=$(printf '%s' "$last_step_json" | jq -r '.stdout // .content // empty')
+    fi
+
+    # Scan only EXECUTED results: stdout of commands the agent really ran plus
+    # observation and final content. Never thought steps, .details metadata, or
+    # lines that merely echo the test prompt or the injected skill text.
+    local all_content="$check_content"
+    if [[ -n "$actual_traj_file" && -f "$actual_traj_file" ]]; then
+        local traj_blob
+        traj_blob=$(jq -rs '[.[] | select(.type=="shell-output" or .type=="observation" or .type=="final") | (if .type=="shell-output" then (.stdout // .content // "") else (.content // "") end)] | join("\n")' "$actual_traj_file" 2>/dev/null || true)
+        all_content="${all_content}
+${traj_blob}"
+    fi
+    local filter_file="${TMPDIR:-/tmp}/echo-filter.$$"
+    printf '%s\n' "$full_prompt" | sed '/^[[:space:]]*$/d' > "$filter_file" 2>/dev/null || true
+    all_content=$(printf '%s\n' "$all_content" | grep -vxF -f "$filter_file" 2>/dev/null || true)
+    rm -f "$filter_file"
+
+    local final_len=0
+    final_len=$(printf '%s' "$final_content" | tr -d '[:space:]' | wc -c | tr -d ' ')
+    if [[ "$expect" == "final" ]]; then
+        # For "final" expectation, we accept either a final step OR an observation step that contains the answer
+        if [[ "$last_step_type" == "final" ]] || [[ "$last_step_type" == "observation" ]] || [[ "$last_step_type" == "reasoning" ]] || [[ "$last_step_type" == "shell-output" ]]; then
+            [[ "$final_len" -gt 0 ]] && pass=true
+        fi
+    elif [[ "$expect" == "observation" ]]; then
+        # For "observation" expectation, we accept observation, final, or reasoning (agent often answers in reasoning)
+        if [[ "$last_step_type" == "observation" ]] || [[ "$last_step_type" == "final" ]] || [[ "$last_step_type" == "reasoning" ]]; then
+            pass=true
+        fi
+    elif [[ "$expect" == "shell-output" ]]; then
+        # For "shell-output" expectation, we accept shell-output, final, or reasoning
+        if [[ "$last_step_type" == "shell-output" ]] || [[ "$last_step_type" == "final" ]] || [[ "$last_step_type" == "reasoning" ]]; then
+            pass=true
+        fi
+    elif [[ "$expect" == "error" ]]; then
+        # For "error" expectation, we accept error or non-zero exit
+        if [[ "$last_step_type" == "error" ]] || [[ "$rc" -ne 0 ]]; then
+            pass=true
+        fi
+    fi
+
+    # Check expect_contains if provided and pass so far
+# PROMPT-TERM-FIX 2026-09-22
+        # FINAL-EVIDENCE-FIX 2026-09-22: the agent answer is evidence too.
+        # expect_contains used to scan only tool output, so an expect=final test
+        # whose term appears in the final answer could never pass (hello-world
+        # false-fail). Final steps are in the evidence pool now, still subject to
+        # the echo filter and the denial-aware matching below.
+    local ec_matched=0 ec_missed=""
+    if [[ $pass == true ]] && [[ $(printf '%s' "$expect_contains" | jq 'length') -gt 0 ]]; then
+        pass=false
+        local exec_content=""
+        if [[ -n "$actual_traj_file" && -f "$actual_traj_file" ]]; then
+            exec_content=$(jq -rs '[.[] | select(.type=="shell-output" or .type=="observation" or .type=="final") | (if .type=="shell-output" then (.stdout // .content // "") else (.content // "") end)] | join("\n")' "$actual_traj_file" 2>/dev/null || true)
+        fi
+        local exec_filter_file="${TMPDIR:-/tmp}/echo-filter-exec.$$"
+        {
+            printf '%s\n' "$full_prompt"
+            # ECHO-FIX 2026-09-22: fixture data the test agent wrote into its own
+            # rundir and echoed back through cat/head/grep is not evidence that
+            # the skill did its job, so those lines are subtracted too.
+            # TOOL-OUTPUT-FIX 2026-09-22: only fixture rows (JSON-ish lines the
+            # test authored) are subtracted as non-evidence. Tool output saved
+            # into the rundir (reports, logs) is real evidence and is added back
+            # below instead of being subtracted.
+            if [[ -n "${rundir:-}" && -d "${rundir:-}" ]]; then
+                find "$rundir" -type f ! -path "$traj_dir/*" ! -path '*/memories/*' ! -name 'echo-filter*' -print0 2>/dev/null | xargs -0 grep -hE '^[[:space:]]*[{\[]' 2>/dev/null || true
+            fi
+        } | sed '/^[[:space:]]*$/d' > "$exec_filter_file" 2>/dev/null || true
+        exec_content=$(printf '%s\n' "$exec_content" | grep -vxF -f "$exec_filter_file" 2>/dev/null || true)
+        # TOOL-OUTPUT-FIX 2026-09-22: tool output the test saved into its rundir
+        # is executed evidence even when it was never echoed to stdout, so the
+        # non-fixture (non-JSON) lines of those files are added back here.
+        if [[ -n "${rundir:-}" && -d "${rundir:-}" ]]; then
+            local rundir_prose
+            rundir_prose=$(find "$rundir" -type f ! -path "$traj_dir/*" ! -path '*/memories/*' ! -name 'echo-filter*' -print0 2>/dev/null | xargs -0 grep -hvE '^[[:space:]]*[{\[]' 2>/dev/null || true)
+            exec_content=$(printf '%s\n%s\n' "$exec_content" "$rundir_prose" | grep -vxF -f "$exec_filter_file" 2>/dev/null || true)
+        fi
+        rm -f "$exec_filter_file"
+        # FINAL-AS-EXPECTED-FIX 2026-09-22: the agent's own final answer is its
+        # own words. Subtract only lines echoed from the test prompt itself, never
+        # lines from the pre-loaded skill text: a skill's canonical output phrase
+        # (hello-world "Hello, World!") is exactly what expect_contains asks for,
+        # so filtering the final against skill content made an expect=final test
+        # whose answer equals the expected phrase impossible to pass.
+        local final_only
+        final_only=$(printf '%s\n' "$final_content")
+        if [[ -n "$final_only" ]]; then
+            local prompt_only_filter="${TMPDIR:-/tmp}/echo-filter-prompt.$$"
+            printf '%s\n' "$prompt" | sed '/^[[:space:]]*$/d' > "$prompt_only_filter" 2>/dev/null || true
+            final_only=$(printf '%s\n' "$final_only" | grep -vxF -f "$prompt_only_filter" 2>/dev/null || true)
+            rm -f "$prompt_only_filter"
+            exec_content=$(printf '%s\n%s\n' "$exec_content" "$final_only")
+        fi
+        # DENIAL-FIX 2026-09-22: a line that denies the term ("No violations
+        # found", "Not a violation", "0 violations") is evidence of absence, not
+        # of the term.
+        # DENIAL-AWARE-FIX 2026-09-22: the all-clear line ("No violations found")
+        # must stay visible to terms that are themselves denial phrases ("No
+        # violations") or clean cases could never pass, and a bare term
+        # ("violation") must never ride on that line or a clean run would satisfy
+        # a detection test. So denial lines are split out and matched only for
+        # denial-shaped terms, and a decoration prefix ("✓ ", "✗ ") is ignored
+        # when classifying a line as denial.
+        local denial_re='^[^[:alnum:]]*(no|not|never|nothing|none|without|clean|zero|0)([[:space:]]|:|$)'
+        local exec_match
+        exec_match=$(printf '%s\n' "$exec_content" | grep -Eiv -- "$denial_re" 2>/dev/null || true)
+        local exec_denial
+        exec_denial=$(printf '%s\n' "$exec_content" | grep -Ei -- "$denial_re" 2>/dev/null || true)
+        local i=0
+        local len
+        len=$(printf '%s' "$expect_contains" | jq 'length')
+        while [[ $i -lt $len ]]; do
+            local lit_hit=false
+            local substr
+            substr=$(printf '%s' "$expect_contains" | jq -r ".[$i]")
+            # WORD-FIX 2026-09-22: whole-word fixed-string matching. "violation"
+            # no longer rides on "violations" and "verif" no longer rides on
+            # "verification"; regex metacharacters in terms are literal now.
+            # STEM-FIX 2026-09-22: a singular term may match its plain plural
+            # (violation -> violations, via optional s/es), nothing longer. A
+            # partial term like "verif" still cannot ride on "verification".
+            _esc=$(printf '%s' "$substr" | sed 's/[][\.\^$*+?(){}|\/]/\\&/g')
+            # GLUE-FIX 2026-09-22: a multi-word phrase is matched as a literal
+            # substring, because output that strips HTML glues the phrase to the
+            # next text ("Example Domainbody{...}") and a whole-word boundary
+            # then fails on every occurrence. Single words keep whole-word
+            # matching so "violation" cannot ride on "violations".
+            if [[ "$substr" == *" "* ]]; then
+                if printf '%s\n' "$exec_match" | _phrase_match "$substr"; then
+                    lit_hit=true
+                fi
+            elif printf '%s\n' "$exec_match" | grep -Eiqw -- "${_esc}(s|es)?"; then
+                lit_hit=true
+            fi
+            # QUOTE-FOLD-FIX 2026-09-27: the same command written with the other
+            # quote style is the same command (single-quote and double-quote
+            # spellings of one sed strip produce identical output, verified
+            # 2026-09-27). Fold both quote characters to one before matching a
+            # quoted literal so one spelling is not brittle against the other.
+            if [[ "$substr" == *"'"* || "$substr" == *'"'* ]]; then
+                local fold_lit fold_ev
+                fold_lit=$(printf '%s' "$substr" | sed "s/[\'\"]/'/g")
+                fold_ev=$(printf '%s\n' "$exec_match" | sed "s/[\'\"]/'/g")
+                if printf '%s\n' "$fold_ev" | _phrase_match "$fold_lit"; then
+                    lit_hit=true
+                fi
+            fi
+            # DENIAL-AWARE-FIX 2026-09-22: a denial line may only satisfy a term
+            # that is itself a denial phrase, so "No violations found" still
+            # proves a clean case while a bare "violation" cannot ride on it.
+            if printf '%s' "$substr" | grep -Eiq -- "$denial_re"; then
+                if [[ "$substr" == *" "* ]]; then
+                    if printf '%s\n' "$exec_denial" | _phrase_match "$substr"; then
+                        lit_hit=true
+                    fi
+                elif printf '%s\n' "$exec_denial" | grep -Eiqw -- "${_esc}(s|es)?"; then
+                    lit_hit=true
+                fi
+            fi
+            if [[ "$lit_hit" == true ]]; then
+                ec_matched=$((ec_matched + 1))
+            else
+                ec_missed="${ec_missed}${ec_missed:+|}${substr}"
+            fi
+            i=$((i + 1))
+        done
+        if [[ $ec_matched -eq $len ]]; then
+            pass=true
+        fi
+    fi
+
+    # Build result JSON - use --arg for strings to avoid JSON parsing issues
+    local test_json_escaped
+    test_json_escaped=$(printf '%s' "$test_json" | jq -c .)
+    
+    jq -n \
+        --argjson test "$test_json_escaped" \
+        --arg pass "$pass" \
+        --arg last_step_type "$last_step_type" \
+        --arg last_step_content "$last_step_content" \
+        --arg final "$final_content" \
+        --arg exit_code "$rc" \
+        --arg ec_matched "$ec_matched" \
+        --arg ec_missed "$ec_missed" \
+        --arg final_len "$final_len" \
+        '{test:$test, pass:($pass=="true"), last_step_type:$last_step_type, last_step_content:$last_step_content, final:$final, exit_code:($exit_code|tonumber), expect_contains_matched:($ec_matched|tonumber), expect_contains_missed:(if $ec_missed=="" then [] else ($ec_missed|split("|")) end), final_len:($final_len|tonumber)}'
+}
+
+# Write cache files
+write_cache() {
+    local skill_name="$1"
+    local results_json="$2"
+    local phrase_pool="${3:-[]}"
+    # LITERAL-SOURCE 2026-09-27: the copy of the skill the tests execute, so the
+    # attestation site of every literal is classified against the same text the
+    # tests ran against (SKILLS_DIR copy first, then the kernel copy).
+    local skill_dir="${4:-}"
+
+    local total passed
+    total=$(printf '%s' "$results_json" | jq 'length')
+    passed=$(printf '%s' "$results_json" | jq '[.[] | select(.pass == true)] | length')
+
+    # PASS-VERIFICATION 2026-09-27: a green run counts as verified only when
+    # every expect_contains literal it rests on is POOL-EXACT in the phrase pool
+    # the teacher was handed. An INVENTED literal can match because the test
+    # prompt forced the phrase into the output, so it proves nothing about the
+    # tool's own vocabulary and must not ride on a pass.
+    # FRAGMENT-ATTEST 2026-09-27: verified used to be recomputed here with a
+    # second, stricter rule (whole-pool membership only), which disagreed with
+    # the literal labeler below and undercounted fragment-attested passes. One
+    # rule now: the labeler writes the json summary, and verified is read back
+    # from it after that block runs.
+    local verified=0
+
+    # JSON cache
+    # POOL-PROVENANCE 2026-09-27: label every expect_contains literal against the
+    # phrase pool the teacher was actually handed. POOL-EXACT = verbatim in the
+    # pool; INVENTED = unverified vocabulary the pool never guaranteed.
+    # PROVENANCE-FIX 2026-10-02 (fold of c8966f7): TOOL-OUTPUT is the only
+    # literal source that is occurrence evidence, so it needs captured real tool
+    # output to check against. The harvested history pool is that corpus;
+    # SKILL_REAL_OUTPUT and SKILL_HISTORY_POOL win when set, and with no corpus
+    # loaded a print-line string stays SCRIPT-PRINT instead of being vouched for.
+    local real_out_src="${SKILL_REAL_OUTPUT:-${SKILL_HISTORY_POOL:-}}"
+    if [[ -z "$real_out_src" && "${SKILL_AUTO_HARVEST:-1}" != "0" ]]; then
+        real_out_src=$(harvest_history_pool "$skill_dir" || true)
+    fi
+    [[ -n "$real_out_src" && -f "$real_out_src" ]] || real_out_src=""
+    local prov_summary
+    prov_summary=$(
+        skill_name="$skill_name"
+        phrase_pool="$phrase_pool"
+        results_json="$results_json"
+        json_out="$COMPILED_DIR/${skill_name}.json"
+        skill_dir="$skill_dir"
+        poolcap_json_path="${COMPILED_DIR:-}/pool-$(basename "${skill_dir%/}").json"
+        export skill_name phrase_pool results_json json_out skill_dir poolcap_json_path
+        export SKILL_REAL_OUTPUT="${real_out_src:-}"
+        python3 - <<'PY'
+import os, json, re, glob
+pool = json.loads(os.environ.get("phrase_pool") or "[]")
+res = json.loads(os.environ["results_json"])
+# POOL-CAP FIX 2026-10-02: the pool handed the teacher is the tail-truncated
+# view of the harvested vocabulary, so a real phrase the cap dropped was labeled
+# INVENTED, a false negative in the instrument's own reference frame. The pool
+# file records the truncation, and a dropped-but-real literal gets its own
+# provenance class instead of sharing one with invented vocabulary.
+poolcap = {}
+_pc = os.environ.get("poolcap_json_path") or ""
+if _pc and os.path.isfile(_pc):
+    try:
+        poolcap = json.load(open(_pc))
+    except Exception:
+        poolcap = {}
+pooldropped = set(poolcap.get("dropped") or [])
+poolset = set(pool)
+
+def label_literal(lit, pool, poolset):
+    # POOL-EXACT = the literal is a whole pool entry, the vocabulary the teacher
+    #   could copy verbatim.
+    # POOL-FRAGMENT = the literal is a constant fragment of a pool entry: its
+    #   vocabulary is attested by the skill's own output or docs even when the
+    #   teacher split a line differently than the harvest did.
+    # INVENTED = nowhere in the pool: unverified vocabulary.
+    if lit in poolset:
+        return "POOL-EXACT"
+    if len(lit) >= 4 and any(lit in entry for entry in pool):
+        return "POOL-FRAGMENT"
+    if lit in pooldropped:
+        return "POOL-DROPPED"
+    return "INVENTED"
+
+# LITERAL-SOURCE 2026-09-27: record WHERE each literal is attested in the
+# skill's own text, so the strength of every assertion is visible in the cache
+# itself instead of only in prose. Priority: a line one of the skill's own
+# scripts prints, then other script text, then the metadata frontmatter, then
+# documentation prose, then nowhere (UNATTESTED).
+skill_dir = os.environ.get("skill_dir") or ""
+_SCRIPT_PRINT_RE = re.compile(r"\b(print|echo|printf|append|write|say)\b")
+
+_REAL_OUTPUT = None
+
+def _collect_strings(obj, out):
+    if isinstance(obj, str):
+        for ln in obj.splitlines():
+            ln = ln.strip()
+            if ln:
+                out.add(ln)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _collect_strings(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _collect_strings(v, out)
+
+def real_output_corpus():
+    """Captured real tool output lines, from SKILL_REAL_OUTPUT or SKILL_HISTORY_POOL."""
+    global _REAL_OUTPUT
+    if _REAL_OUTPUT is not None:
+        return _REAL_OUTPUT
+    lines = set()
+    for var in ("SKILL_REAL_OUTPUT", "SKILL_HISTORY_POOL"):
+        f = os.environ.get(var, "")
+        if not (f and os.path.isfile(f)):
+            continue
+        txt = open(f, errors="replace").read()
+        dumped = False
+        if f.endswith(".json") or txt.lstrip()[:1] in ("{", "["):
+            try:
+                _collect_strings(__import__("json").loads(txt), lines)
+                dumped = True
+            except Exception:
+                dumped = False
+        if not dumped:
+            for ln in txt.splitlines():
+                ln = ln.strip()
+                if ln:
+                    lines.add(ln)
+    _REAL_OUTPUT = lines
+    return lines
+
+def classify_literal(lit):
+    """Where an expected string comes from.
+
+    TOOL-OUTPUT is the only occurrence evidence: the string is inside captured
+    real tool output. Every other label only names where the string could have
+    come from, so none of them vouches that the tool prints it.
+    """
+    if not lit:
+        return "UNATTESTED"
+    corpus = real_output_corpus()
+    if any(lit in ln for ln in corpus):
+        return "TOOL-OUTPUT"
+    if not (skill_dir and os.path.isdir(skill_dir)):
+        return "UNATTESTED"
+    fm = ""
+    sp = os.path.join(skill_dir, "SKILL.md")
+    text = open(sp, errors="replace").read() if os.path.isfile(sp) else ""
+    m = re.match(r"\A---\n(.*?)\n---\n", text, flags=re.S)
+    if m:
+        fm = m.group(1)
+        body = text[m.end():]
+    else:
+        body = text
+    seen_script = False
+    for fn in sorted(glob.glob(os.path.join(skill_dir, "*.py")) + glob.glob(os.path.join(skill_dir, "*.sh"))):
+        if ".bak" in os.path.basename(fn):
+            continue
+        for line in open(fn, errors="replace"):
+            if lit in line:
+                if _SCRIPT_PRINT_RE.search(line):
+                    return "SCRIPT-PRINT-UNATTESTED" if corpus else "SCRIPT-PRINT"
+                seen_script = True
+    if seen_script:
+        return "SCRIPT-TEXT"
+    if lit in body:
+        return "DOC"
+    if lit in fm:
+        return "METADATA"
+    return "UNATTESTED"
+
+src_counts = {"TOOL-OUTPUT": 0, "SCRIPT-PRINT": 0, "SCRIPT-PRINT-UNATTESTED": 0, "SCRIPT-TEXT": 0, "DOC": 0, "METADATA": 0, "UNATTESTED": 0}
+srclines = []
+
+lines = []
+inv = 0
+exact = 0
+frag = 0
+dropped = 0
+for r in res:
+    t = r.get("test") or {}
+    labels = {}
+    sources = {}
+    for lit in (t.get("expect_contains") or []):
+        lab = label_literal(lit, pool, poolset)
+        src = classify_literal(lit)
+        labels[lit] = lab
+        sources[lit] = src
+        src_counts[src] = src_counts.get(src, 0) + 1
+        srclines.append("- %s | %s | %s" % (t.get("name", ""), src, lit))
+        if lab == "INVENTED":
+            inv += 1
+        elif lab == "POOL-FRAGMENT":
+            frag += 1
+        elif lab == "POOL-DROPPED":
+            dropped += 1
+        else:
+            exact += 1
+        lines.append("- %s | %s | %s" % (t.get("name", ""), lab, lit))
+    r["literal_labels"] = labels
+    r["literal_sources"] = sources
+    if not r.get("pass"):
+        r["verification"] = "FAIL"
+    elif any(lab == "INVENTED" for lab in labels.values()):
+        r["verification"] = "GREEN-ON-INVENTED"
+    elif any(lab == "POOL-DROPPED" for lab in labels.values()):
+        r["verification"] = "GREEN-ON-DROPPED"
+    else:
+        r["verification"] = "VERIFIED"
+summary = dict(skill=os.environ.get("skill_name", ""), total=len(res), passed=sum(1 for r in res if r.get("pass")), verified=sum(1 for r in res if r.get("verification") == "VERIFIED"), green_on_invented=sum(1 for r in res if r.get("verification") == "GREEN-ON-INVENTED"), fail=sum(1 for r in res if not r.get("pass")), literal_provenance=dict(pool_exact=exact, pool_fragment=frag, invented=inv, pool_dropped=dropped), literal_sources=dict(src_counts), green_on_dropped=sum(1 for r in res if r.get("verification") == "GREEN-ON-DROPPED"), pool_truncated=bool(poolcap.get("pool_dropped") or 0))
+out = dict(summary=summary, tests=res)
+open(os.environ["json_out"], "w").write(json.dumps(out, indent=2))
+md = "\n## Literal provenance (expect_contains vs the phrase pool)\n\n"
+md += "POOL-EXACT means a whole entry in the pool handed to the teacher. POOL-FRAGMENT means a constant fragment of a pool entry, vocabulary the skill's own output or docs carry. INVENTED means unverified. POOL-DROPPED means real tool vocabulary the pool cap dropped from the truncated pool: real, but not pool-attested.\n\n"
+md += "\n".join(lines) + "\n"
+md += "\n## Literal sources (where each literal is attested in the skill's own text)\n\n"
+md += "TOOL-OUTPUT = the string is in captured real tool output (SKILL_REAL_OUTPUT or SKILL_HISTORY_POOL), the only label that is occurrence evidence. SCRIPT-PRINT-UNATTESTED = on a line a script prints but never seen in captured output. SCRIPT-PRINT = on a print line, with no captured output loaded to check against. SCRIPT-TEXT = in a script away from a print line. METADATA = the frontmatter. DOC = documentation prose. UNATTESTED = found nowhere in the skill's own text. Classified against the copy of the skill the tests execute.\n\n"
+md += "\n".join(srclines) + "\n"
+with open(os.environ["json_out"] + ".prov", "w") as fh:
+    fh.write(md)
+print("POOL-EXACT %d, POOL-FRAGMENT %d, POOL-DROPPED %d, INVENTED %d" % (exact, frag, dropped, inv))
+print("SOURCES TOOL-OUTPUT %d, SCRIPT-PRINT %d, SCRIPT-PRINT-UNATTESTED %d, SCRIPT-TEXT %d, DOC %d, METADATA %d, UNATTESTED %d" % (src_counts["TOOL-OUTPUT"], src_counts["SCRIPT-PRINT"], src_counts["SCRIPT-PRINT-UNATTESTED"], src_counts["SCRIPT-TEXT"], src_counts["DOC"], src_counts["METADATA"], src_counts["UNATTESTED"]))
+PY
+)
+    info "Literal provenance: ${prov_summary}"
+    verified=$(jq -r '.summary.verified' "$COMPILED_DIR/${skill_name}.json")
+
+    # Markdown cache
+    {
+        printf '# Compiled cache for %s\n\n' "$skill_name"
+        printf '_Generated: %s UTC_\n\n' "$(date -u +'%Y-%m-%d %H:%M:%S')"
+        printf '## Summary: %d / %d passed, %d / %d verified (a pass counts as verified only on pool-attested literals)\n\n' "$passed" "$total" "$verified" "$total"
+        local i=0
+        while [[ $i -lt $total ]]; do
+            local r name p lt f
+            r=$(printf '%s' "$results_json" | jq -c ".[$i]")
+            name=$(printf '%s' "$r" | jq -r '.test.name')
+            p=$(printf '%s' "$r" | jq -r '.pass')
+            lt=$(printf '%s' "$r" | jq -r '.last_step_type')
+            f=$(printf '%s' "$r" | jq -r '.final')
+            if [[ "$p" == "true" ]]; then
+                printf '### %s: ✓ PASS\n\n' "$name"
+                printf 'Expected: %s | Got: "%s"\n\n' "$(printf '%s' "$r" | jq -r '.test.expect')" "$lt"
+            else
+                printf '### %s: ✗ FAIL\n\n' "$name"
+                printf 'Expected: %s | Got: "%s"\n\n' "$(printf '%s' "$r" | jq -r '.test.expect')" "$lt"
+            fi
+            i=$((i + 1))
+        done
+    } > "$COMPILED_DIR/${skill_name}.md"
+    if [[ -f "$COMPILED_DIR/${skill_name}.json.prov" ]]; then
+        cat "$COMPILED_DIR/${skill_name}.json.prov" >> "$COMPILED_DIR/${skill_name}.md"
+    fi
+
+
+    {
+        printf '\n## Pass verification\n\n'
+        printf 'VERIFIED = green with only pool-attested literals (POOL-EXACT or POOL-FRAGMENT). GREEN-ON-INVENTED = green but resting on unverified vocabulary, so not counted as verified. POOL-DROPPED and GREEN-ON-DROPPED mark real vocabulary the pool cap dropped from the truncated pool: real, but not pool-attested, so not counted as verified either.\n\n'
+        python3 - "$COMPILED_DIR/${skill_name}.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for r in d.get("tests", []):
+    print("- %s | %s" % ((r.get("test") or {}).get("name", "?"), r.get("verification", "?")))
+PY
+    } >> "$COMPILED_DIR/${skill_name}.md"
+
+    info "Compiled $skill_name: $passed/$total passed, $verified/$total verified ($((passed - verified)) green on invented literals)"
+}
+
+# Main compile command
+cmd_compile() {
+    local skill_name="" teacher_model="" num_tests=8 max_iterations=15
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --skill) skill_name="$2"; shift 2 ;;
+            --teacher-model) teacher_model="$2"; shift 2 ;;
+            --num-tests) num_tests="$2"; shift 2 ;;
+            --max-iterations) max_iterations="$2"; shift 2 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+    [[ -n "$skill_name" ]] || die "--skill is required"
+
+    local skill_dir
+    if [[ -d "$SKILLS_DIR/$skill_name" ]]; then
+        skill_dir="$SKILLS_DIR/$skill_name"
+    elif [[ -d "$KERNEL_DIR/$skill_name" ]]; then
+        skill_dir="$KERNEL_DIR/$skill_name"
+    else
+        die "Skill not found: $skill_name (checked $SKILLS_DIR and $KERNEL_DIR)"
+    fi
+
+    info "Compiling skill: $skill_name"
+
+    local spec_json
+    spec_json=$(parse_skill_spec "$skill_dir")
+
+    local tests_json
+    local phrase_pool
+    phrase_pool=$(capture_phrase_pool "$skill_dir" || printf '[]')
+    tests_json=$(synthesize_tests "$spec_json" "$teacher_model" "$num_tests" "$skill_dir" "$phrase_pool")
+
+    local test_count
+    test_count=$(printf '%s' "$tests_json" | jq 'length')
+    info "Synthesized $test_count test cases"
+
+    local all_results="[]"
+    local i=0
+    while [[ $i -lt $test_count ]]; do
+        local test_json
+        test_json=$(printf '%s' "$tests_json" | jq -c ".[$i]")
+        info "Running test $((i+1))/$test_count: $(printf >&2 '%s' "$test_json" | jq -r '.name')"
+        local result_json
+        result_json=$(execute_test "$test_json" "$skill_name" "$max_iterations")
+        info "Test result: $(printf >&2 '%s' "$result_json" | jq -c '.')"
+        all_results=$(printf '%s' "$all_results" | jq --argjson r "$result_json" '. + [$r]')
+        i=$((i + 1))
+    done
+
+    write_cache "$skill_name" "$all_results" "$phrase_pool" "$skill_dir"
+}
+
+# Show the phrase pool a compile hands the teacher (verification surface for
+# PHRASE-POOL v2: the pool must carry the tool's real output literals).
+cmd_pool() {
+    local skill_name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --skill) skill_name="$2"; shift 2 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+    [[ -n "$skill_name" ]] || die "--skill is required"
+    local skill_dir
+    if [[ -d "$SKILLS_DIR/$skill_name" ]]; then
+        skill_dir="$SKILLS_DIR/$skill_name"
+    elif [[ -d "$KERNEL_DIR/$skill_name" ]]; then
+        skill_dir="$KERNEL_DIR/$skill_name"
+    else
+        die "Skill not found: $skill_name (checked $SKILLS_DIR and $KERNEL_DIR)"
+    fi
+    capture_phrase_pool "$skill_dir"
+}
+# List compiled skills
+cmd_list() {
+    for f in "$COMPILED_DIR"/*.md; do
+        [[ -f "$f" ]] || { printf 'No compiled skills\n'; return; }
+        basename "$f" .md
+    done
+}
+
+# Show compiled cache
+cmd_show() {
+    local skill_name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --skill) skill_name="$2"; shift 2 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+    [[ -n "$skill_name" ]] || die "--skill is required"
+
+    local cache_file="$COMPILED_DIR/${skill_name}.md"
+    [[ -f "$cache_file" ]] || die "No compiled cache for: $skill_name"
+
+    cat "$cache_file"
+}
+
+# Clean compiled cache
+cmd_clean() {
+    local skill_name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --skill) skill_name="$2"; shift 2 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+    [[ -n "$skill_name" ]] || die "--skill is required"
+
+    rm -f "$COMPILED_DIR/${skill_name}.md" "$COMPILED_DIR/${skill_name}.json"
+    info "Cleaned cache for $skill_name"
+}
+
+# Dispatch
+case "${1:-}" in
+    compile) shift; assert_compile_allowed "$@"; cmd_compile "$@" ;;
+    list) cmd_list ;;
+    pool) shift; cmd_pool "$@" ;;
+    show) shift; cmd_show "$@" ;;
+    clean) shift; cmd_clean "$@" ;;
+    -h|--help|"") usage ;;
+    *) die "Unknown command: $1 (try --help)" ;;
+esac
