@@ -12,6 +12,8 @@
 # minute, a window is upcoming, then due, then done once its key is in the
 # sent ledger; only the latest open window is due; a window past the grace
 # period is missed; an expired goal is skipped; the clock line is present.
+# Part 4, skipped windows: a <key>.skip record stops its window for the whole
+# grace period and never reads as missed; a completion receipt still wins.
 # No LLM calls, no docker.
 
 set -uo pipefail
@@ -144,6 +146,49 @@ hasnt "two open windows: the earlier is not" "$out" "-0600"
 # an expired goal is skipped
 mem add --type goal --until 2020-01-01 --schedule "10:00" "Expired duty" >/dev/null 2>&1
 hasnt "expired goal is skipped" "$(signals "$DAY 10:30")" "Expired duty"
+
+# ── Part 4: a window skipped on purpose (<key>.skip, bin/papers-skip) ───────
+# A deliberately skipped window stops raising DUE NOW for its whole grace
+# period and does not read as missed after it: nothing failed, the team asked
+# for no post. A completion receipt still wins when both records exist.
+unset SCHEDULE_GRACE_MIN 2>/dev/null
+export PAPERS_RECEIPTS_DIR="$WORK/receipts"
+mkdir -p "$PAPERS_RECEIPTS_DIR"
+
+mem add --type goal --schedule "11:00 12:00" "Skip duty" >/dev/null 2>&1
+gf=$(grep -lF 'Skip duty' "$MEM_DIR"/*.md | head -1)
+SKID=$(awk '/^id:/{print $2; exit}' "$gf")
+[[ -n "$SKID" ]] && ok "skip test goal created" || bad "skip test goal created" "no id in $gf"
+
+skipwrite() {  # skipwrite <HHMM> <reason>
+    printf 'key=%s/%s-%s\nskipped=%s\nreason=%s\n' \
+        "$SKID" "$DAY" "$1" "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" \
+        > "$PAPERS_RECEIPTS_DIR/${SKID}_${DAY}-$1.skip"
+}
+
+skipwrite 1100 "cap spent: the 09:00 pair used the two-a-day limit"
+out=$(signals "$DAY 11:05" | grep -F "Skip duty")
+has   "a skipped window is not due"    "$out" "the 11:00 window was skipped on purpose: cap spent"
+hasnt "a skipped window does not fire" "$out" "DUE NOW"
+
+export SCHEDULE_GRACE_MIN=20
+out=$(signals "$DAY 11:55" | grep -F "Skip duty")
+unset SCHEDULE_GRACE_MIN
+has   "past grace a skip is not a miss" "$out" "the 11:00 window was skipped on purpose"
+hasnt "past grace a skip is not a miss" "$out" "was missed"
+
+skipwrite 1200 ""
+out=$(signals "$DAY 12:05" | grep -F "Skip duty")
+has   "a skip with no reason still stops the window" "$out" "skipped on purpose: no reason given"
+hasnt "a skip with no reason does not fire"          "$out" "DUE NOW"
+
+# a completion receipt wins over a skip record when both somehow exist
+printf 'key=%s/%s-1200\nsent=%s\nids=2609.29647\n' "$SKID" "$DAY" \
+    "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$PAPERS_RECEIPTS_DIR/${SKID}_${DAY}-1200.receipt"
+out=$(signals "$DAY 12:06" | grep -F "Skip duty")
+has   "a receipt wins over a skip"      "$out" "the 12:00 window was sent at"
+hasnt "a receipt is not called skipped" "$out" "the 12:00 window was skipped"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]
