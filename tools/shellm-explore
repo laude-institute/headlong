@@ -276,6 +276,7 @@ RUN_TRAJ="$(resolve_run_id "$RUN_ID")" || die "No matching run found: $_run_inpu
 
 find_root() {
     local traj_file="$1"
+    traj_file=$(realpath "$traj_file") || return 1
     local _root_ancestors="${_root_ancestors:-$'\n'}"
     case "$_root_ancestors" in
         *$'\n'"$traj_file"$'\n'*) printf '%s\n' "$traj_file"; return 0 ;;
@@ -347,6 +348,7 @@ print_tree() {
         local depth="$2"
 
         [[ -f "$traj_file" ]] || return
+        traj_file=$(realpath "$traj_file") || return 1
         local _explore_ancestors="${_explore_ancestors:-$'\n'}"
         case "$_explore_ancestors" in *$'\n'"$traj_file"$'\n'*) return ;; esac
         _explore_ancestors+="$traj_file"$'\n'
@@ -489,6 +491,7 @@ generate_report() {
     _collect_contexts() {
         local traj_file="$1"
         [[ -f "$traj_file" ]] || return
+        traj_file=$(realpath "$traj_file") || return 1
         local _context_ancestors="${_context_ancestors:-$'\n'}"
         case "$_context_ancestors" in *$'\n'"$traj_file"$'\n'*) return ;; esac
         _context_ancestors+="$traj_file"$'\n'
