@@ -21,6 +21,20 @@ use tokio::{
     task::JoinHandle,
 };
 
+#[cfg(unix)]
+struct FollowerProcessGroup(u32);
+
+#[cfg(unix)]
+impl Drop for FollowerProcessGroup {
+    fn drop(&mut self) {
+        // The follower starts its own group, so this cannot signal the TUI
+        // or its shell. Kill descendants as well as the traj wrapper.
+        unsafe {
+            libc::kill(-(self.0 as libc::pid_t), libc::SIGKILL);
+        }
+    }
+}
+
 struct Message {
     sender: String,
     content: String,
@@ -543,15 +557,22 @@ async fn run(
             traj_id_owned = traj_id;
             args.push(&traj_id_owned);
         }
-        let Ok(mut child) = tokio::process::Command::new("traj")
+        let mut command = tokio::process::Command::new("traj");
+        command
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-        else {
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.as_std_mut().process_group(0);
+        }
+        let Ok(mut child) = command.spawn() else {
             return;
         };
+        #[cfg(unix)]
+        let _process_group = child.id().map(FollowerProcessGroup);
         let Some(stdout) = child.stdout.take() else {
             return;
         };
