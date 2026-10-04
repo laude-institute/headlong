@@ -123,3 +123,26 @@ def test_watcher_drains_only_new_complete_lines(push_root: Path, monkeypatch):
         fh.write(' now complete"}\n')
     watcher._drain(traj)
     assert len(sent) == 2
+
+
+@pytest.mark.parametrize("replacement", [b"", b'{"type":"message","to":"pwa-nick","content":"old"}\n'])
+def test_watcher_recovers_after_shrink_without_replaying_history(
+    push_root: Path, monkeypatch, replacement: bytes
+):
+    push.add_subscription(push_root, "pwa-nick", SUB)
+    watcher = push.PushWatcher(push_root)
+    watcher._rescan()
+    traj = next(iter(watcher._cursors))
+    sent = []
+    monkeypatch.setattr(watcher, "_send", lambda targets, payload: sent.append(json.loads(payload)))
+    traj.write_bytes(replacement)
+    watcher._drain(traj)
+    assert sent == []
+    assert watcher._cursors[traj][1] == len(replacement)
+    fresh = {"type": "message", "from": "pushy", "to": "pwa-nick", "content": "new"}
+    with traj.open("ab") as stream:
+        stream.write(json.dumps(fresh).encode() + b"\n")
+    watcher._drain(traj)
+    watcher._drain(traj)
+    assert [payload["body"] for payload in sent] == ["new"]
+    assert sent[0]["url"] == "/talk/.identities~pushy"
