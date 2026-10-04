@@ -2,7 +2,9 @@
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier, Lock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -134,3 +136,53 @@ def test_endpoints(bundled: Path, identity: Path, tmp_path: Path):
         f"/api/identities/{identity_id}/thinker-sync", json={"names": ["../evil"]}
     )
     assert bad.status_code == 422
+
+
+def test_concurrent_sync_uses_distinct_temporary_files(
+    bundled: Path, identity: Path, monkeypatch
+):
+    replace = os.replace
+    ready = Barrier(2, timeout=5)
+    rename_lock = Lock()
+    temporary_files = []
+
+    def synchronized_replace(src, dest):
+        temporary_files.append(Path(src))
+        ready.wait()
+        # Both copies must be ready before either rename. On Windows, isolate
+        # pathname reuse from that platform's destination sharing rules.
+        if os.name == "nt":
+            with rename_lock:
+                replace(src, dest)
+        else:
+            replace(src, dest)
+
+    monkeypatch.setattr(thinker_sync.os, "replace", synchronized_replace)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(thinker_sync.sync, identity, ["monolith"])
+                   for _ in range(2)]
+        results = [future.result(timeout=10) for future in futures]
+
+    assert all(result["ok"] for result in results)
+    assert len(set(temporary_files)) == 2
+    installed = identity / "thinkers" / "monolith"
+    assert (installed / "step").read_bytes() == (bundled / "monolith" / "step").read_bytes()
+    assert os.access(installed / "step", os.X_OK)
+    assert not list(installed.glob(".step.sync-tmp*"))
+
+
+def test_atomic_copy_cleans_temporary_file_on_replace_failure(tmp_path, monkeypatch):
+    src = tmp_path / "source.md"
+    dest = tmp_path / "installed" / "prompt.md"
+    src.write_text("new content")
+    dest.parent.mkdir()
+    dest.write_text("original content")
+
+    def fail_replace(src, dest):
+        raise OSError("replacement failed")
+
+    monkeypatch.setattr(thinker_sync.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="replacement failed"):
+        thinker_sync._atomic_copy(src, dest)
+    assert dest.read_text() == "original content"
+    assert not list(dest.parent.glob(".prompt.md.sync-tmp*"))
