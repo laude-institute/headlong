@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # test_deploy_update.sh — offline old-to-new deploy and read-only diagnostics.
 # Requires Python 3 and git; sudo, systemctl and HTTP are local stubs.
+# When run as root on Linux with sudo and a shellm account, also verifies
+# the actual UID boundary. Otherwise the sudo contract is tested offline.
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 python3 - "$REPO" <<'PY'
 import os
+import pwd
 from pathlib import Path
 import shutil
 import shlex
@@ -13,6 +16,7 @@ import sys
 import tempfile
 
 repo = Path(sys.argv[1])
+real_sudo = shutil.which('sudo')
 passed = failed = 0
 
 def check(label, condition):
@@ -60,7 +64,18 @@ with tempfile.TemporaryDirectory(prefix='headlong-deploy-test-') as td:
         p.write_text('#!/usr/bin/env bash\n' + text)
         p.chmod(0o755)
 
-    script('sudo', 'if [[ "${1:-}" == -u ]]; then shift 2; fi\nexec "$@"\n')
+    script('sudo', '''if [[ "${1:-}" == -n ]]; then
+    # The read-only entrypoints must drop privileges before any checkout code.
+    [[ "${2:-}" == -u && "${3:-}" == shellm && "${4:-}" == -- && "${5:-}" == /bin/bash ]] || exit 91
+    [[ "${TEST_SUDO_DENY:-0}" != 1 ]] || exit 1
+    if [[ -n "${TEST_REAL_SUDO:-}" ]]; then exec "$TEST_REAL_SUDO" "$@"; fi
+    export TEST_EFFECTIVE_USER=shellm
+    shift 4
+elif [[ "${1:-}" == -u ]]; then
+    shift 2
+fi
+exec "$@"
+''')
     script('systemctl', '''printf '%s\\n' "$*" >> "$TEST_ROOT/systemctl.log"
 case "$1" in
     is-active) echo active ;;
@@ -242,6 +257,66 @@ run_script_on_box() { bash -c "$1"; }
     p = run(['bash', motd])
     check('login renderer quotes paths containing spaces, quotes and dollars',
           quoted.returncode == 0 and p.returncode == 0 and not combined(p))
+
+    # Change checkout code AFTER installing the hook. Both direct and
+    # transitive code must pass through the privilege drop, including status.
+    sandbox_helper = app / 'deploy/thinkers-sandbox.sh'
+    saved_helpers = {path: path.read_text() for path in (helper, sandbox_helper)}
+    installed_bytes = installed_motd.read_bytes()
+    probe = root / 'diagnostic-user'
+    uid_probe = root / 'diagnostic-uid'
+    for path in (probe, uid_probe):
+        path.touch()
+        path.chmod(0o666)
+    probe_code = ('printf "%s" "${TEST_EFFECTIVE_USER:-root}" > ' + shlex.quote(str(probe)) + '\n'
+                  'printf "%s" "$EUID" > ' + shlex.quote(str(uid_probe)) + '\n')
+    try:
+        shellm_uid = pwd.getpwnam('shellm').pw_uid
+    except KeyError:
+        shellm_uid = None
+    real_boundary = (sys.platform == 'linux' and os.geteuid() == 0 and
+                     real_sudo and shellm_uid not in (None, 0))
+    if real_boundary:
+        # Permit the service user to traverse the scratch tree and inspect
+        # its synthetic env. Only the two probe outputs need to be writable.
+        root.chmod(0o755)
+        env_mode = (app / '.env').stat().st_mode
+        (app / '.env').chmod(0o644)
+    entrypoints = [('login', ['bash', installed_motd]), ('status', ['bash', laptop / 'status'])]
+    for changed in saved_helpers:
+        changed.write_text(probe_code + saved_helpers[changed])
+        for label, command in entrypoints:
+            probe.write_text('')
+            p = run(command)
+            check(label + ': modified ' + changed.name + ' runs through sudo as shellm',
+                  p.returncode == 0 and probe.read_text() == 'shellm')
+            probe.write_text('')
+            env['TEST_SUDO_DENY'] = '1'
+            p = run(command)
+            del env['TEST_SUDO_DENY']
+            check(label + ': denied privilege drop never falls back to checkout execution',
+                  p.returncode == 0 and not probe.read_text())
+            if real_boundary:
+                uid_probe.write_text('')
+                env['TEST_REAL_SUDO'] = real_sudo
+                p = run(command)
+                del env['TEST_REAL_SUDO']
+                check(label + ': modified ' + changed.name + ' actually runs with shellm UID',
+                      p.returncode == 0 and uid_probe.read_text() == str(shellm_uid))
+        changed.write_text(saved_helpers[changed])
+    check('checkout changes do not require changing the installed login hook',
+          installed_motd.read_bytes() == installed_bytes)
+    if real_boundary:
+        (app / '.env').chmod(env_mode)
+        env['TEST_REAL_SUDO'] = real_sudo
+        for label, command in entrypoints:
+            p = run(command)
+            check(label + ': unreadable configuration reports failure without exposing values',
+                  p.returncode == 0 and 'could not inspect' in p.stdout and
+                  fake_bot not in combined(p) and fake_app not in combined(p))
+        del env['TEST_REAL_SUDO']
+    else:
+        print('SKIP actual UID checks (requires Linux root, sudo and a shellm account)', flush=True)
 
     # The diagnostics inspect names only and never execute .env contents.
     sentinel = root / 'must-not-exist'

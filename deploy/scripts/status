@@ -55,7 +55,8 @@ if [[ "$state" == "running" ]]; then
             echo "persona:  $(systemctl is-active "$(u slack-agent)")"
         fi'"$telegram_check"'
         if [ -f /opt/shellm/app/deploy/check-deploy.sh ]; then
-            bash /opt/shellm/app/deploy/check-deploy.sh /opt/shellm/app || true
+            # SSM runs as root; the diagnostic and its helpers belong to shellm.
+            sudo -n -u shellm -- /bin/bash /opt/shellm/app/deploy/check-deploy.sh /opt/shellm/app || true
         else
             echo "Deploy configuration: checks unavailable — run deploy/scripts/update to install them."
         fi'

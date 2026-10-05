@@ -17,10 +17,12 @@ SHELLM_HOME="${2:-$(dirname "$APP_DIR")}"
 UNIT_DIR="${3:-/etc/systemd/system}"
 
 if [[ "$mode" == --render-motd ]]; then
+    # PAM runs this hook as root. The checkout belongs to shellm, so drop
+    # privileges before executing it (including its sandbox helper).
     # Paths are shell-quoted, including spaces and shell metacharacters.
     printf '#!/bin/bash\n# Headlong deployment warnings at login. Installed by deploy/update.sh.\n'
     printf 'if [[ -f %q ]]; then\n' "$APP_DIR/deploy/check-deploy.sh"
-    printf '    bash %q --warnings-only %q %q %q || true\n' \
+    printf '    sudo -n -u shellm -- /bin/bash %q --warnings-only %q %q %q || true\n' \
         "$APP_DIR/deploy/check-deploy.sh" "$APP_DIR" "$SHELLM_HOME" "$UNIT_DIR"
     printf 'fi\n'
     exit 0

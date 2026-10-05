@@ -143,6 +143,9 @@ The check changes nothing and never sources `.env` or displays token
 values. It exits 0 for the checked installed configuration, 1 for pending
 steps and 2 when it cannot inspect the configuration. After setup/update,
 login also shows pending steps through `/etc/update-motd.d/61-headlong-deploy`.
+The login and operator status checks run checkout code as `shellm`, even
+though PAM and SSM invoke their wrappers as root. If that user cannot read
+the configuration, the check reports an inspection failure.
 
 A deliberately disabled sandbox (`HEADLONG_SANDBOX=0`) with no sandbox
 configuration is valid. The check does not prove that a running thinker
