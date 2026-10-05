@@ -24,3 +24,8 @@ and shellcheck at warning level.
 JSONL and blob writes, sanitizer failure, and context/recap replay. It also runs
 real `shellm` traces with a scripted LLM in a temporary HOME; all credentials
 are synthetic and no inference or network calls are made.
+
+`test_responder_reply_guard.sh` exercises bounded model calls and reply parsing
+against a scratch identity with a scripted backend. Standalone `<skills show ...>`
+replies defer the original request to the mind and send a holding message;
+quoted commands, examples and ordinary prose remain valid replies.
