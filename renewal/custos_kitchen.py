@@ -43,6 +43,7 @@ def eligible_text(incoming):
 
 def fallback(body):
     clean = re.sub(r'^\{[^\n]+\}\s*', '', body, flags=re.M).strip()
+    if BUILD.search(clean): return None
     if STOP.search(clean): return {'kind': 'stop', 'action': 'stop', 'evidence': STOP.search(clean)[0]}
     if REMINDER.search(clean) or BUILD.search(clean): return None
     if CONTEXT.search(clean) and not REQUEST.search(clean):
@@ -154,7 +155,12 @@ def atomic_json(path, value):
     os.replace(tmp, path)
 
 
+def household_origin(origin):
+    return origin.get('authority') == 'operator' and origin.get('request_id', '').startswith('signal:') and origin.get('sender', '').startswith('signal')
+
+
 def record_boundary(store, origin):
+    if not household_origin(origin): return
     intent = interpret(origin)
     if not intent or intent['kind'] != 'stop': return
     # Called under the native store lock; person-summary replacement cannot erase it.
@@ -164,7 +170,7 @@ def record_boundary(store, origin):
 
 
 def close_superseded(store, items):
-    stops = [r for *_, r in items if r and r['origin'].get('authority') == 'operator'
+    stops = [r for *_, r in items if r and household_origin(r['origin'])
              and (fallback(eligible_text(r['origin'])) or {}).get('kind') == 'stop']
     if not stops: return
     latest = max(stops, key=lambda r: r['received_at'])

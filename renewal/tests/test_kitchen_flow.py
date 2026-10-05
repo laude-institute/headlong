@@ -74,6 +74,20 @@ class NativeKitchenTests(MemoryFixture):
         self.assertFalse(json.loads((self.store.state_dir()/'kitchen-consent.json').read_text())['automatic_followups'])
         self.store.context();r=self.store.find(a)[4]
         self.assertEqual(r['status'],'completed');self.assertIn('no purchase asserted',r['resolution']['evidence'])
+    def test_replay_cannot_replace_newer_consent_source(self):
+        old=incoming("We're all set Custos",'signal:old')
+        self.store.capture(old,'old')
+        self.store.capture(incoming('Leave the rest to us','signal:new'),'new')
+        consent=self.store.state_dir()/'kitchen-consent.json';before=consent.read_bytes()
+        self.store.capture(old,'old')
+        self.assertEqual(consent.read_bytes(),before)
+        self.assertEqual(json.loads(before)['source_id'],'signal:new')
+    def test_historical_operator_deploy_note_is_not_household_consent(self):
+        self.store.capture(incoming('Leave the rest to us','signal:family'),'family')
+        path=self.store.state_dir()/'kitchen-consent.json';before=path.read_bytes()
+        note={'request_id':'operator:archived-note','sender':'hal','authority':'operator','source_url':'operator-cli:old','content':"Hal's deploy agent: the social thinker was fixed, so no more reminders about closed work."}
+        self.store.capture(note,'old-note');self.assertEqual(path.read_bytes(),before)
+        self.assertIsNone(k.interpret(note))
     def test_two_tasks_one_cycle_lease_and_new_input_recovery(self):
         a=self.store.capture(incoming('Add yogurt to the cart','signal:one'),'one',deferred=True)['goal_id']
         b=self.store.capture(incoming('Remove milk from the cart','signal:two'),'two',deferred=True)['goal_id']

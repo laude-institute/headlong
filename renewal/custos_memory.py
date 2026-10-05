@@ -560,7 +560,6 @@ class Store:
         if trigger_step is not None:
             text(trigger_step, "trigger_step", 2048)
         with self.lock():
-            kitchen.record_boundary(self, origin)
             if origin["request_id"] in self.archived_request_ids():
                 # Already answered and archived: never a second reply.
                 return {"goal_id": None, "request_id": origin["request_id"], "created": False, "archived": True}
@@ -575,6 +574,7 @@ class Store:
                 else:
                     self.sync(existing[0])
                 return {"goal_id": existing[3]["id"], "request_id": origin["request_id"], "created": False}
+            kitchen.record_boundary(self, origin)
             record = {"version": 1, "origin": origin, "received_at": now(), "goal": goal,
                       "status": "active", "events": [], "response": None,
                       "trigger_step": trigger_step}
