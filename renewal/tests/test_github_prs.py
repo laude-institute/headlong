@@ -219,6 +219,35 @@ class PRTests(MemoryFixture):
         self.assertNotIn("1f916-ai/1f916#104", inventory)
         self.assertIn("elsewhere/repo#7", inventory)
 
+    def test_discovery_reviews_404_does_not_block_authored_search(self):
+        # The review_repo is dead and 404s on the reviews stage. Before the
+        # fix the APIError propagated out of discover() and the state machine
+        # wedged at stage=reviews forever, so the authored search never
+        # re-ran. After the fix a 404 advances the cycle back to authored
+        # (next/last_success set) and the authored search still runs.
+        original = self.api.get
+        def get_404_reviews(endpoint, **params):
+            if endpoint.endswith("/pulls"):
+                raise APIError("github_pr_not_found")
+            return original(endpoint, **params)
+        self.api.get = get_404_reviews
+        # Start from the stuck real-world state: reviews stage, next in the past.
+        self.state.put(gp.PREFIX+"discovery", {"stage": "reviews", "page": 1,
+            "since": "2026-09-17T14:36:13Z", "next": 1700000000 - 900,
+            "last_success": 1700000000 - 900})
+        self.api.authored = [{"number": 9, "repository_url": "https://api.github.com/repos/elsewhere/repo"}]
+        # Cycle 1: reviews 404s -> advances to authored, sets next/last_success.
+        self.monitor.discover()
+        disc = self.state.get(gp.PREFIX+"discovery")
+        self.assertEqual(disc.get("stage"), "authored")
+        self.assertEqual(disc.get("next"), 1700000000 + 900)
+        self.assertEqual(disc.get("last_success"), 1700000000)
+        # Force the next cycle (next is now in the past) so the authored search runs.
+        self.monitor.now = 1700000000 + 901
+        self.monitor.discover()
+        inventory = self.state.get(gp.PREFIX+"inventory")
+        self.assertIn("elsewhere/repo#9", inventory)
+
     def test_head_changes_mid_scan_restart_without_wrong_head_checks(self):
         self.api.budget = 2
         with self.assertRaises(gp.Budget): self.scan()

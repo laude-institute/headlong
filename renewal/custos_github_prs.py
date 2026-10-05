@@ -154,8 +154,17 @@ class Monitor:
             else:
                 # Full all-state pagination also catches opened-and-closed PRs
                 # between polls. Historical closed PRs establish a quiet baseline.
-                rows = self.api.get("repos/"+self.repo+"/pulls", state="all", sort="created",
-                                    direction="desc", per_page=100, page=page)
+                try:
+                    rows = self.api.get("repos/"+self.repo+"/pulls", state="all", sort="created",
+                                        direction="desc", per_page=100, page=page)
+                except APIError as exc:
+                    if exc.code != "github_pr_not_found":
+                        raise
+                    # A dead review_repo 404s forever; skip its stage so the
+                    # authored search keeps running. The unblocking event is
+                    # unchanged: the repo returns 200 again, which the next
+                    # cycle's reviews stage will see.
+                    rows = []
                 for row in rows:
                     if row["state"] == "open" or row["created_at"] >= state["since"]:
                         self.inventory(self.repo, row["number"], "review")
