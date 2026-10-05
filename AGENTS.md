@@ -97,6 +97,20 @@ Replies take 15 to 45 seconds while the monolith thinker wakes.
 - `<app>/.identities/<name>/` — the identity: persona, memories,
   trajectory, `run/dispatcher.pid`, and its `activate` script.
 
+## Project mode
+
+`headlong-project init <name> --spec FILE` turns an identity into an
+unattended research agent (design/long_autonomy.md). Its files are in
+`<identity>/workdir/project/` (a git repo, committed every wake). The
+read-only originals are in `<identity>/project-pristine/`: edit charter
+or spec there and run `headlong-project update-pristine <name>`. Never
+edit them under `project/`, because the next wake restores them.
+`headlong-project status <name>` is the health check, and `ada status`
+leads with open questions. Init sets a 2M tokens/day budget
+(`PROJECT_DAILY_TOKENS`) and a 14-day end (`headlong-project deadline`
+moves it). Humans answer questions with `headlong-project answer`. Do not
+write Answer lines yourself: provenance comes from git authorship.
+
 ## Sharp edges
 
 - Any script that sources an identity's `activate` must first load

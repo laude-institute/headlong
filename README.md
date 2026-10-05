@@ -49,7 +49,9 @@ curl -fsSL https://headlong.ai/install.sh | bash
 ```
 
 You'll need bash 3.2+, git, curl, jq, Python 3, and an LLM API key (Anthropic,
-OpenAI, Gemini, or OpenRouter) — or a local model on any
+OpenAI, Gemini, or OpenRouter; Claude on Amazon Bedrock also works, set up by
+hand with AWS credentials and an `anthropic.` or `us.anthropic.` model id, see
+`llm --help`) — or a local model on any
 OpenAI-compatible server (llama.cpp, Ollama, vLLM, LM Studio; see
 [Local models](#local-models) below, no key needed); the dashboard also
 needs [uv](https://docs.astral.sh/uv/) and bun or node, and the installer
@@ -173,6 +175,7 @@ experiment with.
 | **mem** / **skills** | File-based memory store and SKILL.md-based abilities |
 | **recap** | Summarizes a trajectory into themes and episodes |
 | **shellm-docker** | Constrained docker facade staged into sandbox containers for generated code |
+| **blind** | Runs a subagent that cannot see the mind's trajectory, for unbiased review and exploration |
 | **glob** / **view** / **put** / **sub** | Small file tools the agent uses instead of the sharp edges of coreutils |
 
 Optional integrations live in [contrib](contrib/README.md), including the opt-in [OpenCode coding experiment](contrib/opencode/README.md).
@@ -188,8 +191,21 @@ Everything you run *around* the mind lives in `tools/`:
 | **shellm-explore** | Visualizes run trees and writes LLM-powered reports on what happened and why |
 | **headlong-web** | The dashboard, where you watch a mind think in the browser |
 | **headlong-slack-bridge** / **headlong-telegram-bridge** | Slack and Telegram connectors into the same inner experience |
+| **headlong-project** | Puts an identity into project mode for weeks of unattended research ([design](design/long_autonomy.md)) |
 | **headlong-killall** | Panic button that stops every Headlong-related process |
 | **pr-committee** | Multi-model pull request review, used on this repo |
+
+## Project mode: long unattended research
+
+`headlong-project init <name> --spec brief.md` points an identity at one
+research project for weeks with no human in the loop. The project gets a
+read-only charter and spec, a journal, a project memory and a questions
+file in which every question carries a dated default. The runtime then
+schedules daily and weekly rituals, including a cold-eyes review by an
+agent that cannot see the mind's log. It enforces a token budget, slows
+the mind to a rest pace when it reports that it is blocked or done, and
+commits the project files to git after every wake. See
+[design/long_autonomy.md](design/long_autonomy.md).
 
 ## Local models
 

@@ -229,6 +229,13 @@ cmd_stop() {
 
 cmd_status() {
     _activate
+    # Project mode: open questions for a human go first, every time, for as
+    # long as they are open (design/long_autonomy.md).
+    if [[ -f "$IDENTITY_ROOT/$NAME/workdir/project/charter.md" ]]; then
+        "$APP_DIR/tools/headlong-project" banner "$IDENTITY_ROOT/$NAME" 2>/dev/null || true
+        echo "project: $APP_DIR/tools/headlong-project status $NAME"
+        echo
+    fi
     local pid
     if pid=$(_dispatcher_pid); then
         echo "mind: running (dispatcher pid $pid)"

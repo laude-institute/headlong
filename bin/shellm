@@ -412,7 +412,8 @@ redact_sensitive() {
     fi
 
     local _key_var
-    for _key_var in OPENAI_API_KEY OPENROUTER_API_KEY GEMINI_API_KEY OPENCODE_API_KEY; do
+    for _key_var in OPENAI_API_KEY OPENROUTER_API_KEY GEMINI_API_KEY OPENCODE_API_KEY \
+                    AWS_BEARER_TOKEN_BEDROCK AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN; do
         if [[ -n "${!_key_var:-}" ]]; then
             output="${output//${!_key_var}/<redacted-api-key>}"
         fi
@@ -743,12 +744,24 @@ docker_prepare_container_tools() {
         fi
     done
 
-    # Install --bin binaries
+    # Install --bin binaries. Copies, not mounts, so a reused container keeps
+    # whatever version it got first: refresh any whose checksum no longer
+    # matches the host. (A live run's container kept a weeks-old blind without
+    # its step cap, and two subagents spent 700K tokens on it.)
     for _bin_path in "${_SHELLM_EXTRA_BINS[@]+"${_SHELLM_EXTRA_BINS[@]}"}"; do
-        local _bin_name
+        local _bin_name _host_sum _cont_sum
         _bin_name=$(basename "$_bin_path")
         local _dest="/usr/local/bin/$_bin_name"
-        if ! docker exec -w / "$_SHELLM_CONTAINER" test -x "$_dest" >/dev/null 2>&1; then
+        _host_sum=$(cksum < "$_bin_path" 2>/dev/null) || _host_sum=""
+        _cont_sum=$(docker exec -w / "$_SHELLM_CONTAINER" sh -c "cksum < '$_dest'" 2>/dev/null) || _cont_sum=""
+        # Core tools are read-only bind mounts, not copies: a mount pinned to a
+        # replaced file cannot be refreshed in place, only by a new env.
+        if [[ -n "$_cont_sum" && "$_host_sum" != "$_cont_sum" ]] \
+            && docker exec -w / "$_SHELLM_CONTAINER" sh -c "grep -q ' $_dest ' /proc/mounts" >/dev/null 2>&1; then
+            progress "Mounted $_bin_name in this container is out of date; use --new-env (or remove the env) to refresh it"
+            continue
+        fi
+        if [[ -z "$_cont_sum" || ( -n "$_host_sum" && "$_host_sum" != "$_cont_sum" ) ]]; then
             docker cp "$_bin_path" "$_SHELLM_CONTAINER:$_dest" >/dev/null 2>&1 || \
                 die "Could not install $_bin_name in shellm container"
             docker exec --user 0:0 -w / "$_SHELLM_CONTAINER" chmod 0755 "$_dest" >/dev/null 2>&1 || \
@@ -2312,6 +2325,7 @@ generate_run_summary() {
     if [[ -z "$summary_model" ]]; then
         case "$SHELLM_MODEL" in
             claude-*) summary_model="claude-haiku-4-5-20251001" ;;
+            anthropic.claude-*) summary_model="anthropic.claude-haiku-4-5" ;;
             *)        summary_model="$SHELLM_MODEL" ;;
         esac
     fi
@@ -2840,6 +2854,17 @@ run_loop() {
             [[ -n "$_prompt_step_id" ]] && _ctx_args+=(--pin "$_prompt_step_id")
         fi
         messages_json=$(context "${_ctx_args[@]}" 2>/dev/null) || messages_json='[]'
+        # Near a --max-iterations cap, say so, or the run is cut off mid-task
+        # with no FINAL and no handoff. Appended to the last user turn only,
+        # so the cached prefix is untouched.
+        if [[ -n "$SHELLM_MAX_ITERATIONS" ]] \
+            && (( SHELLM_MAX_ITERATIONS - iteration < ${SHELLM_ITERATION_WARN:-3} )); then
+            local _left=$(( SHELLM_MAX_ITERATIONS - iteration + 1 )) _warned
+            _warned=$(printf '%s' "$messages_json" | jq --arg n "[harness: this is step $iteration of at most $SHELLM_MAX_ITERATIONS in this run ($_left left, this one included). Wrap up now: record what you have and set FINAL with your handoff before the run is cut off.]" '
+                if length > 0 and .[-1].role == "user" and (.[-1].content | type) == "string"
+                then .[-1].content += "\n\n" + $n else . + [{role: "user", content: $n}] end' 2>/dev/null) || _warned=""
+            [[ -n "$_warned" ]] && messages_json="$_warned"
+        fi
 
         # Call Claude (capture thinking/reasoning to file)
         local thinking_file="$rundir/.last_thinking"
@@ -2988,6 +3013,13 @@ exit \$__shellm_rc
             SHELLM_ENV="$(if [[ "${_SHELLM_DOCKER_MODE:-0}" -eq 1 && "$SHELLM_ALLOW_NESTED_DOCKER" != "1" ]]; then echo "local"; else echo "${_SHELLM_ACTIVE_ENV:-}"; fi)"
             _SHELLM_PARENT_CONTAINER="${_SHELLM_CONTAINER:-}"
             ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+            # Amazon Bedrock credentials and region, for llm calls in
+            # generated code (nested shellm runs, blind reviewers).
+            AWS_BEARER_TOKEN_BEDROCK="${AWS_BEARER_TOKEN_BEDROCK:-}"
+            AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-}"
+            AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-}"
+            AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN:-}"
+            AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
             # The generic openai-compatible provider is configured entirely by
             # env (never auto-detected), so llm calls inside generated code
             # need these two like they need the vendor keys above/below.

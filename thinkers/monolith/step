@@ -30,11 +30,22 @@ SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
 
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/../_lib/common.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../_lib/project.sh"
 
 _require_env
+# Project mode (design/long_autonomy.md): a charter, a spec and project files
+# under workdir/project/ steer every wake toward one long unattended project.
+project_mode=0
+_project_on && project_mode=1
 
 THINK_MODEL="${THINK_MODEL:-${SHELLM_MODEL:-claude-opus-4-7}}"
-THINK_CONTEXT_TAIL="${THINK_CONTEXT_TAIL:-20}"
+# Project mode shows fewer stream steps: the journal tail carries the thread.
+if [[ "$project_mode" -eq 1 ]]; then
+    THINK_CONTEXT_TAIL="${THINK_CONTEXT_TAIL:-12}"
+else
+    THINK_CONTEXT_TAIL="${THINK_CONTEXT_TAIL:-20}"
+fi
 
 run_dir="$IDENTITY_DIR/workdir"
 mkdir -p "$run_dir"
@@ -243,7 +254,7 @@ fi
 # reactive wakes have their own engagement. The counter resets when the hint
 # fires, not when a message is sent: an invitation every N quiet wakes, never
 # an order.
-if [[ "$SHARE_HINT_EVERY" -gt 0 && "$wake_mode" == "spontaneous" ]]; then
+if [[ "$project_mode" -eq 0 && "$SHARE_HINT_EVERY" -gt 0 && "$wake_mode" == "spontaneous" ]]; then
     wakes_since_share_hint=$(( wakes_since_share_hint + 1 ))
     if (( wakes_since_share_hint >= SHARE_HINT_EVERY )); then
         wakes_since_share_hint=0
@@ -255,14 +266,63 @@ fi
 # with the housekeeping spelled out. Goals only ever got added on Audel
 # (13 goal memories, 3 shown, duplicates and expired todos among them, 2026-09-04).
 _now_s=$(date -u +%s)
-if [[ "$GOAL_REVIEW_DAYS" -gt 0 ]] && (( _now_s - goal_review_at >= GOAL_REVIEW_DAYS * 86400 )); then
+if [[ "$project_mode" -eq 0 && "$GOAL_REVIEW_DAYS" -gt 0 ]] && (( _now_s - goal_review_at >= GOAL_REVIEW_DAYS * 86400 )); then
     goal_review_at="$_now_s"
     hints="${hints}- GOAL REVIEW (about once a week): read your active goals below and tidy them this wake (goals). Retire what is done or stale with \`mem forget\`, merge duplicates with \`mem edit\`, and give open todos a date with \`mem add --type todo --until YYYY-MM-DD\` so they expire on their own.
 "
 fi
+# Project mode: restore the read-only files first (a changed charter is logged
+# as an error step, and the wake is told), then add the runtime's project
+# signals: rituals due, matured question defaults, stall, budget, STATE.
+project_section=""
+project_hints=""
+if [[ "$project_mode" -eq 1 ]]; then
+    # Edits since the last wake are a human's (the answer to a question, an
+    # edited file): commit them as author "human" before this wake touches
+    # anything, so a human answer stays provable. Then stamp Q ids.
+    _project_commit_outside || true
+    _project_number_questions || true
+    project_restored=$(_project_guard) || project_restored=""
+    if [[ -n "$project_restored" ]]; then
+        jq -nc --arg f "$(printf '%s' "$project_restored" | tr '\n' ' ')" \
+            '{type:"error", source:"monolith", reason:"project-guard", content:("read-only project files had changed and were restored: " + $f)}' \
+            | traj append >/dev/null 2>&1 || true
+    fi
+    # Over budget: no model call at all this wake (the cap is hard up to the
+    # wake that crossed it). One step marks the start of each pause, not one
+    # per wake; the EXIT trap re-arms at the budget rest.
+    if _project_over_budget; then
+        if [[ ! -f "$state_dir/project_budget_paused" ]]; then
+            : > "$state_dir/project_budget_paused"
+            jq -nc --arg c "token budget reached (24h: $(_project_tokens_24h) of ${PROJECT_DAILY_TOKENS:-no cap}; run: $(_project_tokens_total) of ${PROJECT_TOTAL_TOKENS:-no cap}); wakes skip the model until usage falls" \
+                '{type:"idle", source:"monolith", reason:"budget", content:$c}' | traj append >/dev/null 2>&1 || true
+        fi
+        _project_write_summary || true
+        _project_commit "budget pause: no wake" || true
+        next_delay=$(_project_delay_floor 0 2>/dev/null) || next_delay=1800
+        printf '  project budget reached: no model call; next check in %ss\n' "$next_delay" >&2
+        exit 0
+    fi
+    rm -f "$state_dir/project_budget_paused"
+    # Resting is free: blocked or done with nothing due, a timer wake makes
+    # no model call (see _project_should_skip_rest).
+    if _project_should_skip_rest "$wake_mode"; then
+        _project_write_summary || true
+        _project_commit "rest: nothing due" || true
+        next_delay=$(_project_delay_floor 0 2>/dev/null) || next_delay=3600
+        printf '  project resting (%s): no model call; next check in %ss\n' "$(_project_state)" "$next_delay" >&2
+        exit 0
+    fi
+    project_hints=$(_prompt_section project-signals _project_signals "$project_restored") || project_hints=""
+    project_section=$(_prompt_section project _project_section) || project_section=""
+fi
 # The query for related memories is the wake's own material: the real hints
 # (before the placeholder below) and the last three stream steps.
 related_query="$hints $(printf '%s\n' "$recent_context" | tail -n 3 | jq -r '.content // ""' 2>/dev/null | cut -c1-600 | tr '\n' ' ')"
+# Project signals join the hints after the query: ritual instructions are
+# long boilerplate and would pull the same memories on every ritual wake.
+[[ -n "${project_hints:-}" ]] && hints="${hints}${project_hints}
+"
 [[ -z "$hints" ]] && hints="- (no special signals — pick what best serves the mind right now)"
 # Clock and scheduled-goal windows go first, after the placeholder test and
 # the related-memories query: they are present on every wake and are not the
@@ -272,9 +332,19 @@ _sched=$(_prompt_section schedule _schedule_signals "$MEM_DIR") || _sched=""
 $hints"
 
 prompt_file="$SCRIPT_DIR/prompt.md"
+[[ "$project_mode" -eq 1 ]] && prompt_file="$SCRIPT_DIR/prompt-project.md"
 [[ -f "$prompt_file" ]] || { printf 'monolith/step: error: prompt.md not found at %s\n' "$prompt_file" >&2; exit 1; }
 goals=$(get_goals "$MEM_DIR")
 think_prompt=$(load_prompt "$prompt_file" "$IDENTITY_NAME" "$goals")
+# Project mode caps each wake's steps, the per-wake bound on cost; the prompt
+# names the cap and shellm warns near it (SHELLM_ITERATION_WARN).
+project_iter_flags=()
+if [[ "$project_mode" -eq 1 ]]; then
+    PROJECT_MAX_ITERATIONS="${PROJECT_MAX_ITERATIONS:-25}"
+    [[ "$PROJECT_MAX_ITERATIONS" =~ ^[1-9][0-9]*$ ]] || PROJECT_MAX_ITERATIONS=25
+    project_iter_flags=(--max-iterations "$PROJECT_MAX_ITERATIONS")
+    think_prompt="${think_prompt//\{\{max_iterations\}\}/$PROJECT_MAX_ITERATIONS}"
+fi
 
 # Build shellm flags (includes traj/mem/chat/etc. in --bin).
 _export_provider_keys
@@ -331,6 +401,8 @@ $system_prompt
 ${runtime_line:+$runtime_line
 
 }${workspace_section:+$workspace_section
+
+}${project_section:+$project_section
 
 }${life_section}Recent stream (last $THINK_CONTEXT_TAIL durable steps; \`traj tail -n 200\` shows more, verbatim):
 $recent_context
@@ -406,6 +478,16 @@ if traj exists 2>/dev/null; then
     before_thought=$(_last_thought_id) || before_thought=""
 fi
 
+# Project mode paces wakes by what each one cost: note the ledger before.
+project_ledger_before=0
+if [[ "$project_mode" -eq 1 ]]; then
+    project_ledger_before=$(_project_ledger_lines) || project_ledger_before=0
+    # blind, inside the sandbox, sums the ledger past this mark and refuses
+    # to start once the wake has spent its ceiling.
+    project_wake_ceiling=$(_project_wake_ceiling) || project_wake_ceiling=0
+    shellm_flags+=(--var "PROJECT_LEDGER_MARK=$project_ledger_before" --var "PROJECT_WAKE_TOKENS=$project_wake_ceiling")
+fi
+
 # shellm writes its run header's step_id here, so a fallback idle can carry
 # run_id and the timeline can pair it with the run that went quiet.
 run_id_file=$(mktemp)
@@ -471,7 +553,7 @@ SHELLM_NO_BANNER=1 \
     SHELLM_WAKE="$wake_reason" \
     SHELLM_RUN_ID_OUT="$run_id_file" \
     shellm --model "$run_model" --traj "$TRAJ_ID" --context-scope run \
-    "${shellm_flags[@]}" \
+    "${shellm_flags[@]}" ${project_iter_flags[@]+"${project_iter_flags[@]}"} \
     --prompt-file "$prompt_file_tmp" >"$run_out_tmp" 2>"$run_err_tmp" || run_rc=$?
 rm -f "$prompt_file_tmp"
 # tail -F polls once a second; give it one tick to flush the last lines.
@@ -612,6 +694,24 @@ else
         printf '  thought-only wake — dwell %s/%s at level %s (next in %ss)\n' \
             "$ticks_at_level" "$BACKOFF_HOLD" "$level" "$next_delay" >&2
     fi
+fi
+# Project mode: token pacing, a spent budget or a blocked/done STATE puts a
+# floor under the next delay, even after visible work (a resting mind that journals "still
+# blocked" must not loop at full speed). Then commit project/ with the run's
+# FINAL as the message, so the record is versioned whether or not the model
+# remembered to.
+if [[ "$project_mode" -eq 1 ]]; then
+    project_wake_tok=$(_project_tokens_after "$project_ledger_before" 2>/dev/null) || project_wake_tok=0
+    project_floor=$(_project_delay_floor "$project_wake_tok" 2>/dev/null) || project_floor=0
+    [[ "$project_floor" =~ ^[0-9]+$ ]] || project_floor=0
+    if (( project_floor > next_delay )); then
+        printf '  project floor: next wake in %ss (this wake used %s tokens; pace, budget or STATE)\n' "$project_floor" "$project_wake_tok" >&2
+        next_delay=$project_floor
+    fi
+    _project_number_questions || true
+    _project_write_summary || true
+    _project_commit "$(printf '%s' "${run_response:-wake $wake_reason}" | head -c 2000)
+[wake $wake_reason, rc=$run_rc]"
 fi
 _save_state
 

@@ -12,6 +12,9 @@ Headlong identity with a coding agent in a collaborative (not adversarial)
 optimization loop.
 [peer_hearing.md](peer_hearing.md) describes how two personas hear each
 other on Slack and the guard that keeps them from looping.
+[long_autonomy.md](long_autonomy.md) describes project mode, which runs
+weeks of unattended research and reconciles Headlong with the CNS Bot
+prompt library.
 When a document and the code disagree, the code wins.
 
 Reference documentation for users belongs in [docs/](../docs/).

@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# blind — run a subagent that cannot see the mind's trajectory.
+#
+# A nested `shellm` forks its parent's trajectory, so the child sees the whole
+# mind log: which approach the parent favors, how it rates its own work. That
+# is right for delegating chores and wrong for review and independent
+# exploration (design/long_autonomy.md). blind starts a fresh root run: no
+# parent trajectory, its own trajectory dir, and a scratch workdir holding
+# copies of only the files it is given.
+#
+#   blind [--role NAME] [-f FILE]... [--out FILE] [-m MODEL] [PROMPT...]
+#
+# --role NAME reads project/roles/NAME.md as the opening of the prompt; a first
+# line `<!-- files: a b c -->` names the files the role gets when no -f is
+# given. --out writes the subagent's final answer to FILE (it is printed
+# either way). BLIND_MAX_ITERATIONS (default 30) caps its steps. Runs land in
+# project/.blind/ (gitignored) for later audit.
+
+die() { printf 'blind: error: %s\n' "$*" >&2; exit 1; }
+
+role="" out="" model="${BLIND_MODEL:-${SHELLM_MODEL:-}}" files=() words=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --role) role="${2:?--role needs a name}"; shift 2 ;;
+        -f) files+=("${2:?-f needs a file}"); shift 2 ;;
+        --out) out="${2:?--out needs a file}"; shift 2 ;;
+        -m|--model) model="${2:?--model needs a model}"; shift 2 ;;
+        -h|--help) sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) words+=("$1"); shift ;;
+    esac
+done
+
+project="${PROJECT_DIR:-}"
+[[ -z "$project" && -d project ]] && project="$PWD/project"
+[[ -z "$project" && -d "${SHELLM_WORKDIR:-/nonexistent}/project" ]] && project="$SHELLM_WORKDIR/project"
+[[ -n "$project" && -d "$project" ]] || die "no project/ directory here (set PROJECT_DIR)"
+
+prompt=""
+if [[ -n "$role" ]]; then
+    rf="$project/roles/$role.md"
+    [[ -f "$rf" ]] || die "no role file $rf (roles: $(ls "$project/roles" 2>/dev/null | sed 's/\.md$//' | tr '\n' ' '))"
+    if [[ ${#files[@]} -eq 0 ]]; then
+        read -r -a files <<< "$(sed -n '1s/^<!-- files: \(.*\) -->$/\1/p' "$rf")"
+    fi
+    prompt=$(sed '1{/^<!-- files:/d;}' "$rf")
+fi
+[[ ${#words[@]} -gt 0 ]] && prompt="${prompt:+$prompt
+
+}Task: ${words[*]}"
+[[ -n "$prompt" ]] || die "nothing to do: give --role and/or a prompt"
+
+# A wake's token ceiling covers its subagents (PROJECT_WAKE_TOKENS, with the
+# ledger position the wake started at in PROJECT_LEDGER_MARK; both set by the
+# monolith). Refuse before spending anything once it is used up.
+if [[ "${PROJECT_WAKE_TOKENS:-0}" =~ ^[1-9][0-9]*$ && -f "${LLM_USAGE_LEDGER:-}" ]]; then
+    spent=$(tail -n +"$(( ${PROJECT_LEDGER_MARK:-0} + 1 ))" "$LLM_USAGE_LEDGER" | jq -Rn '[inputs | fromjson? // empty
+        | (.in_tok // 0) + (.out_tok // 0)
+          + (if (.provider == "anthropic" or .provider == "opencode" or .provider == "bedrock" or .provider == "bedrock-invoke") then (.cache_tok // 0) else 0 end)]
+        | add // 0' 2>/dev/null) || spent=0
+    if (( spent >= PROJECT_WAKE_TOKENS )); then
+        die "this wake has spent its token budget ($spent of $PROJECT_WAKE_TOKENS, subagents included). Record what you have, set FINAL, and run the subagent next wake."
+    fi
+fi
+
+mkdir -p "$project/.blind"
+work=$(mktemp -d "$project/.blind/run.XXXXXX")
+trap 'rm -rf "$work/files"' EXIT
+mkdir -p "$work/files"
+listing=""
+for f in ${files[@]+"${files[@]}"}; do
+    [[ -f "$f" ]] || die "no such file: $f"
+    rel="${f#"$PWD"/}"; rel="${rel#/}"; rel="${rel#./}"
+    mkdir -p "$work/files/$(dirname "$rel")"
+    cp "$f" "$work/files/$rel"
+    listing="${listing}- $rel
+"
+done
+printf '%s\n\nYou work in a scratch directory. The files you were given are:\n%s\nYou have not seen how these files were produced and must not look outside this directory for that.\n' \
+    "$prompt" "${listing:-- (none)
+}" > "$work/prompt.md"
+
+env_args=()
+[[ -n "${SHELLM_ENV:-}" ]] && env_args=(--env "$SHELLM_ENV")
+model_args=()
+[[ -n "$model" ]] && model_args=(--model "$model")
+# Its own step cap: a blind run is part of the wake that started it, and
+# without one a long review could spend a day's token budget in one go.
+iters="${BLIND_MAX_ITERATIONS:-30}"
+[[ "$iters" =~ ^[1-9][0-9]*$ ]] || iters=30
+printf 'blind: %s run in %s\n' "${role:-adhoc}" "${work#"$PWD"/}" >&2
+
+answer=$(cd "$work/files" && env -u _SHELLM_PARENT_TRAJ_ID -u _SHELLM_PARENT_RUN -u _SHELLM_ROOT_RUNDIR \
+    -u TRAJ_ID -u ROOT_TRAJ_ID -u SHELLM_TRIGGER_STEP_ID -u SHELLM_RUN_ID_OUT \
+    shellm -q --max-iterations "$iters" ${model_args[@]+"${model_args[@]}"} ${env_args[@]+"${env_args[@]}"} \
+    --workdir "$work/files" --traj-dir "$work/traj" --prompt-file "$work/prompt.md") \
+    || die "subagent failed (rc=$?); its trajectory is in $work/traj"
+printf '%s\n' "$answer" > "$work/answer.md"
+if [[ -n "$out" ]]; then
+    mkdir -p "$(dirname "$out")"
+    printf '%s\n' "$answer" > "$out"
+fi
+printf '%s\n' "$answer"

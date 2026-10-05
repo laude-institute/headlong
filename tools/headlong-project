@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# headlong-project — put an identity into project mode for a long unattended
+# research run, and report on it (design/long_autonomy.md).
+#
+#   headlong-project init <identity> --spec FILE [--charter FILE]
+#                         [--days N | --end YYYY-MM-DD] [--daily-tokens N]
+#                         [--total-tokens N] [--time-scale N]
+#                         [--keep-persona] [--force]
+#   headlong-project status <identity>       open questions first, then health
+#   headlong-project questions <identity> [--open|--closed|--all]
+#   headlong-project answer <identity> <Qn> "<answer>"   (or the answer on stdin)
+#   headlong-project banner <identity>       just the open-questions block
+#   headlong-project deadline <identity> [--days N | --end YYYY-MM-DD]
+#   headlong-project update-pristine <identity>
+#
+# <identity> is a name under <app>/.identities/ or a path to an identity dir.
+#
+# init copies identities/project/ into <identity>/workdir/project/ (the mind's
+# files, a git repo) and the read-only parts (charter, spec, roles, rituals)
+# into <identity>/project-pristine/, which the monolith restores them from.
+# It replaces the persona with a project persona (the old one is kept as
+# core_identity_prompt.md.pre-project) unless --keep-persona. Restart the mind
+# afterwards (`<name> stop; <name> start`).
+#
+# --days (default 14) or --end sets when the run ends; the agent plans its
+# phases and its deliverable against it, and a final ritual closes the run.
+# `deadline` shows it, or moves it (a human decision, like the spec).
+# --daily-tokens sets PROJECT_DAILY_TOKENS in the identity's .env (default
+# 2000000): a 24h cap on tokens processed, and the basis for pacing wakes.
+# --total-tokens caps the whole run (PROJECT_TOTAL_TOKENS; default none).
+# --time-scale N runs the project clock N times faster than real time
+# (PROJECT_TIME_SCALE), for accelerated test runs: --days 8 --time-scale 24
+# is an eight-day project in eight hours.
+#
+# answer records a human's answer to an open question and commits it as
+# author "human", which is how the runtime tells a human answer from one the
+# agent wrote. The agent applies it on its next wake.
+#
+# update-pristine re-reads charter.md, spec.md, roles/ and rituals/ from the
+# identity's project-pristine/ after a human edited them there, and pushes
+# them into project/ (the only sanctioned way to change the charter or spec).
+
+die() { printf 'headlong-project: error: %s\n' "$*" >&2; exit 1; }
+HERE="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+APP="$(dirname "$HERE")"
+# A copy install puts this file in ~/.local/bin; the checkout is then named
+# by the state home's app_dir file.
+if [[ ! -d "$APP/identities/project" ]]; then
+    for _h in "${HEADLONG_HOME:-$HOME/.headlong}" "$HOME/.shellm"; do
+        [[ -f "$_h/app_dir" ]] && { APP=$(cat "$_h/app_dir"); break; }
+    done
+fi
+TEMPLATE="${HEADLONG_PROJECT_TEMPLATE:-$APP/identities/project}"
+
+_resolve() {
+    local t="${1:?identity name or path required}"
+    if [[ -f "$t/info.txt" ]]; then (cd "$t" && pwd); return; fi
+    [[ -f "$APP/.identities/$t/info.txt" ]] && { (cd "$APP/.identities/$t" && pwd); return; }
+    die "no identity '$t' (looked in $APP/.identities/)"
+}
+
+# Epoch for the run's end: --end DATE (end of that day, local) or now + days.
+_end_epoch() {
+    local days="$1" end="$2" e
+    if [[ -n "$end" ]]; then
+        e=$(date -d "$end 23:59:59" +%s 2>/dev/null || date -j -f '%Y-%m-%d %H:%M:%S' "$end 23:59:59" +%s 2>/dev/null) \
+            || die "--end must be YYYY-MM-DD (got '$end')"
+    else
+        [[ "$days" =~ ^[1-9][0-9]*$ ]] || die "--days must be a positive number"
+        e=$(( $(date +%s) + days * 86400 ))
+    fi
+    (( e > $(date +%s) )) || die "the end date is in the past"
+    printf '%s' "$e"
+}
+
+cmd_init() {
+    local ident="" spec="" charter="" keep=0 force=0 tokens=2000000 days=14 end="" total="" scale=1
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --spec) spec="${2:?--spec needs a file}"; shift 2 ;;
+            --charter) charter="${2:?--charter needs a file}"; shift 2 ;;
+            --daily-tokens) tokens="${2:?--daily-tokens needs a number}"; shift 2 ;;
+            --days) days="${2:?--days needs a number}"; shift 2 ;;
+            --total-tokens) total="${2:?--total-tokens needs a number}"; shift 2 ;;
+            --time-scale) scale="${2:?--time-scale needs a number}"; shift 2 ;;
+            --end) end="${2:?--end needs YYYY-MM-DD}"; shift 2 ;;
+            --keep-persona) keep=1; shift ;;
+            --force) force=1; shift ;;
+            -*) die "unknown option $1" ;;
+            *) ident="$1"; shift ;;
+        esac
+    done
+    local id; id=$(_resolve "$ident")
+    [[ "$tokens" =~ ^[0-9]+$ ]] || die "--daily-tokens must be a number (0 = no cap)"
+    [[ -z "$total" || "$total" =~ ^[0-9]+$ ]] || die "--total-tokens must be a number"
+    [[ "$scale" =~ ^[1-9][0-9]*$ ]] || die "--time-scale must be a positive whole number"
+    [[ "$scale" == 1 || -z "$end" ]] || die "--end is a calendar date; with --time-scale use --days"
+    local end_at; end_at=$(_end_epoch "$days" "$end")
+    [[ -n "$spec" && -f "$spec" ]] || die "--spec FILE is required (the project brief, verbatim)"
+    [[ -z "$charter" || -f "$charter" ]] || die "no such charter: $charter"
+    [[ -d "$TEMPLATE" ]] || die "template not found: $TEMPLATE"
+    local name pd pp today
+    name=$(grep '^name=' "$id/info.txt" | cut -d= -f2-)
+    pd="$id/workdir/project"; pp="$id/project-pristine"; today=$(date -u +%F)
+    if [[ -e "$pd/charter.md" && "$force" -ne 1 ]]; then
+        die "$pd already holds a project (use --force to start over; the old one is moved aside)"
+    fi
+    if [[ -e "$pd" ]]; then
+        mv "$pd" "$pd.old-$(date +%Y%m%d%H%M%S)"
+        chmod -R u+w "$pp" 2>/dev/null || true
+        rm -rf "$pp"
+    fi
+    mkdir -p "$pd"/{daily,reports,reviews,explorations,model,skills/project,skills/generic,free-time} "$pp"
+    local f
+    for f in project-memory.md journal.md questions.md addenda.md deliverable.md STATE; do
+        sed "s/{{date}}/$today/g" "$TEMPLATE/$f" > "$pd/$f"
+    done
+    sed "s/{{date}}/$today/g" "${charter:-$TEMPLATE/charter.md}" > "$pp/charter.md"
+    cp "$spec" "$pp/spec.md"
+    cp -R "$TEMPLATE/roles" "$TEMPLATE/rituals" "$pp/"
+    date +%s > "$pp/started_at"
+    printf '%s\n' "$end_at" > "$pp/end_at"
+    cp -R "$pp/charter.md" "$pp/spec.md" "$pp/roles" "$pd/"
+    # Files read-only, directories left writable: the guard must be able to
+    # restore a deleted role, and a human must be able to remove the project.
+    find "$pd/charter.md" "$pd/spec.md" "$pd/roles" "$pp/charter.md" "$pp/spec.md" "$pp/roles" "$pp/rituals" \
+        -type f -exec chmod a-w {} +
+    printf '.blind/\n' > "$pd/.gitignore"
+    for f in daily reports reviews explorations model skills/project skills/generic free-time; do : > "$pd/$f/.keep"; done
+    if command -v git >/dev/null 2>&1; then
+        git -C "$pd" init -q
+        git -C "$pd" add -A
+        git -C "$pd" -c user.name="$name" -c user.email="$name@headlong.local" commit -q -m "project initialized from spec $(basename "$spec")"
+    fi
+    if [[ "$keep" -ne 1 ]]; then
+        [[ -f "$id/core_identity_prompt.md" && ! -f "$id/core_identity_prompt.md.pre-project" ]] \
+            && cp "$id/core_identity_prompt.md" "$id/core_identity_prompt.md.pre-project"
+        cat > "$id/core_identity_prompt.md" <<'EOF'
+I am {{identity_name}}, a research agent assigned to one long project. My
+charter (project/charter.md) and the project spec (project/spec.md) define
+my work, and they are shown to me on every wake. I work unsupervised for
+weeks at a time, so I keep my files honest and current: they are the only
+record a human will see.
+
+I am rigorous rather than busy. I source every number, I have my claims
+attacked before I record them, and I say plainly when I am blocked or done.
+A quiet stretch is a chance to do careful work, and an honest rest is
+better than manufactured progress.
+EOF
+    fi
+    touch "$id/.env"
+    {
+        grep -vE '^(PROJECT_DAILY_TOKENS|PROJECT_TOTAL_TOKENS|PROJECT_TIME_SCALE)=' "$id/.env" || true
+        printf 'PROJECT_DAILY_TOKENS=%s\n' "$tokens"
+        if [[ -n "$total" ]]; then printf 'PROJECT_TOTAL_TOKENS=%s\n' "$total"; fi
+        if [[ "$scale" != 1 ]]; then printf 'PROJECT_TIME_SCALE=%s\n' "$scale"; fi
+    } > "$id/.env.tmp" && mv "$id/.env.tmp" "$id/.env"
+    printf 'Project mode is set up for %s.\n  files:    %s\n  pristine: %s (edit there, then run update-pristine)\n' "$name" "$pd" "$pp"
+    printf '  budget:   %s tokens per 24h (PROJECT_DAILY_TOKENS in %s/.env)\n' "$tokens" "$id"
+    [[ -n "$total" ]] && printf '  run cap:  %s tokens in total\n' "$total"
+    [[ "$scale" != 1 ]] && printf '  clock:    %sx real time: the %s-day run takes %s real hours\n' "$scale" "$days" $(( days * 24 / scale ))
+    printf '  ends:     %s (move it with: headlong-project deadline %s --days N)\n' "$(date -d "@$end_at" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$end_at" '+%Y-%m-%d %H:%M %Z')" "$name"
+    printf 'Restart the mind to pick it up: %s stop; %s start\n' "$name" "$name"
+}
+
+cmd_update_pristine() {
+    local id pd pp
+    id=$(_resolve "${1:-}"); pd="$id/workdir/project"; pp="$id/project-pristine"
+    [[ -d "$pp" ]] || die "$id is not in project mode"
+    chmod -R u+w "$pd/charter.md" "$pd/spec.md" "$pd/roles" 2>/dev/null || true
+    rm -rf "$pd/roles"
+    cp -R "$pp/charter.md" "$pp/spec.md" "$pp/roles" "$pd/"
+    find "$pd/charter.md" "$pd/spec.md" "$pd/roles" -type f -exec chmod a-w {} +
+    printf 'Pushed charter, spec and roles from %s into %s.\n' "$pp" "$pd"
+}
+
+# Load the project library for an identity: env, PROJECT_* settings from the
+# identity's .env, then thinkers/_lib/project.sh.
+_load() {
+    ID=$(_resolve "${1:-}"); PD="$ID/workdir/project"
+    [[ -f "$PD/charter.md" ]] || die "$ID is not in project mode"
+    export IDENTITY_DIR="$ID" IDENTITY_NAME
+    IDENTITY_NAME=$(grep '^name=' "$ID/info.txt" | cut -d= -f2-)
+    local kv k
+    while IFS= read -r kv; do
+        k="${kv%%=*}"
+        [[ -n "${!k:-}" ]] || export "$kv"
+    done < <(grep -E '^(PROJECT_[A-Z_]+|HEADLONG_TZ)=[^ ]*$' "$ID/.env" 2>/dev/null || true)
+    # shellcheck disable=SC1091
+    source "$APP/thinkers/_lib/project.sh"
+}
+
+cmd_deadline() {
+    local ident="" days="" end=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --days) days="${2:?--days needs a number}"; shift 2 ;;
+            --end) end="${2:?--end needs YYYY-MM-DD}"; shift 2 ;;
+            *) ident="$1"; shift ;;
+        esac
+    done
+    _load "$ident"
+    local pp="$ID/project-pristine"
+    if [[ -n "$days$end" ]]; then
+        local e; e=$(_end_epoch "${days:-1}" "$end")
+        [[ -n "$end" ]] || e=$(( $(_project_started_at) + days * 86400 ))
+        (( e > $(_pj_now) )) || die "that end is in the past (the run started $(_pj_date "$(_project_started_at)" %F))"
+        chmod u+w "$pp/end_at" 2>/dev/null || true
+        printf '%s\n' "$e" > "$pp/end_at"
+        # Extending a finished run reopens it: the old final report is kept
+        # under a dated name so the final ritual runs again at the new end,
+        # and STATE goes back to active. Committed as the human's decision.
+        if [[ -f "$PD/reports/final.md" ]]; then
+            mv "$PD/reports/final.md" "$PD/reports/final-superseded-$(date -u +%Y%m%d%H%M).md"
+            [[ -f "$PD/reviews/final.md" ]] && mv "$PD/reviews/final.md" "$PD/reviews/final-superseded-$(date -u +%Y%m%d%H%M).md"
+            printf 'active\nThe run was extended by a human to %s; the earlier final report is in reports/.\n' "$(_pj_date "$e" %F)" > "$PD/STATE"
+            if [[ -d "$PD/.git" ]]; then
+                git -C "$PD" add -A reports reviews STATE >/dev/null 2>&1 || true
+                git -C "$PD" -c user.name=human -c user.email=human@headlong.local \
+                    commit -q -m "run extended to $(_pj_date "$e" %F) by a human" -- reports reviews STATE >/dev/null 2>&1 || true
+            fi
+            printf 'The run had finished; it is reopened (STATE active) and will close again at the new end.\n'
+        fi
+        printf 'Moved the end of the run to %s. The agent sees it on its next wake.\n' "$(_pj_date "$e" '%Y-%m-%d %H:%M %Z')"
+    fi
+    local e2; e2=$(_project_end_at)
+    if [[ -n "$e2" ]]; then
+        printf 'Run ends %s; phase %s.\n' "$(_pj_date "$e2" '%Y-%m-%d %H:%M %Z')" "$(_project_phase)"
+    else
+        printf 'No end date set (open-ended run).\n'
+    fi
+}
+
+cmd_banner() { _load "${1:-}"; _project_question_banner brief; }
+
+cmd_questions() {
+    local ident="" which=all
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --open) which=open; shift ;; --closed) which=closed; shift ;; --all) which=all; shift ;;
+            *) ident="$1"; shift ;;
+        esac
+    done
+    _load "$ident"
+    [[ "$which" == closed ]] || _project_question_banner
+    if [[ "$which" != open ]]; then
+        printf '\nClosed questions:\n'
+        _project_question_rows | awk -F'\037' '
+            $2 == "human" { by = "HUMAN ANSWER" } $2 == "default" { by = "DEFAULT USED (no human answer)" }
+            $2 == "moot" { by = "MOOT" } $2 == "unverified" { by = "UNVERIFIED (marked answered; no human answer found)" }
+            $2 == "human" || $2 == "default" || $2 == "moot" || $2 == "unverified" {
+                n++; printf "  %s  %s\n      opened %s; %s: %s\n", $1, $3, $5, by, $4 }
+            END { if (!n) print "  none" }'
+    fi
+}
+
+cmd_answer() {
+    local ident="${1:-}" qid="${2:-}"
+    [[ -n "$ident" && "$qid" =~ ^[Qq][0-9]+$ ]] || die 'usage: headlong-project answer <identity> <Qn> "<answer>"'
+    shift 2
+    local text="$*"
+    [[ -n "$text" ]] || text=$(cat)
+    text=$(printf '%s' "$text" | tr '\n\t' '  ' | sed 's/[[:space:]]*$//')
+    [[ -n "$text" ]] || die "empty answer"
+    _load "$ident"
+    qid="Q${qid#[Qq]}"
+    _project_number_questions
+    local q="$PD/questions.md" kind
+    kind=$(_project_question_rows | awk -F'\037' -v id="$qid" '$1 == id {print $2}')
+    [[ -n "$kind" ]] || die "no question $qid in $q (see: headlong-project questions $IDENTITY_NAME)"
+    [[ "$kind" == open || "$kind" == human-waiting ]] || printf 'note: %s is already closed (%s); recording the answer anyway, and the agent will see it.\n' "$qid" "$kind" >&2
+    local line="Answer: $text (human, $(date -u +%Y-%m-%d))" tmp
+    tmp=$(mktemp)
+    # Replace the entry's Answer line, or add one at the end of the entry,
+    # ahead of the blank lines that separate it from the next.
+    awk -v id="$qid" -v line="$line" '
+        function finish() { if (inq && !done) { print line; done = 1 } printf "%s", held; held = "" }
+        /^### / { if (inq) { finish(); inq = 0 } if ($2 == id) inq = 1; print; next }
+        inq && /^Answer:/ { printf "%s", held; held = ""; print line; done = 1; next }
+        inq && /^[[:space:]]*$/ { held = held $0 "\n"; next }
+        inq && /^---/ { finish(); inq = 0 }
+        { printf "%s", held; held = ""; print }
+        END { finish() }' "$q" > "$tmp" && cat "$tmp" > "$q"
+    rm -f "$tmp"
+    if [[ "$kind" != open && "$kind" != human-waiting ]]; then
+        sed -i.bak "s/^\(### $qid .*STATUS: *\)[a-z]*/\1open/" "$q" && rm -f "$q.bak"
+    fi
+    _project_write_summary
+    if [[ -d "$PD/.git" ]]; then
+        git -C "$PD" add questions.md questions-summary.md
+        git -C "$PD" -c user.name=human -c user.email=human@headlong.local \
+            commit -q -m "human answer to $qid" -- questions.md questions-summary.md
+    fi
+    printf 'Recorded the answer to %s. %s applies it on its next wake.\n' "$qid" "$IDENTITY_NAME"
+}
+
+cmd_status() {
+    _load "${1:-}"
+    local id="$ID" pd="$PD"
+    _project_question_banner
+    echo
+    local now start
+    now=$(_pj_now); start=$(_project_started_at)
+    [[ "$(_pj_scale)" != 1 ]] && printf 'clock: %sx real time; project time is %s\n' "$(_pj_scale)" "$(_pj_date "$now" '%Y-%m-%d %H:%M %Z')"
+    local end; end=$(_project_end_at)
+    if [[ -n "$end" ]]; then
+        local day=$(( (now - start) / 86400 + 1 )) days=$(( (end - start + 86399) / 86400 ))
+        (( day > days )) && day=$days
+        printf '%s: project day %s of %s, week %s, phase %s (ends %s)\n' "$IDENTITY_NAME" "$day" \
+            "$days" "$(_project_week)" "$(_project_phase)" "$(_pj_date "$end" '%Y-%m-%d %H:%M %Z')"
+    else
+        printf '%s: project day %s, week %s (no end date)\n' "$IDENTITY_NAME" $(( (now - start) / 86400 + 1 )) "$(_project_week)"
+    fi
+    if _project_deliverable_started; then
+        printf 'deliverable: %s bytes, last change %s\n' "$(wc -c < "$pd/deliverable.md" | tr -d ' ')" \
+            "$(date -r "$pd/deliverable.md" '+%Y-%m-%d %H:%M' 2>/dev/null || echo '?')"
+    else
+        printf 'deliverable: not started\n'
+    fi
+    printf 'STATE: %s\n' "$(head -n 2 "$pd/STATE" | tr '\n' ' ')"
+    printf 'ritual due: %s\n' "$(_project_due_ritual || true)"
+    printf 'journal entries: %s (last change %s)\n' "$(grep -c '^### [0-9]' "$pd/journal.md" || true)" \
+        "$(date -r "$pd/journal.md" '+%Y-%m-%d %H:%M' 2>/dev/null || echo '?')"
+    printf 'daily evals: %s, weekly reports: %s, reviews: %s\n' \
+        "$(find "$pd/daily" -name '*.md' | wc -l | tr -d ' ')" \
+        "$(find "$pd/reports" -name 'week-*.md' | wc -l | tr -d ' ')" \
+        "$(find "$pd/reviews" -name '*.md' | wc -l | tr -d ' ')"
+    printf 'tokens in the last project day: %s (cap %s); whole run: %s (cap %s)\n' "$(_project_tokens_24h)" "${PROJECT_DAILY_TOKENS:-none}" \
+        "$(_project_tokens_total)" "${PROJECT_TOTAL_TOKENS:-none}"
+    if [[ -d "$pd/.git" ]]; then
+        printf 'recent commits:\n'
+        git -C "$pd" log --format='  %ad %s' --date=format:'%m-%d %H:%M' -n 8 2>/dev/null || true
+    fi
+}
+
+case "${1:-}" in
+    init) shift; cmd_init "$@" ;;
+    status) shift; cmd_status "$@" ;;
+    questions) shift; cmd_questions "$@" ;;
+    answer) shift; cmd_answer "$@" ;;
+    banner) shift; cmd_banner "$@" ;;
+    deadline) shift; cmd_deadline "$@" ;;
+    update-pristine) shift; cmd_update_pristine "$@" ;;
+    ""|-h|--help|help) sed -n '3,40p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) die "unknown command '$1' (init, status, questions, answer, banner, deadline, update-pristine)" ;;
+esac

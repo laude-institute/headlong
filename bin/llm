@@ -254,7 +254,7 @@ Options:
   -M, --messages JSON      Messages array JSON, e.g. [{"role":"user","content":"hi"}]
   --messages-file F        Read messages array JSON from file
   --no-stream              Disable streaming (streaming is on by default)
-  --provider NAME          Provider: anthropic, openai, gemini, openrouter,
+  --provider NAME          Provider: anthropic, bedrock, bedrock-invoke, openai, gemini, openrouter,
                            opencode, opencode-go, openai-compatible, or
                            adapter (needs LLM_ADAPTER)
   --or-only SLUGS          Pin routing to these provider slugs
@@ -276,6 +276,11 @@ Models:
   OpenAI:     gpt-5.5, gpt-5, gpt-4o, o1, o3, o4
   Gemini:     gemini-3.5-flash, gemini-2.0-flash, gemini-*
   OpenRouter: z-ai/glm-5.2, meta-llama/*, ... (any vendor/model name)
+  Bedrock:    anthropic.claude-opus-5-5 (Messages API on bedrock-mantle, SSE)
+              us.anthropic.claude-opus-5-5 (InvokeModel on bedrock-runtime via a
+              cross-region profile; non-streaming). Region from AWS_REGION;
+              auth AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID +
+              AWS_SECRET_ACCESS_KEY (+ AWS_SESSION_TOKEN), SigV4-signed
   OpenCode:   opencode-go/* (Go subscription, OpenAI wire format)
               opencode/*  (Zen pay-per-token, Anthropic wire format)
   Compatible: any model name, via --provider openai-compatible and
@@ -453,6 +458,15 @@ detect_provider() {
         #   opencode/<model>    -> Zen pay-per-token (anthropic wire format)
         opencode-go/*)                   echo "opencode-go" ;;
         opencode/*)                      echo "opencode" ;;
+        # Amazon Bedrock's Messages-API endpoint (bedrock-mantle) names
+        # Claude models with an anthropic. prefix: anthropic.claude-opus-5-5.
+        anthropic.*)                     echo "bedrock" ;;
+        # The same models through Bedrock's InvokeModel API on bedrock-runtime,
+        # named by a cross-region inference profile (us.anthropic.claude-opus-5-5).
+        # For regions without a bedrock-mantle endpoint, and for credentials
+        # scoped to one (a short-term Bedrock token is region-bound).
+        us.anthropic.*|global.anthropic.*|eu.anthropic.*|jp.anthropic.*|apac.anthropic.*|au.anthropic.*)
+                                         echo "bedrock-invoke" ;;
         # Vendor-prefixed names (z-ai/glm-5.2, meta-llama/..., etc.) are
         # OpenRouter's model-naming convention.
         */*)                             echo "openrouter" ;;
@@ -463,6 +477,9 @@ detect_provider() {
 if [[ -z "$LLM_PROVIDER" ]]; then
     LLM_PROVIDER=$(detect_provider "$LLM_MODEL")
 fi
+# InvokeModel streams in AWS event-stream framing, which this tool does not
+# parse; bedrock-invoke always asks for a whole response.
+if [[ "$LLM_PROVIDER" == bedrock-invoke ]]; then LLM_STREAM=0; fi
 
 # An environment-supplied provider reroutes every call in the process tree,
 # so it must never do it silently: when it disagrees with what the model
@@ -539,6 +556,15 @@ fi
 # Used as the default when -t/--max-tokens is not given.
 get_model_max_tokens() {
     local model="$1"
+    # Bedrock ids are the first-party ids behind an anthropic. prefix.
+    if [[ "$model" == anthropic.* ]]; then get_model_max_tokens "${model#anthropic.}"; return; fi
+    # InvokeModel is non-streaming here: keep a response well inside the
+    # request timeout rather than the model's full 128K cap.
+    if [[ "$model" == *.anthropic.* ]]; then
+        local _c; _c=$(get_model_max_tokens "${model#*.anthropic.}")
+        (( _c > 32000 )) && _c=32000
+        echo "$_c"; return
+    fi
     # OpenCode Go catalog — frontier-class models with large outputs; the
     # generic tiers starve agentic shellm steps. Scoped to the provider so
     # identically-named models reached through other providers (OpenRouter's
@@ -552,6 +578,10 @@ get_model_max_tokens() {
     fi
     case "$model" in
         # Anthropic — Claude 4.x family (caps verified via API 400 probing)
+        # Opus 4.8 and later, Sonnet 5 and later, Fable and Mythos: 128K output.
+        # Family globs so a new version does not fall through to the 4096
+        # fallback below (Opus 5.5 did, cutting off its own thinking).
+        claude-opus-4-8*|claude-opus-[5-9]*|claude-sonnet-[5-9]*|claude-fable-*|claude-mythos-*) echo 128000 ;;
         claude-opus-4-7*|claude-opus-4-6*|claude-opus-4-5*|claude-opus-4-1*|claude-opus-4-0*) echo 128000 ;;
         claude-sonnet-4-7*|claude-sonnet-4-6*) echo 128000 ;;
         claude-sonnet-4-5*|claude-sonnet-4-0*) echo 64000 ;;
@@ -642,7 +672,7 @@ supports_anthropic_thinking() {
     [[ "${LLM_ASSUME_THINKING:-0}" == 1 ]] && return 0
     # Family globs, not versioned ones, so new versions keep working.
     # Pre-4 ids all start "claude-3" and stay outside these patterns.
-    case "$LLM_MODEL" in
+    case "${LLM_MODEL#*anthropic.}" in
         claude-opus-*|claude-sonnet-*|claude-haiku-*) return 0 ;;
         claude-fable-*|claude-mythos-*) return 0 ;;
         *) return 1 ;;
@@ -668,6 +698,29 @@ supports_gemini_thinking() {
 # ---------------------------------------------------------------------------
 # Payload builders (one per provider)
 # ---------------------------------------------------------------------------
+
+# Prompt caching on Anthropic-format providers. Two explicit breakpoints:
+# the system prompt, and the last block of the last message. Across the steps
+# of one shellm run the conversation only grows, so each request reads the
+# previous request's prefix from the cache and pays full price only for what
+# is new. Headlong sent no cache_control before, so every step re-sent its
+# whole 20K-40K token context at full price. Explicit breakpoints, because
+# Bedrock does not support the top-level automatic form.
+# LLM_PROMPT_CACHE=0 turns it off.
+_anthropic_cache_breakpoints() {
+    case "$LLM_PROVIDER" in anthropic|bedrock|bedrock-invoke) ;; *) cat; return ;; esac
+    [[ "${LLM_PROMPT_CACHE:-1}" == 0 ]] && { cat; return; }
+    jq '
+      def mark: . + {cache_control: {type: "ephemeral"}};
+      (if (.system | type) == "string" and (.system | length) > 0
+       then .system = [{type: "text", text: .system} | mark] else . end)
+      | (if (.messages | length) > 0 then
+           .messages[-1].content |= (
+             if type == "string" then [{type: "text", text: .} | mark]
+             elif type == "array" and length > 0 then .[-1] |= mark
+             else . end)
+         else . end)'
+}
 
 build_payload_anthropic() {
     [[ -n "$LLM_JSON_SCHEMA" ]] && echo "llm: --json-schema ignored: not supported for provider anthropic (OpenAI-style providers only)" >&2
@@ -695,7 +748,7 @@ build_payload_anthropic() {
         jq_filter="${jq_filter%\}} , output_config:{effort:\"$LLM_EFFORT\"}}"
     fi
 
-    printf '%s' "$LLM_MESSAGES" | jq "${jq_args[@]}" "$jq_filter"
+    printf '%s' "$LLM_MESSAGES" | jq "${jq_args[@]}" "$jq_filter" | _anthropic_cache_breakpoints
 }
 
 build_payload_openai() {
@@ -809,6 +862,17 @@ build_payload_openrouter() {
 # See design/providers.md.
 build_payload_openai-compatible() { build_payload_openai; }
 
+# Amazon Bedrock (bedrock-mantle) takes the first-party Messages body as is,
+# model included; only the endpoint and the auth differ (get_url_headers).
+build_payload_bedrock() { build_payload_anthropic; }
+
+# InvokeModel takes the Messages body with the model in the URL instead,
+# anthropic_version in the body, and no stream flag (its streaming variant
+# uses AWS event-stream framing, so this provider is non-streaming).
+build_payload_bedrock-invoke() {
+    build_payload_anthropic | jq 'del(.model, .stream) + {anthropic_version: "bedrock-2023-05-31"}'
+}
+
 # OpenCode Go is OpenAI-compatible (@ai-sdk/openai-compatible upstream);
 # its opencode-go/ prefix was already stripped above.
 build_payload_opencode-go() { build_payload_openai; }
@@ -839,19 +903,22 @@ build_payload_opencode() {
 # headers stay on argv. One file is reused across retries and removed by
 # _llm_cleanup.
 _llm_auth_file=""
+# Curl config values are double quoted. Escape every character that curl
+# treats specially inside those quotes so an unusual key cannot add a second
+# config option.
+_curl_cfg_quote() {
+    local v="$1"
+    v="${v//\\/\\\\}"
+    v="${v//\"/\\\"}"
+    v="${v//$'\t'/\\t}"
+    v="${v//$'\n'/\\n}"
+    v="${v//$'\r'/\\r}"
+    v="${v//$'\v'/\\v}"
+    printf '%s' "$v"
+}
 add_auth_header() {
-    local _header="$1"
-    # Curl config values are double quoted. Escape every character that curl
-    # treats specially inside those quotes so an unusual key cannot add a
-    # second config option.
-    _header="${_header//\\/\\\\}"
-    _header="${_header//\"/\\\"}"
-    _header="${_header//$'\t'/\\t}"
-    _header="${_header//$'\n'/\\n}"
-    _header="${_header//$'\r'/\\r}"
-    _header="${_header//$'\v'/\\v}"
     _llm_auth_file=$(mktemp "${TMPDIR:-/tmp}/llm-auth.XXXXXX")
-    printf 'header = "%s"\n' "$_header" > "$_llm_auth_file"
+    printf 'header = "%s"\n' "$(_curl_cfg_quote "$1")" > "$_llm_auth_file"
     headers+=(-K "$_llm_auth_file")
 }
 
@@ -875,6 +942,51 @@ get_url_headers() {
             url="${LLM_API_URL:-https://openrouter.ai/api/v1/chat/completions}"
             headers=(-H "Content-Type: application/json")
             add_auth_header "Authorization: Bearer $OPENROUTER_API_KEY"
+            ;;
+        bedrock)
+            # Claude in Amazon Bedrock: the Messages API on bedrock-mantle,
+            # SSE streaming. Auth is a Bedrock bearer token in x-api-key, or
+            # SigV4 (service bedrock-mantle) from the standard AWS variables.
+            # Secrets go through a curl config file, never argv.
+            local _region="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
+            url="${LLM_API_URL:-https://bedrock-mantle.${_region}.api.aws/anthropic/v1/messages}"
+            headers=(-H "content-type: application/json"
+                     -H "anthropic-version: 2023-06-01")
+            if [[ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]]; then
+                add_auth_header "x-api-key: $AWS_BEARER_TOKEN_BEDROCK"
+            elif [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+                _llm_auth_file=$(mktemp "${TMPDIR:-/tmp}/llm-auth.XXXXXX")
+                {
+                    printf 'aws-sigv4 = "%s"\n' "$(_curl_cfg_quote "aws:amz:${_region}:bedrock-mantle")"
+                    printf 'user = "%s"\n' "$(_curl_cfg_quote "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY")"
+                    if [[ -n "${AWS_SESSION_TOKEN:-}" ]]; then
+                        printf 'header = "%s"\n' "$(_curl_cfg_quote "x-amz-security-token: $AWS_SESSION_TOKEN")"
+                    fi
+                } > "$_llm_auth_file"
+                headers+=(-K "$_llm_auth_file")
+            else
+                die "Bedrock needs AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (plus AWS_SESSION_TOKEN for temporary credentials)"
+            fi
+            ;;
+        bedrock-invoke)
+            local _iregion="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
+            url="${LLM_API_URL:-https://bedrock-runtime.${_iregion}.amazonaws.com/model/${LLM_MODEL}/invoke}"
+            headers=(-H "content-type: application/json" -H "accept: application/json")
+            if [[ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]]; then
+                add_auth_header "Authorization: Bearer $AWS_BEARER_TOKEN_BEDROCK"
+            elif [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+                _llm_auth_file=$(mktemp "${TMPDIR:-/tmp}/llm-auth.XXXXXX")
+                {
+                    printf 'aws-sigv4 = "%s"\n' "$(_curl_cfg_quote "aws:amz:${_iregion}:bedrock")"
+                    printf 'user = "%s"\n' "$(_curl_cfg_quote "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY")"
+                    if [[ -n "${AWS_SESSION_TOKEN:-}" ]]; then
+                        printf 'header = "%s"\n' "$(_curl_cfg_quote "x-amz-security-token: $AWS_SESSION_TOKEN")"
+                    fi
+                } > "$_llm_auth_file"
+                headers+=(-K "$_llm_auth_file")
+            else
+                die "Bedrock needs AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (plus AWS_SESSION_TOKEN for temporary credentials)"
+            fi
             ;;
         opencode)
             [[ -z "${OPENCODE_API_KEY:-}" ]] && die "OPENCODE_API_KEY is not set"
@@ -940,6 +1052,8 @@ extract_text_openai-compatible() { extract_text_openai; }
 # same response shapes as their respective bases throughout.
 extract_text_opencode-go() { extract_text_openai; }
 extract_text_opencode() { extract_text_anthropic; }
+extract_text_bedrock() { extract_text_anthropic; }
+extract_text_bedrock-invoke() { extract_text_anthropic; }
 
 # ---------------------------------------------------------------------------
 # Response failure checks (non-streaming)
@@ -973,6 +1087,8 @@ check_response_openai-compatible() { check_response_openai; }
 
 check_response_opencode-go() { check_response_openai; }
 check_response_opencode() { check_response_anthropic; }
+check_response_bedrock() { check_response_anthropic; }
+check_response_bedrock-invoke() { check_response_anthropic; }
 
 # Truncation is its own silent failure mode: a 200 whose finish reason says
 # the output hit max_tokens looks complete to a caller reading stdout, and on
@@ -998,6 +1114,8 @@ check_truncated_openai-compatible() { check_truncated_openai; }
 
 check_truncated_opencode-go() { check_truncated_openai; }
 check_truncated_opencode() { check_truncated_anthropic; }
+check_truncated_bedrock() { check_truncated_anthropic; }
+check_truncated_bedrock-invoke() { check_truncated_anthropic; }
 
 # Shared by the non-streaming path and the streaming handlers (stderr passes
 # straight through the handler subshell, so this works from either).
@@ -1119,7 +1237,10 @@ stream_anthropic() {
                     ;;
                 *'"message_start"'*)
                     # Prompt size arrives up front on the start event.
-                    _u_in=$(printf '%s' "$json" | jq -r '.message.usage.input_tokens // empty' 2>/dev/null) || _u_in=""
+                    # Cache writes are input the provider processed at full
+                    # (1.25x) price but reports apart from input_tokens; fold
+                    # them in so the ledger and budgets count them.
+                    _u_in=$(printf '%s' "$json" | jq -r '.message.usage | if .input_tokens == null then empty else .input_tokens + (.cache_creation_input_tokens // 0) end' 2>/dev/null) || _u_in=""
                     _u_cache=$(printf '%s' "$json" | jq -r '.message.usage.cache_read_input_tokens // empty' 2>/dev/null) || _u_cache=""
                     ;;
                 *'"message_delta"'*)
@@ -1252,6 +1373,7 @@ stream_openai-compatible() { stream_openai; }
 # OpenCode: same SSE shapes as their wire-format bases.
 stream_opencode-go() { stream_openai; }
 stream_opencode() { stream_anthropic; }
+stream_bedrock() { stream_anthropic; }
 
 # ---------------------------------------------------------------------------
 # Main execution
@@ -1420,7 +1542,11 @@ _net_args=()
     && _net_args+=(--connect-timeout "$LLM_CONNECT_TIMEOUT")
 [[ "$LLM_MAX_TIME" =~ ^[0-9]+$ && "$LLM_MAX_TIME" -gt 0 ]] \
     && _net_args+=(--max-time "$LLM_MAX_TIME")
-if [[ "$LLM_SPEED_LIMIT" =~ ^[0-9]+$ && "$LLM_SPEED_LIMIT" -gt 0 \
+# The stall guard is for streams only: a non-streaming response sends nothing
+# until it is complete, so a model that thinks for over LLM_SPEED_TIME looked
+# stalled and was cut off as HTTP 000 (bedrock-invoke, any --no-stream call).
+# LLM_MAX_TIME still bounds those.
+if [[ "$LLM_STREAM" -eq 1 && "$LLM_SPEED_LIMIT" =~ ^[0-9]+$ && "$LLM_SPEED_LIMIT" -gt 0 \
       && "$LLM_SPEED_TIME" =~ ^[0-9]+$ && "$LLM_SPEED_TIME" -gt 0 ]]; then
     _net_args+=(--speed-limit "$LLM_SPEED_LIMIT" --speed-time "$LLM_SPEED_TIME")
 fi
@@ -1545,12 +1671,14 @@ else
 
     case "$LLM_PROVIDER" in
         # opencode (Zen) speaks the Anthropic wire protocol, usage shape included.
-        anthropic|opencode) _u=$(jq -r '[(.usage.input_tokens // ""), (.usage.output_tokens // ""), "", (.usage.cache_read_input_tokens // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
-        gemini)    _u=$(jq -r '[(.usageMetadata.promptTokenCount // ""), (.usageMetadata.candidatesTokenCount // ""), (.usageMetadata.thoughtsTokenCount // ""), (.usageMetadata.cachedContentTokenCount // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
-        *)         _u=$(jq -r '[(.usage.prompt_tokens // ""), (.usage.completion_tokens // ""), (.usage.completion_tokens_details.reasoning_tokens // ""), (.usage.prompt_tokens_details.cached_tokens // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
+        anthropic|opencode|bedrock|bedrock-invoke) _u=$(jq -r '[(if .usage.input_tokens == null then "" else .usage.input_tokens + (.usage.cache_creation_input_tokens // 0) end), (.usage.output_tokens // ""), "", (.usage.cache_read_input_tokens // "")] | map(tostring) | join("\u001f")' "$local_resp" 2>/dev/null) || _u="" ;;
+        gemini)    _u=$(jq -r '[(.usageMetadata.promptTokenCount // ""), (.usageMetadata.candidatesTokenCount // ""), (.usageMetadata.thoughtsTokenCount // ""), (.usageMetadata.cachedContentTokenCount // "")] | map(tostring) | join("\u001f")' "$local_resp" 2>/dev/null) || _u="" ;;
+        *)         _u=$(jq -r '[(.usage.prompt_tokens // ""), (.usage.completion_tokens // ""), (.usage.completion_tokens_details.reasoning_tokens // ""), (.usage.prompt_tokens_details.cached_tokens // "")] | map(tostring) | join("\u001f")' "$local_resp" 2>/dev/null) || _u="" ;;
     esac
     if [[ -n "$_u" ]]; then
-        IFS=$'\t' read -r _u_in _u_out _u_think _u_cache <<<"$_u"
+        # \037, not tab: tab is IFS whitespace, so read would merge an empty
+        # middle field (anthropic has no reasoning count) and shift cache left.
+        IFS=$'\037' read -r _u_in _u_out _u_think _u_cache <<<"$_u"
         write_usage "$_u_in" "$_u_out" "$_u_think" "$_u_cache"
     fi
     _llm_ledger_append
