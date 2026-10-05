@@ -79,32 +79,7 @@
       "results"
     ]
   },
-  "schedules": [
-    {
-      "name": "mealplan-wednesday",
-      "weekday": "wednesday",
-      "at": "17:00",
-      "tz": "America/Denver",
-      "grace_seconds": 14400,
-      "content": "Meal-planning week starts (first text). Follow skill custos-mealplan: `mealplan brief`, build a full draft plan for the coming Saturday pickup \u2014 one dinner per cook night from Saturday through Friday within the family's constraints, saved with `mealplan plan set` \u2014 then ONE message to the Collette Haus group (or one each to Hal and Dani): every day on its own line as `Day: Title \u2014 <link>` (leftover/out nights marked), two or three alternates with links, the staples line, then the questions from `mealplan prefs`. Then `mealplan plan proposed`. Track it on one goal for the week (reuse it if it exists). Staples carry counts (`mealplan prefs`: 4 apples, 5 bananas, 2 milk) and the message shows them that way. Extras come only from Hal or Dani, never from another agent's conversation."
-    },
-    {
-      "name": "mealplan-thursday",
-      "weekday": "thursday",
-      "at": "17:00",
-      "tz": "America/Denver",
-      "grace_seconds": 14400,
-      "content": "Check-in day. Follow skill custos-mealplan: `mealplan plan show`. Skipped week \u2192 nothing. No first message yet \u2192 build and send the full day-by-day draft plan exactly as on Wednesday (every day as `Day: Title \u2014 <link>`, alternates, staples line, the questions, then `mealplan plan proposed`). Proposed but nobody engaged \u2192 one short reminder in the Collette Haus group with the draft as day-by-day links. Engaged \u2192 nothing unless one decision is still open."
-    },
-    {
-      "name": "mealplan-friday",
-      "weekday": "friday",
-      "at": "17:00",
-      "tz": "America/Denver",
-      "grace_seconds": 14400,
-      "content": "Cart setup. Follow skill custos-mealplan. Skipped week or no reply all week \u2192 one line to the group at most, no cart. FIRST re-read the Collette Haus conversation since the draft went out and `mealplan plan show`: every 'we already have X' \u2192 `mealplan list have`, every agreed dinner change \u2192 `mealplan plan set`, every 'we don't need X' \u2192 `mealplan learn pantry`, before anything touches the cart. If `plan show` says the cart was already filled this week: do NOT refill \u2014 `mealplan cart diff`, ask about anything they changed that is worth learning, `mealplan plan finalize`, and one short confirmation. Otherwise `mealplan cart status` (Dani's Whole Foods account; a sign-in link goes to Hal or Dani only), `plan finalize`, `list build`, `cart candidates`/`choose`, `cart fill`, then message the group: the plan day by day (`Weekday: Title \u2014 <link>`), the groceries with staples counted (4 apples, 5 bananas, 2 milk), what they already have, what could not be matched, the subtotal, and that Hal or Dani places the order and picks the Saturday window in the Amazon app. Money rules apply: never check out."
-    }
-  ],
+  "schedules": [],
   "github_prs": {
     "enabled": true,
     "author": "custos-1f916",

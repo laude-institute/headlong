@@ -257,6 +257,15 @@ def dispatch(path=None, now=None, limit=16):
                 report["queued"] += 1
                 continue
             payload = {"request_id": row["request_id"], "target": row["target"], "message": row["message"]}
+            if row["goal_id"]:
+                # Preserve explicitly requested kitchen timers through the send-time consent guard.
+                # Correlation comes from the existing native request, never invented by the scheduler.
+                from custos_memory import Store
+                try:
+                    origin = Store().find(row["goal_id"])[4]["origin"]
+                    if origin.get("authority") == "operator" and origin["request_id"].startswith("signal:"):
+                        payload["reply_to"] = origin["request_id"]
+                except (OSError, KeyError, TypeError, RuntimeError): pass
             try:
                 code, result = actions_call(["signal-send"], payload)
             except (OSError, subprocess.SubprocessError) as exc:

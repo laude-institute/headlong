@@ -4,6 +4,7 @@
 Only LXC122 is admitted. No caller-controlled command, container, path or socket.
 Signal sending stays in its single existing worker; deployments run serially.
 """
+import custos_kitchen as kitchen
 import argparse
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -182,6 +183,10 @@ class Channel:
     def handle(self, payload):
         if not isinstance(payload, dict):
             raise ValueError('object required')
+        if payload == {'action': 'kitchen-context'}:
+            with sqlite3.connect('file:' + str(self.spool) + '?mode=ro', uri=True) as db:
+                db.row_factory = sqlite3.Row
+                return kitchen.household_context(db, load_policy(self.policy))
         if payload == {'action': 'signal-contacts'}:
             return {'ok': True, 'contacts': destinations(load_policy(self.policy))}
         if payload.get('action') == 'signal-lane-status' and set(payload) == {'action', 'target'}:

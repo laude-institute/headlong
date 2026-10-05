@@ -1,56 +1,18 @@
 #!/usr/bin/env python3
-"""mealplan — Custos's CLI for the kitchen service (recipes, sales, weekly plans, list, cart).
+"""mealplan — an editable household plan; human checkout stays in the Amazon app.
 
-  mealplan brief                         planning brief: candidates with sale matches, top sales, prefs, recent plans
-  mealplan sales [--refresh]             this week's Whole Foods deals for the family's store
-  mealplan recipes [--q text] [--book B] one line per recipe
-  mealplan recipe SLUG                   ingredients + steps
-  mealplan recipe import URL [--note why] a recipe link from Hal or Dani -> the catalog (Mealie's scraper, tag "Requested"); returns the slug + link
-  mealplan meals [today|tomorrow|YYYY-MM-DD|YYYY-Www]  current or historical planned meals, with recipes.ha1.io links
-  mealplan meals --week YYYY-Www         every recorded dinner in a specific week
-  mealplan plan show [--week YYYY-Www]   the week's plan (default: the week of the next Saturday pickup)
-  mealplan plan set --week W --dinner DATE=SLUG ... [--note text]
-  mealplan plan proposed                 record that the week's first message went out
-  mealplan plan engaged                  record that Hal or Dani replied about the plan
-  mealplan plan skip [--note text]       they declined this week: no reminder, no cart (plan resume undoes it)
-  mealplan plan finalize [--week W]      writes dinners into the catalog's meal planner
-  mealplan plan request SLUG [--note why] a dinner they asked for ahead of the draft ("add this to next week's menu"): the draft must include it
-  mealplan list build [--week W]         ingredients -> grocery lines (pantry set aside) + standing staples + this week's extras
-  mealplan list preview [--week W]       print the current list
-  mealplan list add "item" [--note why]  one-off for this week ("grab butter") — survives rebuilds; "2 lemons" sets a count
-  mealplan list remove "item"            drop a one-off
-  mealplan list have "item" [--note why] they already have it ("I have gnocchi"): stays on the list as [have], never bought
-  mealplan list unhave "item"            undo that
-  mealplan books                         every scanned cookbook: recipes imported, page flags, reviewed or not
-  mealplan book flags "Title"            the digitizer's flagged pages with their transcripts (judge them, no vision needed)
-  mealplan book reviewed "Title" --note "one paragraph about the book: character, weeknight picks, what to ask Hal/Dani"
-  mealplan study [--n 10]                recipes nobody has studied yet (for a curiosity turn)
-  mealplan studied SLUG --note "…"       record what you learned about a recipe (fit, constraints, who might like it)
-  mealplan prefs                         constraints, rules, questions, likes/dislikes/brands (the family's knobs)
-  mealplan learn KIND "text" [--remove]  KIND: likes | dislikes | brands | pantry | staples | rules | questions
-                                         (pantry = assumed on hand, skipped from lists; staples = bought EVERY week, with a count: "4 apples")
-  mealplan product "item" ASIN [--qty N] pin the product the family wants for a list item (auto-chosen every week); --remove unpins
-  mealplan constraint KEY VALUE          dinners_per_week weeknight_max_minutes servings leftover_dinners no_repeat_weeks sale_picks_per_week budget_cap_usd pickup_day
-  mealplan cooked SLUG [--date D] [--note text]
-  mealplan search "text"                 Whole Foods products for a phrase (brand, size, bought-before flag)
-  mealplan cart status                   is the Whole Foods session alive, and whose? (Dani's account since 2026-09-10)
-  mealplan cart login                    make a fresh phone sign-in link (text it to Hal or Dani only; 15 min)
-  mealplan cart refresh                  try to renew the session silently first (no one has to type)
-  mealplan cart logout                   operator-only (Hal, from the Mac: kitchen-logout); this CLI refuses
-  mealplan cart candidates [--week W]    top products per unmatched list line
-  mealplan cart choose "item" ASIN [--qty N]
-  mealplan cart add "item" [ASIN] [--qty N] [--note why]  ONE item, NOW (Hal, 2026-09-12): recorded on the planning week's plan AND put in the
-                                         Whole Foods cart in the same call (ASIN given, else the best match from search: bought-before > pins > 365).
-                                         Not signed in? still recorded; Friday's fill adds it. Confirm with the price it prints.
-  mealplan cart fill [--week W] [--force]  add every chosen line to the Whole Foods cart — never checks out; refuses a second fill unless --force
-                                         (fill / plan proposed / plan finalize also refuse while family messages newer than the plan are unread: record them, then --read)
-  mealplan cart show [--week W]          the plan's lines + what the site says is in the cart
-  mealplan cart diff [--week W] [--snapshot]  what Hal and Dani changed in the cart after the fill (removed/added/counts) — ask, then learn
-  mealplan cart set ASIN --qty N         change a cart line's quantity (0 removes it)
-  mealplan history [--products] [--sync] past orders on the account (--sync pulls them fresh; --products = what recurs = the real staples)
-  (checkout stays with Hal: he places the order in the Amazon app — Tier 1)
-
-Config: /etc/kitchen.env with KITCHEN_URL and KITCHEN_TOKEN (Hal installs it).
+Read: context [--week W], reconcile [--week W], meals, brief, recipes, recipe SLUG,
+      recipe import URL, prefs, sales, search ITEM, cart status, cart show.
+Write: change|reconcile|quantity|calendar --week W --file request.json
+Each request needs revision, cursor, task (active native goal), operation_id.
+change also takes changes:[{action,...}], source_ids. Read context before writing.
+reconcile without --file previews targeted cart changes; with a file it verifies ONE
+preview operation, including its cart_hash. Re-read context between operations.
+quantity needs asin, before, quantity (zero removes); it records a household override.
+calendar synchronizes only owned entries, with readback and uncertain-write recovery.
+See custos-mealplan for typed changes and examples. Old bulk-fill/--read writes are
+retired. Reading, discussing or saving a draft does not authorize cart writes.
+Config: /etc/kitchen.env (KITCHEN_URL and KITCHEN_TOKEN).
 """
 import argparse, json, os, re, subprocess, sys, urllib.parse, urllib.request
 from datetime import date, datetime, timedelta
@@ -59,56 +21,26 @@ from zoneinfo import ZoneInfo
 GROUP = os.environ.get("MEALPLAN_GROUP", "Collette Haus")
 
 
-def unread_family_messages(plan):
-    """Signal messages from Hal or Dani (the family group or a DM) that arrived after the plan
-    was last recorded. Only works inside Custos's guest (needs the activated identity: ROOT_TRAJ_ID
-    and `traj` on PATH); elsewhere it returns nothing. 2026-09-10: the cart was filled from a plan
-    that predated "I already have gnocchi" — `cart fill`, `plan proposed` and `plan finalize` now
-    refuse while such messages are unread, until the run records them and passes --read."""
-    root = os.environ.get("ROOT_TRAJ_ID")
-    if not root:
-        return []
-    try:
-        path = subprocess.check_output(["traj", "path", root], stderr=subprocess.DEVNULL, timeout=20).decode().strip()
-    except Exception:  # noqa: BLE001 - no trajectory, no guard
-        return []
-    idx = os.path.join(os.path.dirname(path), "messages.jsonl")
-    marks = [h.get("at") or "" for h in plan.get("history") or []] + [plan.get("proposed_at") or "", plan.get("engaged_at") or ""]
-    last = max(marks)[:16] if any(marks) else ""  # plan stamps are UTC-naive minutes (kitchen box runs UTC); trajectory ts are UTC ISO
-    if not last or not os.path.exists(idx):
-        return []
-    out = []
-    try:
-        for line in open(idx, encoding="utf-8", errors="replace"):
-            try:
-                m = json.loads(line)
-            except ValueError:
-                continue
-            c = m.get("content") or ""
-            if not str(m.get("from", "")).startswith("signal") or m.get("ts", "")[:16] <= last:
-                continue
-            spk = re.search(r'"speaker":"([^"]+)"', c); grp = re.search(r'"group":"([^"]+)"', c)
-            if not ((grp and grp.group(1) == GROUP) or (spk and spk.group(1) in ("Hal", "Dani") and '"scope":"direct"' in c)):
-                continue
-            body = c.split("Message:\n", 1)[-1].split("\nParticipation:", 1)[0].strip()
-            out.append((m["ts"][:16] + "Z", spk.group(1) if spk else "?", body[:400].replace("\n", " | ")))
-    except OSError:
-        return []
-    return out
-
-
-def require_read(plan, action, ok):
-    """Refuse `action` while family messages newer than the plan are unread (unless --read)."""
-    if ok:
-        return
-    new = unread_family_messages(plan)
-    if not new:
-        return
-    print(f"NOT doing `{action}`: {len(new)} message(s) from the family arrived after the plan was last recorded. Read them, record what they ask "
-          f"(`mealplan list have` / `plan set` / `learn pantry` / `list add`), then retry with --read:")
-    for ts, spk, body in new:
-        print(f"  {ts} {spk}: {body}")
-    sys.exit(3)
+def flow_command(a, cycle):
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import custos_kitchen as guard
+    path = '/flow/' + cycle
+    if a.cmd == 'context':
+        cursor, messages = guard.family_messages()
+        result = {'cursor': cursor, 'messages': messages, 'plan': call('GET', path),
+                  'policy': {'automatic_followups': False, 'purchase_status': 'unknown'}}
+    elif a.cmd == 'reconcile' and not a.file:
+        result = call('GET', path + '/preview')
+    else:
+        if not a.file: raise ValueError('--file request.json required')
+        with open(a.file) as handle: body = json.load(handle)
+        task = body.pop('task', None)
+        if not isinstance(task, str) or not re.fullmatch('[a-f0-9]{8}', task): raise ValueError('active native task ID required')
+        if not isinstance(body.get('source_ids'), list) or not body['source_ids']: raise ValueError('source_ids required')
+        with guard.mutation_guard(body.get('cursor'), cycle, task):
+            result = call('POST', path + '/' + {'reconcile':'apply'}.get(a.cmd, a.cmd), body)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 def cfg():
@@ -189,7 +121,7 @@ def show_prefs(p):
 
 
 def show_plan(p):
-    print(f"week {p['week']} (pickup {p['pickup']}) status={p['status']} proposed={p.get('proposed_at') or '-'} engaged={p.get('engaged_at') or '-'}")
+    print(f"cycle {p['week']} (pickup {p.get('pickup_date') or 'unspecified'}) status={p['status']} proposed={p.get('proposed_at') or '-'} engaged={p.get('engaged_at') or '-'}")
     for d in p.get("dinners", []):
         print(f"  {d.get('date') or '????-??-??'}  {d['title']}  [{d['slug']}]  {d.get('url') or ''}" + (f"  — {d['note']}" if d.get("note") else ""))
     for n in p.get("notes", [])[-3:]:
@@ -207,8 +139,17 @@ def main():
     ap.add_argument("cmd"); ap.add_argument("sub", nargs="?"); ap.add_argument("arg", nargs="?")
     ap.add_argument("--week"); ap.add_argument("--q"); ap.add_argument("--book"); ap.add_argument("--refresh", action="store_true")
     ap.add_argument("--dinner", action="append", default=[], metavar="DATE=SLUG"); ap.add_argument("--note"); ap.add_argument("--date"); ap.add_argument("--json", action="store_true"); ap.add_argument("--remove", action="store_true"); ap.add_argument("asin", nargs="?"); ap.add_argument("--qty", type=int); ap.add_argument("--force", action="store_true"); ap.add_argument("--snapshot", action="store_true"); ap.add_argument("--products", action="store_true"); ap.add_argument("--sync", action="store_true"); ap.add_argument("--read", action="store_true", help="I have read and recorded every family message since the plan was last touched"); ap.add_argument("--n", type=int, default=10)
+    ap.add_argument("--file", help="JSON request with revision, cursor, task and operation_id")
     a = ap.parse_args()
-    wk = a.week or next_week()
+    wk = a.week or (call('GET', '/flow/active')['cycle_id'] if a.cmd in {'context','change','reconcile','quantity','calendar','plan','list','cart'} else None)
+    if a.cmd in {'context', 'change', 'reconcile', 'quantity', 'calendar'}:
+        try: return flow_command(a, wk)
+        except (ValueError, OSError) as error: sys.exit(str(error))
+    if ((a.cmd == 'plan' and a.sub != 'show') or (a.cmd == 'list' and a.sub != 'preview')
+            or (a.cmd == 'cart' and a.sub in {'add','set','choose','fill','candidates'}) or a.read):
+        sys.exit('Use mealplan context, change and reconcile with revision/cursor; the old --read and bulk-fill paths are retired.')
+    if a.cmd == 'list' or (a.cmd == 'cart' and a.sub == 'show'):
+        print(json.dumps(call('GET', '/flow/' + wk + '/preview'), indent=2)); return
     if a.cmd == "brief":
         b = call("GET", "/brief")
         if a.json:
@@ -236,7 +177,7 @@ def main():
         r = call("POST", "/recipes/import", {"url": a.arg, "note": a.note})
         print(("already in the catalog: " if r.get("existing") else "imported: ") + f"{r['title']} [{r['slug']}] {r.get('book') or ''} {r.get('yield') or ''} {r.get('total_time') or ''}\n  {r.get('url')}"
               + (f"\n  tag: {r['tagged']}" if r.get("tagged") else ""))
-        print("  next: `mealplan plan request " + r["slug"] + " --note \"…\"` if it is for next week's menu")
+        print("  Save a requested dinner with mealplan change and an explicit date; an imported link alone is not a shopping instruction.")
     elif a.cmd == "recipe":
         r = call("GET", "/recipes/" + urllib.parse.quote(a.sub or ""))
         print(f"{r['title']} — {r['book'] or ''} {r['yield'] or ''} {r['total_time'] or ''}\n{r.get('description') or ''}\ningredients:")
@@ -261,7 +202,7 @@ def main():
             print("    " + (dinner.get("url") or "No recipes.ha1.io link is recorded."))
     elif a.cmd == "plan":
         if a.sub == "show":
-            show_plan(call("GET", f"/plans/{wk}"))
+            show_plan(call("GET", f"/flow/{wk}"))
         elif a.sub == "set":
             dinners = []
             for spec in a.dinner:

@@ -1560,7 +1560,7 @@ class QuickAskTests(MemoryFixture):
         attempt = {}
         out = cm.apply_quick_ask(incoming, plan, attempt)
         self.assertEqual(out["decision"], "defer"); self.assertEqual(attempt.get("forced_defer"), "operator-kitchen-ask")
-        self.assertTrue(out["goal"]["next_action"].startswith("NOW")); self.assertIn("mealplan cart add", out["goal"]["next_action"])
+        self.assertTrue(out["goal"]["next_action"].startswith("NOW")); self.assertIn("mealplan change", out["goal"]["next_action"])
         self.assertIn("Annie", out["goal"]["outcome"])
 
     def test_defer_gets_the_command_prefixed_and_url_goes_to_recipe_import(self):
@@ -1569,8 +1569,8 @@ class QuickAskTests(MemoryFixture):
                 "next_action": "Review the linked recipe during next week's meal-planning workflow", "completion": "in the plan"}, "memories": []}
         out = cm.apply_quick_ask(incoming, plan)
         na = out["goal"]["next_action"]
-        self.assertTrue(na.startswith("NOW")); self.assertIn("mealplan recipe import", na); self.assertIn("plan request", na)
-        self.assertIn("Original next action: Review the linked recipe", na)
+        self.assertTrue(na.startswith("NOW")); self.assertIn("mealplan recipe import", na); self.assertIn("mealplan change", na)
+        self.assertNotIn("during next week", na)
         # Idempotent: a second pass does not stack a second NOW.
         self.assertEqual(cm.apply_quick_ask(incoming, out)["goal"]["next_action"], na)
 

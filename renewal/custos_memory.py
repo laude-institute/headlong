@@ -9,6 +9,7 @@ receipts and recovery state all live in the native memory body.
 import argparse
 import http.client
 import custos_signal_targeting as signal_targeting
+import custos_kitchen as kitchen
 import contextlib
 import datetime as dt
 import fcntl
@@ -559,6 +560,7 @@ class Store:
         if trigger_step is not None:
             text(trigger_step, "trigger_step", 2048)
         with self.lock():
+            kitchen.record_boundary(self, origin)
             if origin["request_id"] in self.archived_request_ids():
                 # Already answered and archived: never a second reply.
                 return {"goal_id": None, "request_id": origin["request_id"], "created": False, "archived": True}
@@ -875,6 +877,7 @@ class Store:
         today = dt.datetime.now(dt.timezone.utc).date().isoformat()
         with self.lock():
             items = list(self.files())
+            kitchen.close_superseded(self, items)
             # Intake captures before appending the native trigger. Evaluate here
             # after reconciliation, including recovery from either interrupted
             # write, rather than relying on a one-shot capture side effect.
@@ -1513,9 +1516,21 @@ evaluating that file's subject from someone else's summary is investigation.
   a promise with no goal behind it is broken by the next wake, because nothing
   else remembers it. And promise only that you will look into it; the mind
   decides the approach, the deliverable and the timing, not this reply.
-  A grocery item, a dinner request or a recipe link from Hal or Dani is ALWAYS
-  defer (never a plain reply), and it is done within the hour, not at the next
-  planning wake: say it will be in the cart / on the plan shortly.
+  Actual kitchen requests from Hal or Dani become a silent defer, handled promptly.
+  Food context and bare recipe links do not authorize shopping. A conversational
+  acceptance can refer to an actual proposal in supplied context; preserve that
+  referent in the goal. No forced Wednesday/Thursday/Friday contacts or checkout
+  follow-ups. A finished cart task never waits for a human to order.
+Optional kitchen: null or {"kind":"request|question|preference|inventory|context|stop",
+"action":"add|remove|swap|recipe|plan|pickup|inventory|preference|query|context|stop",
+"evidence":"exact quote from eligible incoming words", "items":["affected referents"],
+"date":"explicit requested date, or null"}. Interpret meaning using the supplied
+conversation; do not classify by food nouns or the verb make. "We like to make a
+peanut-butter dip" is context. "Add this" can authorize the recipe just proposed.
+Inventory corrections are their own action, never an add. Dates for meals and
+pickup are separate. Do not infer a meal date from a pickup weekday. "All set"
+closes current assistance; "leave the rest to us" disables unsolicited follow-ups.
+Requested timed reminders retain their original reminder mechanism.
 - react (only when the transport offers it): reply is exactly one emoji,
   attached to their message; goal stays null.
 You have NO Bash or tools here and never claim you did work you did not do; if
@@ -1631,66 +1646,37 @@ def protocol_text(raw):
                 or re.match(r"^\s*(?:NO_REPLY\b|DEFER:|chat\s+reply\b|<tool_call>|<function=)", raw))
 
 
-QUICK_ASK = re.compile(r"\b(grocer(?:y|ies)|cart|menu|meal ?plan|dinners?|recipes?|staples?|pantry|shopping list|whole foods|mealplan|"
-                       r"peanut butter|tahini|milk|bananas?|apples?)\b", re.I)
-QUICK_ASK_BUILD = re.compile(r"\b(build|implement|code|coding|deploy|repo|repository|refactor|redesign|research|audit|investigate|"
-                             r"write[- ]?up|paper|arxiv|simulation|feature|toggle|rename|reset|dashboard|harness)\b", re.I)
-REMINDER_ASK = re.compile(r"\b(remind(?:er|ers|ing)?|nudge|alarm|ping\s+(?:me|us|him|her|them))\b", re.I)
-ASK_SHAPE = re.compile(r"\b(add|can you|could you|would you|please|put|order|get|grab|swap|remove|take\b.{0,30}\boff|change|make|"
-                       r"include|we need|i need|i['’]d like|i want|don['’]t need|skip|instead)\b", re.I)
-
-
 def is_quick_ask(authority, *texts):
-    """A small agentic ask from Hal or Dani about the kitchen: one or two `mealplan` commands finish it
-    (a grocery item, a dinner request, a recipe link, a staple/pantry change). Anything that means
-    building, coding, research or reading a repo is not quick — the mind takes those (Hal, 2026-09-12)."""
-    if authority != "operator":
-        return False
-    blob = " ".join(t for t in texts if t)
-    if REMINDER_ASK.search(blob):
-        return False
-    return bool(QUICK_ASK.search(blob)) and not QUICK_ASK_BUILD.search(blob)
+    intent = kitchen.interpret({'authority': authority, 'content': ' '.join(t for t in texts if t)})
+    return bool(intent and intent['kind'] in {'request', 'question', 'inventory', 'preference'})
 
 
 def quick_hint(body):
-    """The exact command a quick kitchen ask needs, as the goal's next action. 2026-09-12: four of Dani's asks
-    carried "add it during next week's planning workflow" and sat all day; the command is the plan."""
-    if (re.search(r"\b(what(?:['’]s| is)|which)\b.{0,40}\b(meal|dinner|recipe)\b", body, re.I)
-            and re.search(r"\b(today|tonight|tomorrow|yesterday|this week|last week|\d{4}-\d{2}-\d{2})\b", body, re.I)):
-        return ("NOW (this wake, one read-only command): run `mealplan meals today|tomorrow|YYYY-MM-DD|--week YYYY-Www` "
-                "for the requested date, then reply with the recorded title and recipes.ha1.io link; if none is recorded, say so. "
-                "Do not change the plan or substitute a different week's draft.")
-    if re.search(r"https?://", body):
-        return ("NOW (this wake, one or two commands): `mealplan recipe import URL` (a page already in the catalog is returned, "
-                "not duplicated), then `mealplan plan request SLUG --note \"who asked, when\"` so the next draft includes it; "
-                "confirm in the same conversation with the Mealie link.")
-    if re.search(r"\b(menu|dinners?|meals?|recipes?|cook)\b", body, re.I) and not re.search(r"\b(cart|grocer(?:y|ies)|jar|pack|order)\b", body, re.I):
-        return ("NOW (this wake, one or two commands): `mealplan recipes --q \"…\"` to find it, then `mealplan plan request SLUG "
-                "--note \"who asked, when\"`; confirm in the same conversation with the Mealie link.")
-    return ("NOW (this wake, one command): `mealplan cart add \"item\" [ASIN] [--qty N] --note \"who asked, when\"` — it records "
-            "the item on next week's list AND puts it in the Whole Foods cart (Dani's account); confirm in the same conversation "
-            "with the product and price it prints. Not signed in? it is still recorded for Friday's fill: say that instead.")
+    intent = kitchen.fallback(body)
+    return kitchen.hint(intent) if intent and intent['kind'] not in {'context', 'stop'} else 'No shopping action is authorized by this context.'
 
 
 def apply_quick_ask(incoming, plan, attempt=None):
-    """Hal, 2026-09-12: "Any asks from Dani or I should *always* create a deferred goal from the responder."
-    A kitchen-shaped ask from an operator that the model answered as a plain reply becomes a defer with a
-    generated goal (no second inference; the reply text stands), and every quick deferral carries the exact
-    command as its next action, due now."""
-    body = message_body(incoming.get("content") or "")
-    if not is_quick_ask(incoming.get("authority"), body):
+    try: intent = kitchen.interpret(incoming, plan.get('kitchen'))
+    except ValueError as error: raise InvalidInput(str(error))
+    if not intent: return plan
+    plan['kitchen'] = intent
+    if intent['kind'] in {'context', 'stop'}:
+        # The exact dip-context and closure incidents must not create a purchase task.
+        plan['goal'] = None
+        if plan['decision'] == 'defer' or promises_work(plan.get('reply', '')):
+            plan['decision'] = 'no-reply'; plan['reply'] = ''
+        if intent['kind'] == 'context': plan['person'] = None
         return plan
-    if plan.get("decision") == "reply" and ASK_SHAPE.search(body):
-        plan["decision"] = "defer"
-        plan["goal"] = {"outcome": message_summary(incoming.get("sender", ""), incoming.get("content", ""), 240), "next_action": "",
-                        "completion": "The `mealplan` output shows it recorded (in the cart / on the plan), they were told in this "
-                                      "conversation, and the goal is completed with that output as evidence"}
-        if attempt is not None:
-            attempt["forced_defer"] = "operator-kitchen-ask"
-    if plan.get("decision") == "defer" and plan.get("goal"):
-        current = (plan["goal"].get("next_action") or "").strip()
-        if not current.startswith("NOW"):
-            plan["goal"]["next_action"] = text(quick_hint(body) + (" Original next action: " + current if current else ""), "next_action", 4096)
+    plan['person'] = None
+    if plan.get('decision') != 'defer' or not plan.get('goal'):
+        plan['decision'] = 'defer'
+        plan['goal'] = {'outcome': message_summary(incoming.get('sender', ''), incoming.get('content', ''), 240),
+                        'next_action': '', 'completion': 'The requested change or lookup is verified, one necessary result is delivered, and assistance is complete. Purchase status stays unknown.'}
+        if attempt is not None: attempt['forced_defer'] = 'operator-kitchen-ask'
+    plan['goal']['completion'] = 'The requested change or lookup is verified, one necessary result is delivered, and assistance is complete. Purchase status stays unknown.'
+    plan['reply'] = ''  # one verified result; no acknowledgment before the work
+    plan['goal']['next_action'] = text(kitchen.hint(intent), 'next_action', 4096)
     return plan
 
 
@@ -1749,12 +1735,12 @@ def validate_plan(raw, allow_reaction=True, metadata=None, require_envelope=Fals
         metadata['reply_to_items'] = addressed
     # Unknown extra fields are dropped rather than fatal; required ones must exist.
     for key in list(plan):
-        if key not in {"reply", "decision", "goal", "memories", "person", "needs_investigation"}:
+        if key not in {"reply", "decision", "goal", "memories", "person", "needs_investigation", "kitchen"}:
             del plan[key]
     plan.setdefault("memories", [])
     plan.setdefault("goal", None)
     plan.setdefault("person", None)
-    keys(plan, {"reply", "decision", "goal", "memories"}, {"person", "needs_investigation"})
+    keys(plan, {"reply", "decision", "goal", "memories"}, {"person", "needs_investigation", "kitchen"})
     needs_investigation = plan.pop("needs_investigation", False)
     if not isinstance(needs_investigation, bool):
         raise InvalidInput("needs_investigation must be boolean")

@@ -6,6 +6,7 @@ This host worker uses fixed pct commands to reach Headlong. Only operator-owned
 policy establishes recipients and authority. SQLite is a delivery spool, not a
 second goals store. Native custos-memory remains the goals authority.
 """
+import custos_kitchen as kitchen
 import argparse
 import custos_signal_targeting as targeting
 import custos_group_bots as group_bots
@@ -799,7 +800,8 @@ class Bridge:
                                    (encoded({'error':'attachment snapshot unavailable or corrupt'}), row['id']))
                         db.commit(); continue
                 params.update({'groupId':group} if group else {'recipient':[target[3:]]})
-                blocked = self.claim_bot_error(target, 'action:' + row['id'], p.get('reply_to'), db)
+                blocked = kitchen.delivery_block(self.spool.db, self.policy, target, p['message'], p.get('reply_to'))
+                if not blocked: blocked = self.claim_bot_error(target, 'action:' + row['id'], p.get('reply_to'), db)
                 if not blocked:
                     blocked = self.spool.claim_delivery(target, p.get('reply_to'), 'action:' + row['id'],
                         p.get('delivery_kind', 'completion'), p.get('correction_of'), db)
@@ -1220,7 +1222,8 @@ class Bridge:
                 params.update({'quoteTimestamp': item['timestamp'], 'quoteAuthor': item['sender_aci'],
                                'quoteMessage': quote_text(item['body'])})
             params.update(self.signal_target(item))
-            blocked = self.claim_bot_error(item['conversation'], 'outbox:' + row['id'], row['request_id'])
+            blocked = kitchen.delivery_block(db, self.policy, item['conversation'], row['content'], row['request_id'])
+            if not blocked: blocked = self.claim_bot_error(item['conversation'], 'outbox:' + row['id'], row['request_id'])
             if not blocked and not reaction:
                 # Action references are resolved in the same host-owned database.
                 owned = sqlite3.connect('file:' + str(self.actions_state) + '?mode=ro', uri=True) if Path(self.actions_state).exists() else None
