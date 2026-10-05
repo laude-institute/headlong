@@ -266,7 +266,7 @@ def is_meta($k):
   ($k == "step_id" or $k == "ts" or $k == "type" or $k == "fork_parent")
   or ($k == "run_id" or $k == "llm_s" or $k == "in_tok" or $k == "out_tok"
       or $k == "think_tok" or $k == "cache_tok" or $k == "estimated"
-      or $k == "source_url")
+      or $k == "served_by" or $k == "truncated" or $k == "source_url")
   or ($k == "content_b64")
   or ($k | endswith("_ref"))
   or ($k | endswith("_bytes"))
@@ -323,8 +323,16 @@ def render_step($limit0; $blobs; $full):
         else .
         end
     )) as $row2 |
-    ($row2 | keys | map(select(is_meta(.) | not))) as $cks |
-    ($cks | length) as $nc |
+    # A reasoning row is the model's own reply, so it renders from a fixed
+    # list in a fixed order: the thought (or "content", the older name for
+    # it), then the code block, nothing after the fence. Any other field on
+    # the row is bookkeeping, whatever its name: is_meta is a denylist, and a
+    # field added later ("served_by", 2026-09) rendered after the fence until
+    # the model wrote it back as a command. Other types keep the denylist;
+    # their fields vary and the model does not read them as its own output.
+    (if $t == "reasoning" then ["thought", "content", "cmd"] | map(select(. as $k | $row2 | has($k)))
+     else $row2 | keys | map(select(is_meta(.) | not)) end) as $cks |
+    (if $t == "reasoning" then 2 else ($cks | length) end) as $nc |
     reduce $cks[] as $k ("";
         . as $acc |
         ($row2[$k] | jqr_empty | rtrim) as $v0 |
@@ -333,7 +341,7 @@ def render_step($limit0; $blobs; $full):
             ($v0 | if utf8bytelength > $limit then truncate_field($limit; $sid) else . end) as $v |
             if $nc == 1 then $v
             elif $k == "cmd" then $acc + "```bash\n" + $v + "\n```\n\n"
-            elif $k == "thought" then $acc + $v + "\n\n"
+            elif $k == "thought" or $t == "reasoning" then $acc + $v + "\n\n"
             else $acc + "[" + $k + "]\n" + $v + "\n\n"
             end
         end

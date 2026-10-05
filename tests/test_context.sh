@@ -225,18 +225,25 @@ BK="$WORK_BK"
 mkdir -p "$BK/bk"
 cat > "$BK/bk/trajectory.jsonl" <<'EOF'
 {"type": "prompt", "content": "Do the thing.", "source_url": "https://example.slack.com/archives/C1/p1", "step_id": "k-000", "ts": "2026-09-03T00:00:00Z"}
-{"type": "reasoning", "thought": "Checking the log first.", "cmd": "tail -n 3 log.txt", "run_id": "run-1", "llm_s": 12, "in_tok": 31864, "out_tok": 337, "think_tok": 50, "cache_tok": 12000, "estimated": true, "step_id": "k-001", "ts": "2026-09-03T00:00:01Z"}
+{"type": "reasoning", "thought": "Checking the log first.", "cmd": "tail -n 3 log.txt", "run_id": "run-1", "llm_s": 12, "in_tok": 31864, "out_tok": 337, "think_tok": 50, "cache_tok": 12000, "estimated": true, "served_by": "Xiaomi", "truncated": true, "some_future_field": "leak", "step_id": "k-001", "ts": "2026-09-03T00:00:01Z"}
 {"type": "shell-output", "stdout": "line a\nline b\n", "exit": 0, "exec_s": 1, "run_id": "run-1", "step_id": "k-002", "ts": "2026-09-03T00:00:02Z"}
 EOF
 # shellcheck disable=SC2086
 bk_out=$("$CONTEXT" --traj_dir "$BK" bk $PROD 2>/dev/null)
-if printf '%s' "$bk_out" | grep -q -e '\[in_tok\]' -e '\[out_tok\]' -e '\[think_tok\]' -e '\[cache_tok\]' -e '\[llm_s\]' -e '\[run_id\]' -e '\[estimated\]' -e '\[source_url\]'; then
+if printf '%s' "$bk_out" | grep -q -e '\[in_tok\]' -e '\[out_tok\]' -e '\[think_tok\]' -e '\[cache_tok\]' -e '\[llm_s\]' -e '\[run_id\]' -e '\[estimated\]' -e '\[source_url\]' -e '\[served_by\]' -e '\[truncated\]' -e '\[some_future_field\]' -e 'Xiaomi'; then
     bad "invariant/bookkeeping-hidden" "$(printf '%s' "$bk_out" | grep -o '\[[a-z_]*\]' | sort -u | tr '\n' ' ')"
 elif printf '%s' "$bk_out" | grep -q 'Checking the log first' && printf '%s' "$bk_out" | grep -q 'tail -n 3 log.txt' \
      && printf '%s' "$bk_out" | grep -q '\[exit\]'; then
     ok "invariant/bookkeeping-hidden"
 else
     bad "invariant/bookkeeping-hidden" "thought, cmd, or exit missing"
+fi
+# The model's own reply reads thought first and ends at the closing fence.
+bk_reply=$(printf '%s' "$bk_out" | jq -r '[.[] | select(.role == "assistant")][0].content')
+if [[ "$bk_reply" == $'Checking the log first.\n\n```bash\ntail -n 3 log.txt\n```' ]]; then
+    ok "invariant/reply-ends-at-fence"
+else
+    bad "invariant/reply-ends-at-fence" "$bk_reply"
 fi
 
 # 3. Empty trajectory renders an empty array.
