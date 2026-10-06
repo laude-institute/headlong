@@ -89,10 +89,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let settingsView = SettingsView(model: model)
-        let controller = NSHostingController(rootView: settingsView)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 380),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let settingsView = SettingsView(model: model, window: window)
+        let controller = NSHostingController(rootView: settingsView)
         window.isReleasedWhenClosed = false
         window.contentViewController = controller
         window.title = "Shellm Settings"
@@ -850,6 +850,7 @@ struct MessageRow: View {
 
 struct SettingsView: View {
     @ObservedObject var model: ChatModel
+    weak var window: NSWindow?
     @State private var cfSecretField = ""
     @State private var recordingHotkey = false
     @State private var hotkeyMonitor: Any?
@@ -936,6 +937,12 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 400, height: 380)
         .onAppear { model.refreshIdentities(); testConnection() }
+        // Closing a retained NSWindow does not necessarily trigger onDisappear.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { notification in
+            guard let closingWindow = notification.object as? NSWindow,
+                  closingWindow === window else { return }
+            stopRecordingHotkey()
+        }
         .onDisappear { stopRecordingHotkey() }
     }
 
