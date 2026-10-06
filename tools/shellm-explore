@@ -269,6 +269,8 @@ fi
 
 _run_input="$RUN_ID"
 RUN_TRAJ="$(resolve_run_id "$RUN_ID")" || die "No matching run found: $_run_input"
+# Match the canonical paths collected by the tree's cycle guard.
+RUN_TRAJ="$(realpath "$RUN_TRAJ")" || die "Cannot resolve run path: $RUN_TRAJ"
 
 # ---------------------------------------------------------------------------
 # Find root of the run tree by following trajectory parent references

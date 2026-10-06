@@ -91,5 +91,32 @@ grep -q 'MARKER-abc12345' "$WORK/stdin.txt" 2>/dev/null \
     && ok "the run summary reaches llm inside the stdin prompt" \
     || bad "the run summary reaches llm inside the stdin prompt" "marker missing from stdin capture"
 
+# Tree paths are canonicalized for cycle detection. The selected run must
+# still match when the trajectory directory is relative or contains a symlink.
+ln -s "$WORK/traj" "$WORK/traj-link"
+for traj_dir in traj "$WORK/traj-link/"; do
+    for mode in tree report; do
+        args=()
+        [[ "$mode" == report ]] && args+=(--report)
+        : > "$WORK/stdin.txt"
+        (
+            cd "$WORK" || exit 1
+            env -u SHELLM_TRAJ_DIR -u SHELLM_HOME -u HEADLONG_HOME -u SHELLM_MODEL \
+                PATH="$WORK/bin:$PATH" \
+                LLM_ARGV_FILE="$WORK/argv.txt" LLM_STDIN_FILE="$WORK/stdin.txt" \
+                bash "$REPO/tools/shellm-explore" abc12345 --traj-dir "$traj_dir" \
+                "${args[@]+"${args[@]}"}" > "$WORK/out" 2> "$WORK/err"
+        )
+        rc=$?
+        captured="$WORK/out"
+        [[ "$mode" == report ]] && captured="$WORK/stdin.txt"
+        if [[ "$rc" -eq 0 && "$(grep -c '^>>> abc12345:' "$captured")" == 1 ]]; then
+            ok "$mode retains selected run for $traj_dir"
+        else
+            bad "$mode retains selected run for $traj_dir" "rc=$rc, selected run marker missing"
+        fi
+    done
+done
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
