@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd -P)"
+case "${1:-}" in
+    -h|--help)
+        exec bash "$HERE/libexec/coding-agent.sh" "$@"
+        ;;
+esac
 exec python3 "$HERE/libexec/lifecycle.py" run "$@"

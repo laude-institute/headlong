@@ -8,7 +8,10 @@ extension manager, or default prompt change is involved.
 
 ## Local setup and lifecycle
 
-Use a dedicated local test identity created by Headlong. This initial package
+Use a dedicated local test identity created by Headlong (for example,
+`tools/identity new opencode-test`). Installation recognizes the identity's
+`info.txt`; no custom `core_identity_prompt.md` is required, and the built-in
+persona remains unchanged when that file is absent. This initial package
 supports local execution only, with Python 3.8+, Bash 3.2+, Git, jq, Perl, and
 Headlong's `traj` on PATH. Install OpenCode separately using its
 [CLI documentation](https://opencode.ai/docs/cli/). Configure the dedicated
@@ -62,7 +65,9 @@ environment, so configuration changes still require a dispatcher restart.
 
 Install works without OpenCode or valid configuration. Disable and uninstall
 do not source configuration. Enable checks executable availability in the
-resolved local environment. Doctor reports the selected executable and missing
+resolved identity environment. `coding-agent -h` and `coding-agent --help` show
+usage before enablement or dependency checks; task execution still requires
+admission. Doctor reports the selected executable and missing
 requirements without calling a model or printing credentials; it does not
 prove provider authentication. Set `CODING_AGENT_OPENCODE_BIN` to select an
 executable and `CODING_AGENT_MODEL` to select a model, or use the wrapper's
@@ -122,8 +127,13 @@ longer needed, and then remove the artifact directory. Review trajectory
 references before deleting their targets.
 
 Passing verification yields only a candidate with `accepted:false`. The wrapper
-does not merge, push, deploy, or accept. Integrity checks cover Git-visible
-checkout content, not remote side effects or the entire shared ref namespace;
+does not merge, push, deploy, or accept. The executor prompt and task arguments
+omit the verification command and its path; the wrapper runs it separately
+after the executor finishes. This does not isolate hidden tests: verifier files
+readable by the same user remain readable by the executor, even outside the
+worktree. Keep verifier details out of task text if they should not be disclosed.
+Integrity checks cover Git-visible checkout content, not remote side effects
+or the entire shared ref namespace;
 a backend push can escape that check. Worktrees and model permission rules are
 not an OS sandbox. Ordinary process-group descendants are terminated after
 success and timeout before evidence is evaluated; deliberately detached sessions

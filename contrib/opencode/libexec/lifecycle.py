@@ -217,8 +217,9 @@ def lock(path, operation):
 
 def validate_identity(path):
     identity = path.resolve(strict=True)
-    if not identity.is_dir() or not (identity / 'core_identity_prompt.md').is_file():
-        fail('expected an existing Headlong identity with core_identity_prompt.md')
+    # Core identifies identities by info.txt; a custom persona file is optional.
+    if not identity.is_dir() or not (identity / 'info.txt').is_file():
+        fail('expected an existing Headlong identity with info.txt')
     for name in ['extensions', 'skills']:
         child = identity / name
         if child.is_symlink() or (exists(child) and not child.is_dir()):

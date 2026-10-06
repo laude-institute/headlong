@@ -760,9 +760,23 @@ reply=$(printf '%s\n' "$reply" | awk '{
     i = index($0, "DEFER:")
     if (i > 1 && substr($0, i - 1, 1) !~ /[[:space:]]/) { print substr($0, 1, i - 1); print substr($0, i) } else print
 }')
+
+# The responder has no tools. A standalone <skills show ...> is an attempt
+# to use one, so hand the original request to the mind. Match the whole
+# reply: quoted commands, examples and prose mentioning the tag still pass.
+_is_skills_command_tag() {
+    local pattern='^[[:space:]]*<skills[[:space:]]+show[[:space:]]+[A-Za-z0-9._/-]+>[[:space:]]*$'
+    [[ "$1" =~ $pattern ]]
+}
 deferred_request=""
+if _is_skills_command_tag "$reply"; then
+    deferred_request=$(printf '%s' "$trigger_content" | tr '\r\n' '  ')
+    [[ -n "$deferred_request" ]] || deferred_request="Respond to $msg_from's message."
+    reply=""
+    printf '  model returned a skills command tag — deferring to the mind\n' >&2
+fi
 _defer_lines=$(printf '%s' "$reply" | grep -E '^[[:space:]]*DEFER:' || true)
-if [[ -n "$_defer_lines" ]]; then
+if [[ -n "$_defer_lines" || -n "$deferred_request" ]]; then
     while IFS= read -r _dl; do
         _dl=$(printf '%s' "$_dl" | sed -E 's/^[[:space:]]*DEFER:[[:space:]]*//;s/[[:space:]]+$//')
         [[ -n "$_dl" ]] || continue
@@ -781,7 +795,9 @@ if [[ -n "$_defer_lines" ]]; then
     # The un-glued shape leaves the holding sentence twice (before and after
     # the DEFER); send a repeated non-blank line once.
     reply=$(printf '%s\n' "$reply" | awk '!/[^[:space:]]/ || !seen[$0]++' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
-    [[ -z "$reply" ]] && reply="Let me look into that and get back to you."
+    if [[ -z "$reply" ]] || _is_skills_command_tag "$reply"; then
+        reply="Let me look into that and get back to you."
+    fi
     printf '  deferring to the mind: %s\n' "$deferred_request" >&2
     jq -nc --arg source "$THINKER_NAME" --arg trigger "$trigger_step_id" \
         --arg person "$msg_from" --arg request "$deferred_request" \

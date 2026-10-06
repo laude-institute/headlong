@@ -62,5 +62,13 @@ if [[ "$dry_run" -eq 1 ]]; then
 fi
 
 info "Updating the box (frontend rebuild takes ~1-2 min; output prints when done)"
-run_script_on_box "bash /opt/shellm/app/deploy/update.sh"
+run_script_on_box '
+    bash /opt/shellm/app/deploy/update.sh
+    update_result=$?
+    [ "$update_result" -eq 0 ] || exit "$update_result"
+    # An old updater cannot re-exec a guard it only acquired in this pull.
+    # Check the newly pulled checkout even when that updater reported success.
+    if [ -f /opt/shellm/app/deploy/check-deploy.sh ]; then
+        bash /opt/shellm/app/deploy/check-deploy.sh --warnings-only /opt/shellm/app
+    fi'
 info "Dashboard: $(tf output -raw url)"
