@@ -179,40 +179,185 @@ mark_emitted() {
 # prose line; a bare ``` closes only outside a heredoc), the stream is cut the
 # moment the first block closes. Everything a caller in that mode keeps has
 # been emitted by then.
-_fs_buf="" _fs_in=0 _fs_hd=() _fs_bytes=0
+_fs_buf="" _fs_in=0 _fs_hd=() _fs_bytes=0 _fs_hd_top=0
+_fs_lex_top=0 _fs_arith=0 _fs_word=1
 _fs_ident='^[A-Za-z_][A-Za-z_0-9]*'
-_fs_open_re='<<-?'
 _fs_tagged_re='```(bash|shell|sh)[[:space:]]*$'
 _fs_close_re='^```[[:space:]]*$'
-_fs_try_open_heredoc() {
-    local line="$1" rest
-    [[ "$line" =~ $_fs_open_re ]] || return 0
-    rest="${line#*<<}"; rest="${rest#-}"
-    rest="${rest#"${rest%%[![:space:]]*}"}"
-    case "$rest" in
-        \"*)  rest="${rest#\"}"; rest="${rest%%\"*}"; [[ -n "$rest" ]] && _fs_hd+=("$rest") ;;
-        \'*)  rest="${rest#\'}"; rest="${rest%%\'*}"; [[ -n "$rest" ]] && _fs_hd+=("$rest") ;;
-        \\*) rest="${rest#\\}"; [[ "$rest" =~ $_fs_ident ]] && _fs_hd+=("${BASH_REMATCH[0]}") ;;
-        *)    [[ "$rest" =~ $_fs_ident ]] && _fs_hd+=("${BASH_REMATCH[0]}") ;;
+# Fence tracking must know when << is a real heredoc operator, so lexically
+# scan the collected code instead of pattern-matching the raw line: 'single'
+# and "double" quotes span lines and hide <<, a word-start # comment hides
+# the rest of the line, $(( )) arithmetic uses << as a shift, and $( inside
+# double quotes resumes command lexing, so a heredoc opened there is real.
+# Heredoc bodies are never lexed; they are literal data owned by the FIFO in
+# _fs_line. Frames on _fs_lex: 1 'single' 2 "double" 3 $'ansi' 4 $( command
+# 5 (( arithmetic, with its paren count in _fs_arith.
+_fs_lex_push() { _fs_lex[$_fs_lex_top]="$1"; _fs_lex_top=$(( _fs_lex_top + 1 )); }
+_fs_lex_pop() { _fs_lex_top=$(( _fs_lex_top - 1 )); }
+_fs_lex_heredoc() {   # delimiter after << or <<- at $2; push it; _fs_lex_i lands past it
+    local line="$1" pos="$2" n c rest delim
+    n=${#line}
+    while [[ "$pos" -lt "$n" ]]; do
+        c=${line:pos:1}
+        [[ "$c" == ' ' || "$c" == $'\t' ]] || break
+        pos=$(( pos + 1 ))
+    done
+    c=${line:pos:1}
+    case "$c" in
+    '"'|"'")
+        rest=${line:pos+1}
+        delim=${rest%%"$c"*}
+        if [[ "$delim" == "$rest" ]]; then
+            _fs_lex_i=$n                      # no closing quote: open nothing
+        else
+            _fs_hd[$_fs_hd_top]="$delim"
+            _fs_hd_top=$(( _fs_hd_top + 1 ))
+            _fs_lex_i=$(( pos + ${#delim} + 2 ))
+        fi
+        ;;
+    '\')
+        rest=${line:pos+1}
+        if [[ "$rest" =~ $_fs_ident ]]; then
+            _fs_hd[$_fs_hd_top]="${BASH_REMATCH[0]}"
+            _fs_hd_top=$(( _fs_hd_top + 1 ))
+            _fs_lex_i=$(( pos + 1 + ${#BASH_REMATCH[0]} ))
+        else
+            _fs_lex_i=$(( pos + 1 ))
+        fi
+        ;;
+    *)
+        rest=${line:pos}
+        if [[ "$rest" =~ $_fs_ident ]]; then
+            _fs_hd[$_fs_hd_top]="${BASH_REMATCH[0]}"
+            _fs_hd_top=$(( _fs_hd_top + 1 ))
+            _fs_lex_i=$(( pos + ${#BASH_REMATCH[0]} ))
+        else
+            _fs_lex_i="$pos"                  # no word after <<: open nothing
+        fi
+        ;;
     esac
     return 0
 }
+_fs_lex_line() {   # lexically scan one collected code line; real << opens land in _fs_hd
+    local line="$1" n i c d m
+    n=${#line}; i=0; _fs_word=1
+    while [[ "$i" -lt "$n" ]]; do
+        c=${line:i:1}
+        if [[ "$_fs_lex_top" -gt 0 ]]; then m=${_fs_lex[_fs_lex_top-1]}; else m=0; fi
+        case "$m" in
+        1)  # 'single quoted': no escapes, spans lines
+            if [[ "$c" == "'" ]]; then _fs_lex_pop; fi
+            _fs_word=0; i=$(( i + 1 )) ;;
+        3)  # $'ansi c quoted': backslash escapes
+            if [[ "$c" == '\' ]]; then
+                i=$(( i + 2 ))
+            else
+                if [[ "$c" == "'" ]]; then _fs_lex_pop; fi
+                i=$(( i + 1 ))
+            fi
+            _fs_word=0 ;;
+        2)  # "double quoted": \" \\ are escapes, $( resumes command lexing
+            case "$c" in
+            '\')
+                d=${line:i+1:1}
+                case "$d" in
+                '"'|'\'|'`'|'$') i=$(( i + 2 )) ;;
+                *) i=$(( i + 1 )) ;;
+                esac ;;
+            '"') _fs_lex_pop; i=$(( i + 1 )) ;;
+            '$')
+                d=${line:i+1:1}
+                if [[ "$d" == '(' && "${line:i+2:1}" == '(' ]]; then
+                    _fs_lex_push 5; _fs_arith=2; i=$(( i + 3 ))
+                elif [[ "$d" == '(' ]]; then
+                    _fs_lex_push 4; i=$(( i + 2 ))
+                else
+                    i=$(( i + 1 ))
+                fi ;;
+            *) i=$(( i + 1 )) ;;
+            esac
+            _fs_word=0 ;;
+        5)  # (( arithmetic )): parens pair up; << is a shift, # is literal
+            if [[ "$c" == '(' ]]; then
+                _fs_arith=$(( _fs_arith + 1 ))
+            elif [[ "$c" == ')' ]]; then
+                _fs_arith=$(( _fs_arith - 1 ))
+                if [[ "$_fs_arith" -eq 0 ]]; then _fs_lex_pop; fi
+            fi
+            _fs_word=0; i=$(( i + 1 )) ;;
+        *)  # root or $( command: normal shell lexing
+            case "$c" in
+            '\') i=$(( i + 2 )); _fs_word=0 ;;
+            "'") _fs_lex_push 1; i=$(( i + 1 )); _fs_word=0 ;;
+            '"') _fs_lex_push 2; i=$(( i + 1 )); _fs_word=0 ;;
+            '$')
+                d=${line:i+1:1}
+                if [[ "$d" == "'" ]]; then _fs_lex_push 3; i=$(( i + 2 ))
+                elif [[ "$d" == '"' ]]; then _fs_lex_push 2; i=$(( i + 2 ))
+                elif [[ "$d" == '(' && "${line:i+2:1}" == '(' ]]; then _fs_lex_push 5; _fs_arith=2; i=$(( i + 3 ))
+                elif [[ "$d" == '(' ]]; then _fs_lex_push 4; i=$(( i + 2 ))
+                else i=$(( i + 1 ))
+                fi
+                _fs_word=0 ;;
+            '(')
+                if [[ "${line:i+1:1}" == '(' ]]; then
+                    _fs_lex_push 5; _fs_arith=2; i=$(( i + 2 ))
+                elif [[ "$m" == 4 ]]; then
+                    _fs_lex_push 4; i=$(( i + 1 ))
+                else
+                    i=$(( i + 1 ))    # subshell: its ) pairs without a frame
+                fi
+                _fs_word=1 ;;
+            ')')
+                if [[ "$m" == 4 ]]; then _fs_lex_pop; fi
+                i=$(( i + 1 )); _fs_word=0 ;;
+            '#')
+                if [[ "$_fs_word" -eq 1 ]]; then return 0; fi   # comment: rest of line
+                i=$(( i + 1 )); _fs_word=0 ;;
+            '<')
+                d=${line:i+1:1}
+                if [[ "$d" != '<' ]]; then
+                    i=$(( i + 1 )); _fs_word=1
+                else
+                    d=${line:i+2:1}
+                    case "$d" in
+                    '<'|'=') i=$(( i + 3 )); _fs_word=0 ;;    # here-string, <<=
+                    '-') _fs_lex_heredoc "$line" $(( i + 3 )); i=$_fs_lex_i; _fs_word=0 ;;
+                    *)   _fs_lex_heredoc "$line" $(( i + 2 )); i=$_fs_lex_i; _fs_word=0 ;;
+                    esac
+                fi ;;
+            *)
+                i=$(( i + 1 ))
+                case "$c" in
+                ' '|$'\t'|';'|'&'|'|'|'>'|'{') _fs_word=1 ;;
+                *) _fs_word=0 ;;
+                esac ;;
+            esac ;;
+        esac
+    done
+    return 0
+}
 _fs_line() {   # one complete line of emitted text; returns 0 when the first block just closed
-    local line="$1" stripped n
+    local line="$1" stripped k
     if [[ "$_fs_in" -eq 0 ]]; then
         if [[ "$line" == '```'* || "$line" =~ $_fs_tagged_re ]]; then _fs_in=1; fi
         return 1
     fi
-    n=${#_fs_hd[@]}
-    if [[ "$n" -gt 0 ]]; then
-        stripped="${line#"${line%%[![:space:]]*}"}"; stripped="${stripped%"${stripped##*[![:space:]]}"}"
-        if [[ "$stripped" == "${_fs_hd[n-1]}" ]]; then
-            unset "_fs_hd[n-1]"
-            n=$((n - 1))
+    # A pending heredoc makes this line literal body: only its FIFO delimiter
+    # can end it, so a ``` inside the body does not close the block. Queued
+    # heredocs (cat <<A <<B) are read in operator order, so the OLDEST pending
+    # delimiter is the one a body line matches.
+    if [[ "$_fs_hd_top" -gt 0 ]]; then
+        stripped="${line#"${line%%[![:space:]]*}"}"
+        stripped="${stripped%"${stripped##*[![:space:]]}"}"
+        if [[ "$stripped" == "${_fs_hd[0]}" ]]; then
+            _fs_hd_top=$(( _fs_hd_top - 1 ))
+            for (( k = 0; k < _fs_hd_top; k++ )); do _fs_hd[k]="${_fs_hd[k+1]}"; done
         fi
+        return 1
     fi
-    if [[ "$n" -eq 0 && "$line" =~ $_fs_close_re ]]; then return 0; fi
-    _fs_try_open_heredoc "$line"
+    if [[ "$line" =~ $_fs_close_re ]]; then return 0; fi
+    _fs_lex_line "$line"
     return 1
 }
 _fs_feed() {   # text just emitted; returns 0 once the first block has closed
