@@ -192,6 +192,28 @@ if [[ -z "$traj" ]]; then
     traj=$(ls -t "$ID_DIR"/trajectories/*-root/trajectory.jsonl 2>/dev/null | head -n 1 || true)
 fi
 
+# --- chat index lock -------------------------------------------------------
+# Trajectory activity does not prove that the derived chat indexes advance.
+# Alert only: age alone cannot distinguish an abandoned lock from a slow live
+# rebuild. Recovery must stop every caller before removing the lock/indexes.
+chat_index_check() {
+    [[ -n "$traj" && -f "$traj" ]] || return 0
+    local lock stamp age
+    lock="$(dirname "$traj")/messages.jsonl.lock"
+    if [[ ! -d "$lock" ]]; then
+        unmark chat_index_alert
+        return 0
+    fi
+    stamp=$(mtime_of "$lock")
+    [[ "$stamp" =~ ^[0-9]+$ && "$stamp" -gt 0 ]] || return 0
+    age=$(( now - stamp ))
+    (( age >= THRESHOLD )) || return 0
+    due chat_index_alert || return 0
+    post_slack ":warning: *${IDENT}'s chat index lock has been held for $(fmt "$age")*. History, pending requests, and delivery status may be stale even while the trajectory grows. Check for a live rebuild before recovery. Stop all chat callers, run \`chat index-reset --offline\` in this identity's environment, then restart the stopped services. Follow \`docs/chat-index-recovery.md\`; restarting only the thinkers does not clear an abandoned lock."
+    mark chat_index_alert "$now"
+}
+chat_index_check
+
 # --- permissions -----------------------------------------------------------
 # mode_of PATH → octal mode (e.g. 755), or empty
 mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null || true; }

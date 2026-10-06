@@ -174,5 +174,26 @@ run_df
 [[ "$(posts)" -eq 2 && ! -f "$ID/run/perm_alert" ]] && ok "healthy permissions: silent, marker dropped" || bad "healthy permissions: silent, marker dropped" "posts=$(posts)"
 chmod 755 "$TDIR"; chmod 644 "$TRAJ"
 
+# 12. a stale index lock is visible even while the trajectory stays fresh.
+: > "$CURL_LOG"
+LOCK="$TDIR/messages.jsonl.lock"
+mkdir "$LOCK"
+age_traj 10
+run_df
+[[ "$(posts)" -eq 0 ]] && ok "a recent index lock does not alert" || bad "recent index lock"
+touch -t 202001010000 "$LOCK"
+run_df
+if [[ "$(posts)" -eq 1 ]] && grep -q 'chat index lock has been held' "$CURL_LOG" && grep -q 'index-reset --offline' "$CURL_LOG"; then
+    ok "an old index lock alerts with offline recovery instructions despite fresh trajectory"
+else bad "old index lock alert" "posts=$(posts)"; fi
+[[ -d "$LOCK" ]] && ok "watchdog never removes a potentially live lock" || bad "watchdog removed lock"
+run_df
+[[ "$(posts)" -eq 1 ]] && ok "index alert respects repost interval" || bad "index alert repeats"
+HEADLONG_SILENCE_REPOST_SECS=0 run_df
+[[ "$(posts)" -eq 2 ]] && ok "index alert reposts after interval" || bad "index alert did not repost"
+rmdir "$LOCK"
+run_df
+[[ "$(posts)" -eq 2 && ! -f "$ID/run/chat_index_alert" ]] && ok "index recovery clears the alert marker" || bad "index recovery marker"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))

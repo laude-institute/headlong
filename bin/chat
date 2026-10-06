@@ -610,6 +610,26 @@ _index_apply() {
     printf '%s %s %s %s\n' "$((have_off + len))" "$header" "$(_file_ino "$tf")" "$size" > "$off"
 }
 
+# Operator recovery after every chat caller has stopped. The index can have
+# partial writes after SIGKILL, so discard all derived files, not just the lock.
+cmd_index_reset() {
+    [[ $# -eq 1 && "$1" == --offline ]] || die "index-reset requires --offline: stop all chat callers before resetting the index (see docs/chat-index-recovery.md)"
+    local tf idx lock contents
+    tf=$(traj path "${ROOT_TRAJ_ID:-$TRAJ_ID}" 2>/dev/null) || tf=""
+    [[ -n "$tf" && -f "$tf" ]] || die "index-reset: cannot resolve the root trajectory file"
+    idx="$(dirname "$tf")/messages.jsonl"
+    lock="$idx.lock"
+    [[ ! -L "$lock" ]] || die "index-reset: refusing a symlinked lock"
+    mkdir "$lock" 2>/dev/null || [[ -d "$lock" ]] || die "index-reset: cannot create lock"
+    # Unknown contents are not ours to remove. Never recursively delete a lock.
+    contents=$(ls -A "$lock") || die "index-reset: cannot inspect lock directory"
+    [[ -z "$contents" ]] || die "index-reset: lock directory is not empty"
+    rm -f "$idx.offset" "$idx" "$(_deferrals_path "$idx")" "$(_deliveries_path "$idx")" \
+        || die "index-reset: could not remove derived indexes; lock retained"
+    rmdir "$lock" || die "index-reset: could not remove lock"
+    printf 'Chat indexes reset. The next history, pending, or sent read will rebuild them.\n'
+}
+
 # Parse "7d" / "36h" / "90m" / "3600" (seconds) into seconds.
 _duration_s() {
     case "$1" in
@@ -942,6 +962,9 @@ Usage:
                              with `chat reply --follow-up --reply-to
                              <trigger> <person>` and closes it with an
                              observation carrying resolves=<trigger>
+  chat index-reset --offline
+                             Reset derived indexes after stopping ALL chat callers.
+                             See docs/chat-index-recovery.md before use.
   chat person-key <name>     Print the stable person key for a routing name
                              (slack-U..-C..-ts -> slack:U..; pwa-x -> pwa:x)
   chat thread-key <name>     Print the thread key (Slack channel threads
@@ -975,6 +998,7 @@ case "${1:-}" in
     react)     shift; cmd_react "$@" ;;
     reply)     shift; cmd_reply "$@" ;;
     history) shift; cmd_history "$@" ;;
+    index-reset) shift; cmd_index_reset "$@" ;;
     pending)   shift; cmd_pending "$@" ;;
     sent)       shift; cmd_sent "$@" ;;
     person-key) shift; cmd_person_key "$@" ;;
