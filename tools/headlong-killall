@@ -139,14 +139,17 @@ fi
 # tied to (now-dead) host agent pids; safe to remove. Broker containers
 # (label shellm.broker=1) are shared/persistent — report, don't touch.
 if command -v docker >/dev/null 2>&1; then
-    containers=$(docker ps -q --filter 'name=^shellm-' --filter 'label!=shellm.broker=1' 2>/dev/null) || containers=""
+    # docker ps supports positive label filters only. Exclude brokers in
+    # the template and reuse this snapshot for both the listing and removal.
+    container_rows=$(docker ps --filter 'name=^shellm-' --format '{{if ne (.Label "shellm.broker") "1"}}{{.ID}}\t{{.Names}} ({{.Status}}){{end}}' 2>/dev/null) || container_rows=""
+    containers=$(printf '%s\n' "$container_rows" | awk 'NF {print $1}')
     if [[ -n "$containers" ]]; then
         if [[ "$DRY_RUN" -eq 1 ]]; then
             echo "Would remove docker container(s):"
-            docker ps --filter 'name=^shellm-' --filter 'label!=shellm.broker=1' --format '  {{.Names}} ({{.Status}})' 2>/dev/null || true
+            printf '%s\n' "$container_rows" | awk 'NF {sub(/^[^\t]*\t/, "  "); print}'
         else
             echo "Removing docker container(s):"
-            docker ps --filter 'name=^shellm-' --filter 'label!=shellm.broker=1' --format '  {{.Names}} ({{.Status}})' 2>/dev/null || true
+            printf '%s\n' "$container_rows" | awk 'NF {sub(/^[^\t]*\t/, "  "); print}'
             # shellcheck disable=SC2086
             docker rm -f $containers >/dev/null 2>&1 || true
         fi
