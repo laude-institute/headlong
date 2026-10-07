@@ -152,19 +152,15 @@ class Monitor:
                         raise APIError("github_pr_repository_invalid")
                     self.inventory(match[1], row["number"], "authored")
             else:
-                # Full all-state pagination also catches opened-and-closed PRs
-                # between polls. Historical closed PRs establish a quiet baseline.
-                try:
-                    rows = self.api.get("repos/"+self.repo+"/pulls", state="all", sort="created",
-                                        direction="desc", per_page=100, page=page)
-                except APIError as exc:
-                    if exc.code != "github_pr_not_found":
-                        raise
-                    # A dead review_repo 404s forever; skip its stage so the
-                    # authored search keeps running. The unblocking event is
-                    # unchanged: the repo returns 200 again, which the next
-                    # cycle's reviews stage will see.
-                    rows = []
+                # Search-based discovery survives the owner-scoped hide: the
+                # repo-scoped object route (repos/{repo}/pulls) 404s under the
+                # hide, but the search route does not (proven by the authored
+                # stage). No state qualifier: "is:pr repo:..." is all-state.
+                data = self.api.get("search/issues", q="is:pr repo:"+self.repo,
+                                    sort="created", order="desc", per_page=100, page=page)
+                if data.get("incomplete_results") or data.get("total_count", 0) > 1000:
+                    raise APIError("github_pr_discovery_incomplete")
+                rows = data["items"]
                 for row in rows:
                     if row["state"] == "open" or row["created_at"] >= state["since"]:
                         self.inventory(self.repo, row["number"], "review")

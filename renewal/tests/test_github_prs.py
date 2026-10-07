@@ -31,7 +31,14 @@ class API:
         self.calls.append((endpoint, params))
         page = params.get("page", 1)
         if endpoint == "search/issues":
-            return {"items": self.authored[(page-1)*100:page*100], "total_count": len(self.authored), "incomplete_results": False}
+            q = params.get("q", "")
+            if "author:custos-1f916" in q:
+                items = self.authored
+            elif "repo:1f916-ai/1f916" in q:
+                items = self.reviews
+            else:
+                items = []
+            return {"items": items[(page-1)*100:page*100], "total_count": len(items), "incomplete_results": False}
         if endpoint.endswith("/pulls"):
             return self.reviews[(page-1)*100:page*100]
         if endpoint.endswith("/pulls/1"):
@@ -219,34 +226,27 @@ class PRTests(MemoryFixture):
         self.assertNotIn("1f916-ai/1f916#104", inventory)
         self.assertIn("elsewhere/repo#7", inventory)
 
-    def test_discovery_reviews_404_does_not_block_authored_search(self):
-        # The review_repo is dead and 404s on the reviews stage. Before the
-        # fix the APIError propagated out of discover() and the state machine
-        # wedged at stage=reviews forever, so the authored search never
-        # re-ran. After the fix a 404 advances the cycle back to authored
-        # (next/last_success set) and the authored search still runs.
+    def test_discovery_reviews_survives_owner_scoped_hide_via_search(self):
+        # Under the owner-scoped hide, the repo-scoped object route
+        # (repos/{repo}/pulls) 404s. The reviews stage is now search-based
+        # (is:pr repo:{repo}), which does not 404 under the hide. Verify
+        # that review PRs still enter the inventory via the search route
+        # even though the repo-scoped route 404s.
         original = self.api.get
-        def get_404_reviews(endpoint, **params):
-            if endpoint.endswith("/pulls"):
+        def get_404_repo_scoped(endpoint, **params):
+            if endpoint == "repos/1f916-ai/1f916/pulls":
                 raise APIError("github_pr_not_found")
             return original(endpoint, **params)
-        self.api.get = get_404_reviews
-        # Start from the stuck real-world state: reviews stage, next in the past.
-        self.state.put(gp.PREFIX+"discovery", {"stage": "reviews", "page": 1,
-            "since": "2026-09-17T14:36:13Z", "next": 1700000000 - 900,
-            "last_success": 1700000000 - 900})
+        self.api.get = get_404_repo_scoped
         self.api.authored = [{"number": 9, "repository_url": "https://api.github.com/repos/elsewhere/repo"}]
-        # Cycle 1: reviews 404s -> advances to authored, sets next/last_success.
-        self.monitor.discover()
-        disc = self.state.get(gp.PREFIX+"discovery")
-        self.assertEqual(disc.get("stage"), "authored")
-        self.assertEqual(disc.get("next"), 1700000000 + 900)
-        self.assertEqual(disc.get("last_success"), 1700000000)
-        # Force the next cycle (next is now in the past) so the authored search runs.
-        self.monitor.now = 1700000000 + 901
+        self.api.reviews = [dict(pr(), number=42)]
         self.monitor.discover()
         inventory = self.state.get(gp.PREFIX+"inventory")
+        # The authored PR entered via the authored search.
         self.assertIn("elsewhere/repo#9", inventory)
+        # The review PR entered via the search route, not the 404-ing object route.
+        self.assertIn("1f916-ai/1f916#42", inventory)
+        self.assertIn("review", inventory["1f916-ai/1f916#42"]["roles"])
 
     def test_head_changes_mid_scan_restart_without_wrong_head_checks(self):
         self.api.budget = 2
