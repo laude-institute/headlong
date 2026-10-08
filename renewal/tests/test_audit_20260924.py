@@ -1,3 +1,4 @@
+import datetime as dt
 """Regressions from the 2026-09-24 audit, executed only in a disposable fixture."""
 import io,json,os,shutil,subprocess,sys,tempfile,time,unittest
 from pathlib import Path
@@ -86,13 +87,13 @@ class Cooldown(MemoryFixture):
         identity=self.root/'identity';identity.mkdir()
         payload={'request_id':'one-stable-id','target':'Hal','message':'checked news'}
         with patch.dict(os.environ,{'IDENTITY_DIR':str(identity)}),patch.object(memory,'Store',return_value=self.store):
-            result=client.park_cooldown(goal,payload,'dm:fixed',False,'you spoke last and nobody answered')
+            result=client.park_cooldown(goal,payload,'dm:fixed',False,client.GuardRefusal({'reason':'cooldown','resume_at':(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=2)).isoformat(),'error':'you spoke last'}))
             self.assertEqual(result['goal_id'],goal)
             self.assertEqual(self.store.find(goal)[4]['waiting']['signal_target'],'dm:fixed')
             staged=list((identity/'.state/staged-signal').glob('*.json'));self.assertEqual(len(staged),1)
             self.assertEqual(json.loads(staged[0].read_text()),payload)
             with self.assertRaisesRegex(ValueError,'different payload'):
-                client.park_cooldown(goal,{**payload,'message':'changed'},'dm:fixed',False,'you spoke last')
+                client.park_cooldown(goal,{**payload,'message':'changed'},'dm:fixed',False,client.GuardRefusal({'reason':'cooldown','resume_at':(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=2)).isoformat(),'error':'you spoke last'}))
         wait=self.store.find(goal)[4]['waiting']
         with patch.object(client,'mind_guard',side_effect=ValueError('you spoke last')),patch.object(client,'call') as call:
             for _ in range(3):self.assertIsNone(memory.wait_event(wait))

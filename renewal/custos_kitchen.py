@@ -178,7 +178,7 @@ def close_superseded(store, items):
         record = item[4]
         if not record or record['status'] != 'active' or record['received_at'] >= latest['received_at']: continue
         goal_text = json.dumps(record.get('goal', {}))
-        if not FOOD.search(goal_text): continue
+        if not household_origin(record['origin']) or not household_text(goal_text): continue
         if record['origin'].get('authority') == 'operator' and REMINDER.search(eligible_text(record['origin'])): continue
         if BUILD.search(eligible_text(record['origin'])): continue
         resolution = {'disposition': 'completed', 'evidence': 'Kitchen assistance closed by ' + latest['origin']['request_id'] + '; no purchase asserted.'}
@@ -186,6 +186,22 @@ def close_superseded(store, items):
         record['events'].append({'at': latest['received_at'], 'resolution': resolution})
         record.pop('waiting', None); record.pop('not_before', None)
         store.save(item, record)
+
+
+
+def household_text(value):
+    """Classify household discussion, excluding URLs and clear Apple tech use.
+
+    This is not an authority override: a verified household source still binds
+    its reply even if the outgoing text discusses research/software too.
+    """
+    clean = re.sub(r'https?://[^\s<>]+', ' ', value or '')
+    household = re.search(r'\b(grocer(?:y|ies)|meal ?plan|meals?|dinners?|recipes?|pantry|whole foods|peanut butter|tahini|yogurt|milk|bananas?|apples|checkout)\b', clean, re.I)
+    if household: return True
+    if re.search(r'\b(?:Apple|APPLE)(?:[’\']s)?\b', clean) and re.search(
+            r'\b(?:ML|AI|machine learning|research|RISED|model|models|paper|papers|benchmark|iPhone|Mac|macOS|iOS|Intelligence)\b', clean, re.I):
+        clean = re.sub(r'\b(?:Apple|APPLE)(?:[’\']s)?\b', ' ', clean)
+    return bool(FOOD.search(clean))
 
 
 def delivery_block(db, policy, conversation, message, request_id=None, created=0, kind='completion'):
@@ -197,9 +213,9 @@ def delivery_block(db, policy, conversation, message, request_id=None, created=0
         # Only host-allowlisted operators can set a household boundary.
         person = policy.get('people', {}).get(item.get('sender_aci'), {})
         if person.get('authority') != 'operator' or person.get('label') not in {'Hal', 'Dani'}: continue
-        if row['id'] == request_id and item.get('conversation') == conversation: source = item; kitchen_source = bool(FOOD.search(text))
+        if row['id'] == request_id and item.get('conversation') == conversation: source = item; kitchen_source = household_text(text)
         if STOP.search(text): latest_stop = max(latest_stop, item.get('timestamp', 0) / 1000)
-    if not (kitchen_source or FOOD.search(message or '')): return None
+    if not (kitchen_source or household_text(message)): return None
     # A real explicitly requested timer has its own durable record and receipt.
     if source and REMINDER.search(source.get('body', source.get('text', ''))) and not STOP.search(source.get('body', '')): return None
     if not source: return 'automatic kitchen follow-ups are disabled; correlate a real household request'

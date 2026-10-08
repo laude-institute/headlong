@@ -192,10 +192,10 @@ class WireTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(old.read_bytes(), b"historical exhausted quota - preserve verbatim")
         self.assertFalse(hasattr(self.gateway, "ledger"))
 
-    async def response(self, path="/v1/chat/completions", method="POST", raw=None):
+    async def response(self, path="/v1/chat/completions", method="POST", raw=None, header_timeout=2):
         reader, writer = await self.connect(path, method, raw)
         try:
-            line, headers = await asyncio.wait_for(gateway.read_headers(reader, 16384), 2)
+            line, headers = await asyncio.wait_for(gateway.read_headers(reader, 16384), header_timeout)
             body = b""
             if headers.get("transfer-encoding") == "chunked":
                 while True:
@@ -342,7 +342,10 @@ class WireTests(unittest.IsolatedAsyncioTestCase):
         self.gateway.p["request_seconds"] = 1
         reader, writer = await self.connect()
         await asyncio.wait_for(self.started.wait(), 2)
-        status, _, body = await self.response()
+        # The one-second request deadline precedes bounded socket cancellation
+        # (close_writer itself allows one second). A two-second reader raced
+        # that cleanup in the VM; do not confuse it with the asserted 503 code.
+        status, _, body = await self.response(header_timeout=4)
         self.assertEqual(status, 503)
         self.assertIn(b"request_walltime_limit", body)
         await asyncio.wait_for(self.disconnected.wait(), 2)

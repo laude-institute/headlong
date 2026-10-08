@@ -121,7 +121,10 @@ def social_guard(route):
                     for line in stream:
                         row = json.loads(line)
                         if row.get('social_intent') and row.get('from') == os.environ.get('IDENTITY_NAME', 'custos') and row.get('ts', '')[:19] >= since:
-                            ids.add(row.get('request_id') or row.get('step_id'))
+                            from custos_contact_guard import reference, UNSENT
+                            from custos_memory import delivery_status
+                            if delivery_status(reference(row) or '') .get('phase') not in UNSENT:
+                                ids.add(row.get('request_id') or row.get('step_id'))
             if len(ids) >= ceiling:
                 raise ValueError('unsolicited-message allowance reached; silence is available')
     finally:
@@ -132,16 +135,20 @@ def social_guard(route):
                 os.environ[key] = value
 
 
+class GuardRefusal(ValueError):
+    def __init__(self, decision):
+        self.decision = decision
+        super().__init__(decision.get('error', 'contact guard refused'))
+
+
 def guard(route):
-    """Refuse what `chat` would refuse: the day's allowance, or a double text."""
-    blocked = os.environ.get('CHAT_SOCIAL_BLOCKED')
-    if blocked:
-        raise ValueError(blocked)
-    hours = os.environ.get('CHAT_DOUBLE_TEXT_GUARD_HOURS', '')
-    if hours.isdigit() and int(hours) > 0:
-        result = subprocess.run(['chat', 'guard', route], capture_output=True, text=True, timeout=60)
-        if result.returncode:
-            raise ValueError((result.stderr or result.stdout).strip().replace('chat: error: ', '') or 'refused by the conversation guard')
+    """Use the same canonical conversation and receipts as chat guard."""
+    if os.environ.get('CHAT_SOCIAL_BLOCKED'):
+        raise ValueError(os.environ['CHAT_SOCIAL_BLOCKED'])
+    from custos_contact_guard import check
+    result = check(route)
+    if not result['ok']: raise GuardRefusal(result)
+    return result
 
 
 def mind_guard(route):
@@ -162,7 +169,8 @@ def mind_guard(route):
 
 def park_cooldown(goal_id, payload, target, social, refusal):
     """Persist the exact unsent request and park only a known local cooldown."""
-    if not goal_id or 'you spoke last' not in str(refusal): return None
+    decision = getattr(refusal, 'decision', {})
+    if not goal_id or decision.get('reason') != 'cooldown': return None
     from custos_memory import Store
     store = Store()
     directory = Path(os.environ['IDENTITY_DIR']) / '.state' / 'staged-signal'
@@ -178,7 +186,7 @@ def park_cooldown(goal_id, payload, target, social, refusal):
         + '; request_id=' + payload['request_id'] + '; sha256=' + digest
         + '. Reuse this ID and payload after eligibility resumes; no host action was queued.'})
     return store.wait({'goal_id': goal_id, 'reason': 'Local Signal cooldown (' + ('social' if social else 'mind') + '); staged request ' + payload['request_id'],
-                       'signal_target': target})
+                       'signal_target': target, 'check_at': decision['resume_at']})
 
 
 def record(route, message, request_id, phase, files=None, reply_to=None, social=False, delivery_kind="completion", correction_of=None):
@@ -214,7 +222,7 @@ def resolve_reply(step, route):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('action', choices=['signal-lane-status', 'signal-contacts', 'signal-send', 'signal-ask', 'signal-await', 'signal-release', 'automata-status', 'automata-deploy', 'automata-rollback', 'status', 'delivery-status'])
+    p.add_argument('action', choices=['signal-guard', 'signal-lane-status', 'signal-contacts', 'signal-send', 'signal-ask', 'signal-await', 'signal-release', 'automata-status', 'automata-deploy', 'automata-rollback', 'status', 'delivery-status'])
     p.add_argument('request_id', nargs='?')
     p.add_argument('--attach', action='append', default=[], metavar='FILE', help='attach a guest file (repeat up to four; 8 MiB total)')
     p.add_argument('--reply-to', metavar='STEP', help='quote a delivered native Signal message (unique step ID/prefix)')
@@ -233,6 +241,10 @@ def main():
             if not isinstance(payload, dict) or 'action' in payload: raise ValueError('object without action required')
         else:
             payload = {}
+        if args.action == 'signal-guard':
+            if not args.request_id: raise ValueError('conversation required')
+            result = guard(args.request_id)
+            print(json.dumps(result)); return 0
         if args.action == 'delivery-status':
             if not args.request_id: raise ValueError('delivery reference required')
             payload['reference'] = args.request_id
@@ -253,9 +265,11 @@ def main():
                 raise ValueError('signal-send needs request_id, target and message')
             if args.goal:
                 from custos_memory import Store, is_task
-                record_goal = Store().find(args.goal)[4]
-                if not record_goal or record_goal['status'] != 'active' or not is_task(record_goal):
-                    raise ValueError('--goal must name an active deferred task')
+                import custos_own_waits as own
+                goal_item = Store().find(args.goal)
+                record_goal = goal_item[4]
+                if not (own.active(goal_item) or (record_goal and record_goal['status'] == 'active' and is_task(record_goal))):
+                    raise ValueError('--goal must name an active native goal')
             if args.goal:
                 staged = Path(os.environ['IDENTITY_DIR']) / '.state' / 'staged-signal' / (hashlib.sha256(payload['request_id'].encode()).hexdigest() + '.json')
                 if staged.exists() and staged.read_bytes() != json.dumps(payload, sort_keys=True, ensure_ascii=False).encode():
@@ -265,6 +279,16 @@ def main():
                 status, contacts = call({'action': 'signal-contacts'})
                 target = resolve_target(target, contacts.get('destinations') or contacts.get('contacts') or (contacts if isinstance(contacts, list) else []))
             route = route_for(target)
+            if args.goal and record_goal and record_goal['origin'].get('sender') == 'operator:ai-news-review':
+                from custos_contact_guard import timestamp
+                with Store().lock():
+                    pending = own.pending_contact(Store(), target)
+                if pending and timestamp(pending['priority_since']) < timestamp(record_goal['received_at']):
+                    check_at = max(dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1),
+                                   dt.datetime.fromisoformat(pending.get('check_at') or pending['since']))
+                    waiting = Store().wait({'goal_id': args.goal, 'resume_sender': '', 'check_at': check_at.isoformat(),
+                        'reason': 'Batch optional news behind older contact goal ' + pending['goal_id'] + '; reassess that contact, resolve it if stale, then group news.'})
+                    print(json.dumps({'ok': False, 'reason': 'older-contact-pending', 'contact_goal': pending['goal_id'], 'goal_wait': waiting})); return 1
             try:
                 if args.social:
                     if args.reply_to or payload.get('reply_to') or payload.get('delivery_kind') or payload.get('correction_of'):
@@ -298,6 +322,8 @@ def main():
             else:
                 record(route, payload['message'], payload['request_id'], result.get('phase', 'queued'), social=args.social, delivery_kind=payload.get('delivery_kind', 'completion'), correction_of=payload.get('correction_of'))
         return 0 if ok else 1
+    except GuardRefusal as error:
+        print(json.dumps(error.decision)); return 1
     except (ValueError, GoalMemoryError) as error:
         print(json.dumps({'ok': False, 'error': str(error)[:200]}))
         return 2

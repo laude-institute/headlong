@@ -23,6 +23,13 @@ checks; flagged receipts enter the semantic batch. Read a selected entry with
 expected version for an edit. Read referenced IDs and the relevant raw trajectory
 before deciding, using targeted queries and bounded output.
 
+For procedural contact rules, check the mode and installed policy before keep:
+ordinary mind same-room cooldown, social same/cross-room cooldown, per-day social
+allowance, and the host bot lane are separate conditions. Compare both the memory
+summary and body with social-policy.json and the current guard. A blocked or
+uncertain receipt is not an answered/unanswered delivered message. Put the scoped
+replacement first; a correction buried below an overbroad summary is insufficient.
+
 For each entry ask: is this a stable fact, current task, scoped preference,
 historical event, or unsupported interpretation? Check dates/time zones, scope,
 source authority, duplicates and later corrections. Use cheap primary evidence:

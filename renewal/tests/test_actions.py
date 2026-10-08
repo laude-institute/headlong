@@ -253,15 +253,12 @@ class ActionsClientTests(unittest.TestCase):
             with self.assertRaises(ValueError) as caught:
                 self.cac.guard('signal-x')
             self.assertIn('allowance used', str(caught.exception))
-        fake = Mock(return_value=Mock(returncode=1, stderr='chat: error: not sent: you spoke last in this conversation (2h ago) and nobody has answered.', stdout=''))
-        with patch.dict('os.environ', {'CHAT_DOUBLE_TEXT_GUARD_HOURS': '20', 'CHAT_SOCIAL_BLOCKED': ''}, clear=False), patch.object(self.cac.subprocess, 'run', fake):
-            with self.assertRaises(ValueError) as caught:
-                self.cac.guard('signal-x')
-            self.assertIn('you spoke last', str(caught.exception))
-            self.assertEqual(fake.call_args[0][0][:3], ['chat', 'guard', 'signal-x'])
-        # No guard env: nothing is checked (responder / mind paths).
-        with patch.dict('os.environ', {'CHAT_DOUBLE_TEXT_GUARD_HOURS': '', 'CHAT_SOCIAL_BLOCKED': ''}, clear=False), patch.object(self.cac.subprocess, 'run', fake):
-            self.cac.guard('signal-x')
+        with patch('custos_contact_guard.check', return_value={'ok':False,'reason':'cooldown','error':'you spoke last'}) as check:
+            with self.assertRaises(ValueError) as caught: self.cac.guard('signal-x')
+            self.assertIn('you spoke last',str(caught.exception));check.assert_called_once_with('signal-x')
+        # No environment override now uses the installed mind policy.
+        with patch('custos_contact_guard.check', return_value={'ok':True,'hours':2}):
+            self.assertEqual(self.cac.guard('signal-x')['hours'],2)
 
     def test_send_refused_by_guard_never_reaches_the_service_and_accepted_send_is_recorded(self):
         calls = []
@@ -285,6 +282,7 @@ class ActionsClientTests(unittest.TestCase):
         with patch.object(self.cac, 'call', side_effect=fake_call), patch.object(self.cac, 'record', side_effect=lambda *a, **kw: recorded.append(a)), \
                 patch.object(sys, 'argv', ['custos-actions', 'signal-send']), patch.object(sys, 'stdin', io.TextIOWrapper(io.BytesIO(body.encode()))), \
                 patch.dict('os.environ', {'CHAT_SOCIAL_BLOCKED': '', 'CHAT_DOUBLE_TEXT_GUARD_HOURS': ''}, clear=False), \
+                patch('custos_contact_guard.check',return_value={'ok':True}), \
                 patch('sys.stdout', new_callable=io.StringIO) as out:
             rc = self.cac.main()
         self.assertEqual(rc, 0)

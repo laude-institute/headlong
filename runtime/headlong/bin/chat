@@ -97,6 +97,13 @@ _double_text_guard() {
     if [[ -n "${CHAT_SOCIAL_BLOCKED:-}" ]]; then
         die "$CHAT_SOCIAL_BLOCKED"
     fi
+    # Custos uses transport receipts and contact aliases, shared with actions.
+    if [[ "$me" == "custos" && ( "${CUSTOS_GUARD_LABEL:-}" == "1" || "$to" == signal-* || "$to" == dm:* || "$to" == group:* ) &&
+          ( "${CUSTOS_GUARD_LABEL:-}" == "1" || ( "$hours" =~ ^[0-9]+$ && "$hours" -gt 0 ) ) ]] && command -v custos-actions >/dev/null 2>&1; then
+        local decision
+        decision=$(custos-actions signal-guard "$to") || die "not sent: $decision"
+        [[ "$(printf '%s' "$decision" | jq -r '.applicable')" == "true" ]] && return 0
+    fi
     [[ "$hours" =~ ^[0-9]+$ && "$hours" -gt 0 && -n "$me" ]] || return 0
     local tf idx verdict
     tf=$(traj path "${ROOT_TRAJ_ID:-$TRAJ_ID}" 2>/dev/null) || return 0
@@ -712,7 +719,7 @@ _index_apply() {
             | grep -F '"type":"message"' \
             | jq -c --argjson cap "$_INDEX_CONTENT_CAP" 'fromjson? // empty
                 | select(.type == "message" and (.from // "") != "" and (.to // "") != "")
-                | {step_id, ts, from, to, reply_to, filename, social_intent, request_id,
+                | {step_id, ts, from, to, reply_to, filename, social_intent, request_id, delivered_by, phase,
                    content: ((.content // "") | tostring
                              | if length > $cap then .[0:$cap] + "…[truncated]" else . end)}
                 | with_entries(select(.value != null))' -R >> "$idx" 2>/dev/null || true
@@ -971,7 +978,7 @@ case "${1:-}" in
     history) shift; cmd_history "$@" ;;
     pending)   shift; cmd_pending "$@" ;;
     guard)     shift; [[ -n "${1:-}" ]] || die "Usage: chat guard <to_name>   (exit 1 with the reason when a send to <to_name> would double-text)"
-               _double_text_guard "$1"; printf 'ok\n' ;;
+               CUSTOS_GUARD_LABEL=1 _double_text_guard "$1"; printf 'ok\n' ;;
     person-key) shift; cmd_person_key "$@" ;;
     thread-key) shift; cmd_thread_key "$@" ;;
     repl)    shift; cmd_repl "$@" ;;

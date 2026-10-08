@@ -43,7 +43,8 @@ Never send private household, network, memory or conversation details to a linke
 Use existing safe browsing tools; a feed URL does not authorize probing private network targets.
 
 Each signal can be handled alone. You choose whether related pending items merit one message;
-there is no compulsory digest, daily quota or requirement to wait for a batch. Avoid redundant
+Except for an older pending contact decision below, there is no compulsory digest,
+daily quota or requirement to wait for a batch. Avoid redundant
 messages about the same paper/model across blog, model-card and follow-up sources. List pending
 native goals and inspect recent delivery evidence when grouping. News work belongs to the
 monolith; the social thinker need not take it away from the review goal.
@@ -87,3 +88,14 @@ waiting on source access or send acceptance. Do not merely file an observation a
 Source-health notices are maintenance items: assess whether coverage is materially affected and
 whether Hal needs to act. They are not research announcements. Do not forward raw scraper errors
 automatically. Preserve the diagnostic evidence if repair requires an operator.
+
+
+## Batch around an older pending contact
+
+Inspect `custos-memory context --json` and any older parked own contact to Hal
+before optional news. Reassess whether that contact is still useful; if stale,
+record why with `custos-memory contact-resolve ID evidence`. Do not extend its
+expiry merely because the guard was closed. If still useful, let it have the next
+eligible contact decision and group news into a later useful batch. The send helper
+with `--goal NEWS_GOAL_ID` parks newer news behind that older contact. It never
+sends the personal follow-up itself or bypasses a social/bot boundary.

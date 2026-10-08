@@ -5,6 +5,18 @@ description: Independently message an allowlisted Signal contact, start a topic 
 
 # Signal conversation and proactive messages
 
+## Wispwood exception — September 21, 2026
+
+Wispwood Alpha Testers has its own professional feedback protocol. Read
+`custos-wispwood-feedback`: respond only when addressed or detecting relevant
+feedback; all other conversation gets silence, including reactions. Verified
+operator-authorized build announcements remain allowed. The AI group keeps its
+existing social protocol. Joe Perry, Katerina Oberdieck and Henry Broddle are
+inbound-first DM contacts (`dm_requires_inbound` in host contact status). They
+must message you privately first; group participation does not grant first-DM
+permission. After their first DM, existing double-text rules apply. These
+exceptions override the general proactive permissions below.
+
 Hal authorized proactive Signal on 2026-09-08. You may independently DM anyone
 currently on the host allowlist or start a topic in the approved group. You do
 not need an incoming message or another approval. Reach out the way a friend
@@ -228,3 +240,26 @@ and aperture in matching units. A retailer's column heading may describe equival
 links, explicit conflict resolution and ratios. Use `custos-evidence --help` for the schema. A passing ledger checks structure/arithmetic, not source truth;
 read the excerpts. Carry source links and any uncertainty into the answer, and retain
 the ledger path on the goal. Do not let a confident summary erase variant differences.
+
+
+## Receipt-aware guards and own follow-ups
+
+`custos-actions signal-guard Hal` and `chat guard Hal` accept contact labels,
+`dm:`/`group:` targets and `signal-` routes with one canonical result. The JSON
+names `mode`, `hours`, `reason`, and exact UTC `resume_at`. Definitively unsent
+blocked/suppressed/failed rows do not count as delivered contact. In-flight or
+unknown acceptance reserves the conversation until reconciled; a receipt is never
+permission to bypass the host bot lane. After a false-positive kitchen block,
+retain that receipt, recheck current eligibility and the resolved classification,
+and use a clearly linked replacement only if the share is still useful. Never
+blindly retry the blocked request or churn IDs against an unresolved boundary.
+
+Use `signal-send --social --goal ID` for an unsolicited follow-up tied to your own
+native todo/goal too. A local cooldown stages the exact payload and parks that
+existing goal until `resume_at` or an eligible event. `custos-memory wait` also
+accepts own goals with explicit `signal_target`, `receipt`, `resume_sender` or
+`check_at`; notes and scheduling are shown by `custos-memory show ID`. This does
+not create an operator request or extend native expiry. Reconsider usefulness when
+it resumes. After verified delivery, or a deliberate stale/no-contact decision,
+record `custos-memory contact-resolve ID evidence` to release optional news behind
+it. An expired or edited native goal automatically invalidates its old wait.

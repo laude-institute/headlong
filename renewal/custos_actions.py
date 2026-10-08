@@ -209,6 +209,19 @@ class Channel:
             with connect(self.state) as db:
                 row = db.execute('SELECT * FROM actions WHERE id=?', (payload['request_id'],)).fetchone()
             return receipt(row) if row else {'ok': False, 'error': 'unknown_request'}
+        if payload.get('action') == 'delivery-status-batch' and set(payload) == {'action', 'references'}:
+            refs = payload['references']
+            if not isinstance(refs, list) or not 1 <= len(refs) <= 128 or any(
+                    not isinstance(ref, str) or not re.fullmatch(r'(?:outbox|action):[A-Za-z0-9:._-]{1,128}', ref) for ref in refs):
+                raise ValueError('one to 128 valid delivery references required')
+            results = {}
+            for ref in refs:
+                result = self.handle({'action': 'delivery-status', 'reference': ref})
+                proof = result.get('receipt') or {}
+                results[ref] = {'phase': result['phase'], 'record_found': result['ok'], 'receipt': {
+                    'timestamp': proof.get('timestamp'), 'converted_to_reaction': proof.get('converted_to_reaction'),
+                    'results': [{'type': r.get('type') if isinstance(r, dict) else 'INVALID'} for r in (proof.get('results') or [])]} if isinstance(proof, dict) else None}
+            return {'ok': True, 'results': results}
         if payload.get('action') == 'delivery-status' and set(payload) == {'action', 'reference'}:
             reference = payload['reference']
             if not isinstance(reference, str) or not re.fullmatch(r'(?:outbox|action):[A-Za-z0-9:._-]{1,128}', reference):

@@ -65,6 +65,22 @@ class ChatFixture(unittest.TestCase):
         self.contact = "dm:bob-aci"
         self.bob = route_for(self.contact)
         self.alice = "signal-aaaaaaaaaaaaaaaaaaaaaaaa"
+        # The host is fake, but the guard decision is the real implementation.
+        # Fixture messages below have explicit successful transport receipts.
+        executable(self.fake_bin / "custos-actions", self.guard_stub() + "sys.exit(2)\n")
+
+    def guard_stub(self):
+        return ("#!/usr/bin/env python3\nimport json, sys, os, time\nfrom pathlib import Path\n"
+                "sys.path.insert(0," + repr(str(RENEWAL)) + ")\n"
+                "if sys.argv[1] == 'signal-guard':\n"
+                "    import custos_contact_guard as g\n"
+                "    rows=[json.loads(l) for l in Path(" + repr(str(self.log)) + ").read_text().splitlines()]\n"
+                "    route=sys.argv[2]; aci=next((g.metadata(r,'aci') for r in rows if r.get('from')==route and g.metadata(r,'aci')), 'fixture')\n"
+                "    def receipt(ref):\n"
+                "        row=next((r for r in rows if g.reference(r)==ref), {})\n"
+                "        return {'phase':'submitted','receipt':{'timestamp':g.timestamp(row['ts']),'results':[{'type':'SUCCESS'}]}}\n"
+                "    result=g.evaluate(rows,'dm:'+aci,route,int(os.environ.get('CHAT_DOUBLE_TEXT_GUARD_HOURS') or 2),os.environ.get('CHAT_GUARD_CROSS_ROOM')=='1',receipt,time.time())\n"
+                "    print(json.dumps(result));sys.exit(0 if result['ok'] else 1)\n")
 
     def append(self, step):
         step = dict(step)
@@ -97,7 +113,7 @@ class ChatFixture(unittest.TestCase):
     def fake_actions(self, contacts):
         log = self.root / "actions.log"
         argv_log = self.root / "actions.argv"
-        executable(self.fake_bin / "custos-actions", "#!/usr/bin/env python3\nimport json, sys\n"
+        executable(self.fake_bin / "custos-actions", self.guard_stub() +
                    "if sys.argv[1] == 'signal-contacts':\n    print(json.dumps({'ok': True, 'contacts': " + repr(contacts) + "})); sys.exit(0)\n"
                    "if sys.argv[1] == 'signal-send':\n    raw = sys.stdin.read(); open(" + repr(str(log)) + ", 'a').write(raw + '\\n')\n"
                    "    open(" + repr(str(argv_log)) + ", 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
@@ -190,7 +206,7 @@ class ChatOutboundTests(ChatFixture):
             plain = self.chat("reply", "--reply-to", UUID_A, self.alice, "just checking in again")
             self.assertNotEqual(plain.returncode, 0)
             self.assertIn("you spoke last", plain.stderr)
-            self.assertRegex(plain.stderr, r"reopens at \d\d:\d\dZ \(in \d+[mh]\)")
+            self.assertRegex(plain.stderr, r"reopens at \d{4}-\d{2}-\d{2}T\d\d:\d\d:")
             self.assertIn("do not sleep, loop or poll", plain.stderr)
             self.assertEqual([s["content"] for s in self.outgoing()], ["still there?"])
             delivery = self.chat("reply", "--follow-up", "--reply-to", UUID_A, self.alice, "Built. Here it is.")

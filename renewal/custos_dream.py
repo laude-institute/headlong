@@ -37,6 +37,13 @@ def write_json(path, value):
 def read_json(path, default=None):
     return json.loads(path.read_text()) if path.exists() else default
 
+def unscoped_contact_rule(summary, body):
+    claim = summary + '\n' + body
+    return bool(re.search(r'Signal', claim, re.I) and re.search(r'guard|cooldown|double.text', claim, re.I)
+                and re.search(r'\b\d+\s*(?:h|hours?)\b', summary, re.I)
+                and not re.search(r'\b(?:social|mind|ordinary|bot)\b', summary, re.I))
+
+
 class Dream:
     def __init__(self, store=None, root=None, config=None, clock=None):
         self.store = store or cm.Store()
@@ -81,6 +88,8 @@ class Dream:
             # claims where a correction/counterexample could change behavior.
             if not record and re.search(r"\b(?:correction|counterevidence|contradict\w*|refuted|nonsignificant|not statistically significant|uncertain|causal|inference.layer|repeated failure)\b", body, re.I):
                 flags.append("challenge-claim")
+            if not record and unscoped_contact_rule(fields.get('summary', ''), body):
+                flags.append('contact-rule-scope')
             prior = reviewed.get(key, {})
             rows.append({"id": key, "type": fields.get("type"), "sha256": digest, "bytes": path.stat().st_size,
                          "summary": fields.get("summary", "")[:160], "status": record.get("status") if record else None,
@@ -262,6 +271,10 @@ class Dream:
                 if actual != expected: raise ValueError("reviewed bytes changed: " + key)
                 if verdict == 'revised' and not any(e['operation'] == 'revise' and e['after_sha256'] == actual for e in matches):
                     raise ValueError("no revision receipt for reviewed bytes")
+                if verdict == 'keep':
+                    item = self.store.find(key)
+                    if unscoped_contact_rule(item[3].get('summary', ''), item[2]):
+                        raise ValueError('contact rule summary lacks mode: check mind/social policy, revise or mark uncertain')
                 contrary = decision.get('counterevidence', '')
                 if not isinstance(contrary, str) or len(contrary) > 4096:
                     raise ValueError('bounded counterevidence text required')

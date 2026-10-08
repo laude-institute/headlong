@@ -592,7 +592,20 @@ class Store:
         reason = text(payload["reason"], "reason", 2000)
         with self.lock():
             item = self.find(payload["goal_id"]); record = item[4]
-            if not record or record["status"] != "active" or not is_task(record):
+            if not record:
+                import custos_own_waits as own
+                if not own.active(item): raise MemoryError("only active native goals can wait")
+                if payload.get('expected_sha256') and hashlib.sha256(item[0].read_bytes()).hexdigest() != payload['expected_sha256']:
+                    raise MemoryError('goal changed since inspection; re-read before waiting')
+                wait = {'reason': reason, 'since': now(), 'resume_sender': text(payload.get('resume_sender', ''), 'resume_sender', 2048, empty=True)}
+                for field in ('receipt', 'signal_target', 'check_at'):
+                    if payload.get(field): wait[field] = text(payload[field], field, 2048)
+                if not any(wait.get(k) for k in ('receipt', 'signal_target', 'check_at', 'resume_sender')):
+                    raise MemoryError('own wait needs an explicit event or check_at')
+                if wait.get('check_at') and gate_time(wait['check_at']) <= dt.datetime.now(dt.timezone.utc):
+                    raise MemoryError('check_at must be in the future')
+                return own.park(self, item, wait)
+            if record["status"] != "active" or not is_task(record):
                 raise MemoryError("only active deferred tasks can wait")
             if payload.get("expected_sha256") and hashlib.sha256(item[0].read_bytes()).hexdigest() != payload["expected_sha256"]:
                 raise MemoryError("goal changed since inspection; re-read before waiting")
@@ -626,7 +639,11 @@ class Store:
         evidence = text(payload["evidence"], "evidence", 2000)
         with self.lock():
             item = self.find(payload["goal_id"])
-            if not item[4] or item[4]["status"] != "active" or not item[4].get("waiting"):
+            if not item[4]:
+                import custos_own_waits as own
+                own.resume(self, item, evidence)
+                return {"goal_id": payload['goal_id'], "status": "active", "directed": False}
+            if item[4]["status"] != "active" or not item[4].get("waiting"):
                 raise MemoryError("goal is not waiting")
             self._resume(item, evidence)
         return {"goal_id": payload["goal_id"], "status": "active"}
@@ -678,7 +695,11 @@ class Store:
         with self.lock():
             item = self.find(payload["goal_id"])
             record = item[4]
-            if not record or record["status"] != "active":
+            if not record:
+                import custos_own_waits as own
+                if not own.active(item): raise MemoryError('only active native goals take notes')
+                return own.note(self, item, line)
+            if record["status"] != "active":
                 raise MemoryError("only active directed goals take notes")
             pad = record.setdefault("scratchpad", [])
             pad.append({"at": now(), "text": line})
@@ -931,6 +952,18 @@ class Store:
                                   "trigger_step": (record.get("trigger_step") or "")[:256],
                                   "response_state": response["state"] if response else "unprocessed"})
                 elif not directed_only and fields.get("type") in GOAL_TYPES and not (fields.get("until") and fields["until"] < today):
+                    import custos_own_waits as own
+                    own_item = (path, header, body, fields, record)
+                    own_row = own.get(self, own_item) or {}
+                    wait = own_row.get('waiting')
+                    if wait:
+                        event = wait_event(wait)
+                        inbound_event = next((r for r in inbound if r['origin']['sender'] == wait.get('resume_sender') and gate_time(r['received_at']) > gate_time(wait['since'])), None)
+                        if event or inbound_event or (wait.get('check_at') and gate_time(wait['check_at']) <= context_now):
+                            own.resume(self, own_item, event or 'Scheduled/inbound event reached; reconsider usefulness and eligibility once')
+                        else:
+                            waiting.append({'goal_id': fields['id'], 'summary': body[:160], 'directed': False, **wait})
+                            continue
                     goals.append({"goal_id": fields.get("id", path.stem), "summary": body[:240],
                                   "type": fields["type"], "until": fields.get("until"),
                                   "directed": False, "received_at": fields.get("created", "")})
@@ -2725,7 +2758,7 @@ Examples (replace the sample ID and evidence with actual values):
 An acknowledgment alone is not completion. Valid dispositions: completed, declined, abandoned.''')
     parser.add_argument("command", choices=["capture", "capture-envelope", "context", "pending", "show", "update", "complete", "respond",
                                             "replay-unanswered", "archive-conversations", "expire-asks", "note", "check", "wait", "resume", "correction",
-                                            "validate", "person-merge", "person-alias-remove", "person-normalize", "people-context", "attention"])
+                                            "validate", "person-merge", "person-alias-remove", "person-normalize", "people-context", "attention", "contact-resolve"])
     parser.add_argument("goal_id", nargs="?", help="Goal ID for show, update and complete (writes also take JSON on stdin)")
     parser.add_argument("words", nargs="*", help="complete: [completed|declined|abandoned] evidence…; update: the next action")
     parser.add_argument("--json", action="store_true")
@@ -2736,10 +2769,19 @@ An acknowledgment alone is not completion. Valid dispositions: completed, declin
     parser.add_argument("--older-than", type=int, default=None,
                         help="replay-unanswered: seconds (default 900); archive-conversations: days (default 2); expire-asks: hours (default 24)")
     args = parser.parse_args()
-    if args.goal_id is not None and args.command not in {"show", "update", "complete", "note", "check", "validate", "person-merge", "person-alias-remove", "person-normalize"}:
+    if args.goal_id is not None and args.command not in {"show", "update", "complete", "note", "check", "validate", "person-merge", "person-alias-remove", "person-normalize", "contact-resolve"}:
         parser.error("Only show, update, complete, note, check, validate and person repair commands take positional arguments; see --help for examples.")
     try:
         store = Store()
+        if args.command == 'contact-resolve':
+            evidence = ' '.join(args.words).strip()
+            if not evidence: raise MemoryError('contact resolution evidence is required')
+            import custos_own_waits as own
+            with store.lock():
+                item = store.find(args.goal_id)
+                if not own.active(item): raise MemoryError('active own goal required')
+                own.resolve_contact(store, item, evidence)
+            print(encode({'goal_id': args.goal_id, 'contact_resolved': evidence})); return 0
         if args.command == "attention":
             print(encode(store.attention()))
             return
@@ -2772,6 +2814,9 @@ An acknowledgment alone is not completion. Valid dispositions: completed, declin
                 item = store.find(args.goal_id)
                 print(item[0].read_text(), end="")
                 record = item[4]
+                if not record:
+                    import custos_own_waits as own
+                    print('\nOwn goal scheduling: ' + encode(own.get(store, item) or {}))
             if record:
                 if record.get("checklist"):
                     print("\nChecklist:")

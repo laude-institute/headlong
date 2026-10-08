@@ -143,7 +143,22 @@ class SocialNativeTests(MemoryFixture):
         self.policy.write_text(json.dumps({'proactive':True,'initiate_after_hours':12,'unsolicited_per_day':0}))
         env=patch.dict(os.environ,IDENTITY_DIR=str(self.identity),IDENTITY_NAME='custos',TRAJ_ID=self.traj,ROOT_TRAJ_ID=self.traj,TRAJ_DIR=str(location.parent),CHAT_SOCIAL_BLOCKED='',CHAT_DOUBLE_TEXT_GUARD_HOURS='2',CHAT_GUARD_CROSS_ROOM='0')
         env.start();self.addCleanup(env.stop)
+        self.targets={'signal-dm':'dm:friend','signal-group':'group:room','signal-person':'dm:person','signal-other':'dm:other'}
+        self.serial=0
+        def broker(payload,timeout=40):
+            if payload['action']=='signal-contacts':
+                return 200,{'ok':True,'contacts':[{'label':label,'target':target} for label,target in self.targets.items()]}
+            if payload['action']=='delivery-status-batch':
+                from custos_contact_guard import reference,timestamp
+                rows=[json.loads(l) for l in self.log.read_text().splitlines()]
+                return 200,{'ok':True,'results':{ref:{'phase':'submitted','record_found':True,'receipt':{'timestamp':timestamp(next(r['ts'] for r in rows if reference(r)==ref)),'results':[{'type':'SUCCESS'}]}} for ref in payload['references']}}
+            if payload['action']=='delivery-status': return 200,{'ok':True,'phase':'queued'}
+            raise AssertionError(payload)
+        fake=patch.object(actions,'call',side_effect=broker);fake.start();self.addCleanup(fake.stop)
     def append(self,row):
+        self.serial+=1;row=dict(row,step_id='fixture-'+str(self.serial))
+        for key in ('from','to'):
+            if row.get(key) in self.targets:row[key]=actions.route_for(self.targets[row[key]])
         with self.log.open('a') as f:f.write(json.dumps(row,separators=(',',':'))+'\n')
     def stamp(self,hours=0):return (dt.datetime.now(dt.timezone.utc)-dt.timedelta(hours=hours)).isoformat()[:19]+'Z'
     def test_unsolicited_cross_room_refusal_does_not_block_requested_dm(self):

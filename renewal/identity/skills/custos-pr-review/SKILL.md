@@ -136,13 +136,24 @@ no publication permission. These modes cover `1f916-ai/1f916`; elsewhere keep th
 existing repository-specific authority. This programme never authorizes automatic
 merges. Public findings and clean reviews need the same actual review evidence.
 
-Before an authorized submission, check prior Custos reviews/comments on that head
-and retain a stable marker `custos-pr-review:NUMBER:HEAD` in the review body.
-Do not repeat your own unchanged review of that head or announce every GitHub
-receipt again in square chat. Later evidence can justify a clearly linked update;
-a changed head needs a fresh/delta review. Review volume alone is not a defect.
-If a submit times out, reconcile GitHub for that marker before any retry; if still
-uncertain, retain an explicit delivery blocker rather than sending again.
+Publish authorized reviews through the receipt-aware helper (do not use a raw
+`gh pr review` or review POST for this programme):
+
+```bash
+custos-evidence review-publish --repo 1f916-ai/1f916 --pr NUMBER --head FULL_SHA --event COMMENT --body-file /absolute/review.md
+```
+
+Use `APPROVE` or `REQUEST_CHANGES` only when that is your actual verdict. In
+`actionable` mode include `--actionable` for a concrete finding. The helper checks
+the current head and your existing reviews, keyed by repository, PR, head and
+GitHub disposition. Repeating the same disposition returns the original receipt,
+including old reviews without a marker. COMMENTED to APPROVED is a distinct
+verdict, not a duplicate. A meaningful new finding at the same head/disposition
+requires `--update-of REVIEW_ID --update-evidence 'Specific new evidence'` and a
+changed body; do not use this to repeat a clean review. Read the returned receipt
+before describing what was published. A timed-out submission keeps an attempt
+journal and requires readback; changing the body/ID is not recovery.
+
 For a submitted review, obtain its numeric review ID from GitHub, then run
 `custos-evidence review-receipt --repo OWNER/REPO --pr NUMBER --head FULL_SHA --review ID`.
 Retain the returned receipt and use its `rendered` sentence for the publication status
