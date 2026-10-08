@@ -169,8 +169,16 @@ skills_dir() {
 
 # Build deduplicated list of skill search directories.
 # Checks: .skills (project), kernel dir (if set), SKILLS_DIR (identity/override)
+# Buffered and emitted in one write: find_skill returns on the first match, so
+# its early close raced the per-dir echoes and the next echo died with a broken
+# pipe (65 live firings 2026-09-14..2026-10-05, 10 of 10 on `skills show chat`).
+# One write closes the deterministic case, but bash chunks large writes, so a
+# long list's tail can still meet the reader's close (reproduced 1-in-200 under
+# load after buffering alone). That close is the reader's contract, first match
+# wins: the reader already has what it came for, so the residual is benign and
+# silenced here, because the stderr noise polluting captures was the defect.
 _all_skill_dirs() {
-    local d real _seen=""
+    local d real _seen="" _list=""
     for d in ".skills" ${SKILLS_KERNEL_DIR:+"$SKILLS_KERNEL_DIR"} "$SKILLS_DIR"; do
         [[ -z "$d" ]] && continue
         real=$(cd "$d" 2>/dev/null && pwd) || real="$d"
@@ -178,8 +186,10 @@ _all_skill_dirs() {
             *"|$real|"*) continue ;;
         esac
         _seen="${_seen}|${real}|"
-        echo "$d"
+        _list="${_list}${d}
+"
     done
+    printf '%s' "$_list" 2>/dev/null || true
 }
 
 # Label a skill directory as project, kernel, or local.
