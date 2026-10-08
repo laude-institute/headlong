@@ -36,6 +36,21 @@ class ContactTests(unittest.TestCase):
         contacts = [{'target': self.target, 'label': 'Hal'}]
         self.assertEqual({guard.canonical(v, contacts) for v in ['Hal', 'hal', self.target, self.route]}, {(self.target, self.route)})
         with self.assertRaises(ValueError): guard.canonical('dm:unknown', contacts)
+    def test_host_accepted_send_missing_from_trajectory_is_reserved_and_anchors(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as temp:
+            (Path(temp)/'social-policy.json').write_text('{}')
+            def broker(payload,timeout=3):
+                if payload['action']=='signal-contacts':return 200,{'ok':True,'contacts':[{'label':'Hal','target':self.target}]}
+                if payload['action']=='signal-contact-outbox':return 200,{'ok':True,'outgoing':[{'reference':'action:lost-client-response','created':self.at,**self.missing}]}
+                self.fail(payload)
+            with patch.dict(os.environ,{'IDENTITY_DIR':temp,'TRAJ_ID':'fixture'}),patch.object(client,'call',side_effect=broker),patch.object(guard,'indexed_rows',side_effect=lambda path:[]),patch.object(guard.subprocess,'run',return_value=Mock(stdout='/fixture/trajectory')):
+                self.missing={'phase':'queued','record_found':True,'receipt':None}
+                self.assertEqual(guard.check('Hal',hours=12,cross=False)['reason'],'delivery-unresolved')
+                current=dt.datetime.now(dt.timezone.utc).timestamp()
+                self.missing={'phase':'submitted','record_found':True,'receipt':{'timestamp':current*1000,'results':[{'type':'SUCCESS'}]}}
+                self.assertEqual(guard.check('Hal',hours=12,cross=False)['reason'],'cooldown')
+
     def test_mode_and_exact_deadline(self):
         self.assertTrue(self.decide(hours=2, cross=False)['ok'])
         result = self.decide(); self.assertFalse(result['ok'])
@@ -124,6 +139,16 @@ class BatchReceiptTests(unittest.TestCase):
                 self.assertTrue(result['results']['action:one']['record_found'])
                 self.assertFalse(result['results']['outbox:missing']['record_found'])
                 self.assertNotIn('private',json.dumps(result))
+                contact=channel.handle({'action':'signal-contact-outbox','target':'Hal','since':0})
+                self.assertEqual(contact['outgoing'][0]['reference'],'action:one')
+                self.assertNotIn('private',json.dumps(contact))
+                # No local trajectory index is involved in this host receipt read.
+                with module.connect(root/'actions') as db:
+                    db.execute("UPDATE actions SET phase='uncertain',created=0 WHERE id='one'")
+                contact=channel.handle({'action':'signal-contact-outbox','target':'Hal','since':1})
+                self.assertEqual(contact['outgoing'][0]['phase'],'uncertain')
+                with self.assertRaises(ValueError):channel.handle({'action':'signal-contact-outbox','target':'Stranger','since':0})
+
                 for refs in [[],['action:one']*129,['action:bad/../id'],[3]]:
                     with self.assertRaises(ValueError):channel.handle({'action':'delivery-status-batch','references':refs})
 

@@ -190,4 +190,23 @@ def check(value, hours=None, cross=None):
         status, result = call({'action': 'delivery-status-batch', 'references': refs[start:start+128]}, timeout=3)
         if status != 200 or not result.get('ok'): raise ValueError('Signal receipt read unavailable; eligibility is unknown')
         proofs.update(result.get('results', {}))
-    return evaluate(rows, target, route, hours, cross, lambda ref: proofs.get(ref, {'phase': 'unknown'}), dt.datetime.now(UTC).timestamp(), os.environ.get('IDENTITY_NAME', 'custos'))
+    # The host can accept a request before its client records a trajectory
+    # step (timeout/crash). Import receipt metadata for those missing steps too.
+    now = dt.datetime.now(UTC).timestamp()
+    indexed = {reference(r) for r in rows if r.get('from') == os.environ.get('IDENTITY_NAME', 'custos')}
+    destinations = data.get('destinations') or data.get('contacts') or []
+    for contact in destinations:
+        if not isinstance(contact, dict) or not contact.get('target'): continue
+        room = route_for(contact['target'])
+        if room not in ({route} | groups): continue
+        status, result = call({'action':'signal-contact-outbox','target':contact['target'],'since':max(0,now-max(hours,12)*3600)},timeout=3)
+        if status != 200 or not result.get('ok'): raise ValueError('host contact outbox unavailable; eligibility is unknown')
+        for outgoing in result.get('outgoing', []):
+            ref = outgoing['reference']; proofs[ref] = outgoing
+            if ref in indexed: continue
+            kind, key = ref.split(':',1)
+            row = {'from':os.environ.get('IDENTITY_NAME','custos'),'to':room,'ts':iso(outgoing['created']),
+                   'step_id':key, 'source':'host-receipt'}
+            if kind == 'action': row.update(request_id=key, delivered_by='custos-actions')
+            rows.append(row); indexed.add(ref)
+    return evaluate(rows, target, route, hours, cross, lambda ref: proofs.get(ref, {'phase': 'unknown'}), now, os.environ.get('IDENTITY_NAME', 'custos'))

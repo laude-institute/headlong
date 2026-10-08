@@ -4,7 +4,8 @@ Based on selected commit 6093192bb18d3dab165d99f7df6d8243fc7ec9eb, retaining the
 PR-discovery fixes and the independently edited live Signal skill.
 
 - Signal contact eligibility canonicalizes labels, targets and routes, reads actual
-  action/native receipts in bounded read-only batches, distinguishes unsent from
+  action/native receipts in bounded read-only batches and reads the host outbox
+  for sends accepted before the client wrote its local record, distinguishes unsent from
   accepted and unknown sends, and reports an exact UTC resume time. The guard's
   derived index reads raw message metadata because old indexes omitted action IDs.
   No transport receipt or original trajectory is rewritten. Immediate responder

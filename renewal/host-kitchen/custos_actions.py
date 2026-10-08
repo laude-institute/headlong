@@ -135,6 +135,29 @@ def receipt(row):
             'receipt': json.loads(row['receipt']) if row['receipt'] else None}
 
 
+
+def contact_outbox(state, spool, target, since):
+    """Recent submitted rows and every unresolved send, including unindexed ones."""
+    result = []
+    for path, native in [(state, False), (spool, True)]:
+        db = sqlite3.connect('file:' + str(path) + '?mode=ro', uri=True)
+        try:
+            db.row_factory = sqlite3.Row
+            if native:
+                rows = db.execute("SELECT o.id,o.phase,o.receipt,o.created FROM outbox o JOIN inbox i ON i.id=o.request_id WHERE json_extract(i.payload,'$.conversation')=? AND o.reaction IS NULL AND (o.created>=? OR o.phase IN ('pending','sending','uncertain')) LIMIT 513", (target,since)).fetchall()
+            else:
+                rows = db.execute("SELECT id,phase,receipt,created FROM actions WHERE json_extract(payload,'$.target')=? AND json_extract(payload,'$.action') IN ('signal-send','signal-ask') AND (created>=? OR phase IN ('queued','running','uncertain')) LIMIT 513", (target,since)).fetchall()
+        finally: db.close()
+        if len(rows)>512: raise ValueError('contact outbox exceeds bounded read; reconcile before sending')
+        for row in rows:
+            proof = json.loads(row['receipt']) if row['receipt'] else {}
+            summary = {'timestamp':proof.get('timestamp'), 'converted_to_reaction':proof.get('converted_to_reaction'),
+                       'results':[{'type':p.get('type') if isinstance(p,dict) else 'INVALID'} for p in (proof.get('results') or [])]} if isinstance(proof,dict) else None
+            result.append({'reference':('outbox:' if native else 'action:')+row['id'],'created':row['created'],
+                           'phase':row['phase'],'record_found':True,'receipt':summary})
+    return {'ok':True,'target':target,'outgoing':result}
+
+
 class Channel:
     def __init__(self, state=STATE, policy=POLICY, spool=SPOOL):
         self.state, self.policy, self.spool = state, policy, spool
@@ -210,6 +233,11 @@ class Channel:
             with connect(self.state) as db:
                 row = db.execute('SELECT * FROM actions WHERE id=?', (payload['request_id'],)).fetchone()
             return receipt(row) if row else {'ok': False, 'error': 'unknown_request'}
+        if payload.get('action') == 'signal-contact-outbox' and set(payload) == {'action','target','since'}:
+            if type(payload['since']) not in (int,float) or not 0 <= payload['since'] <= time.time()+60:
+                raise ValueError('valid contact history time required')
+            target = resolve(payload['target'], load_policy(self.policy))
+            return contact_outbox(self.state, self.spool, target, payload['since'])
         if payload.get('action') == 'delivery-status-batch' and set(payload) == {'action', 'references'}:
             refs = payload['references']
             if not isinstance(refs, list) or not 1 <= len(refs) <= 128 or any(

@@ -152,6 +152,7 @@ class SocialNativeTests(MemoryFixture):
                 from custos_contact_guard import reference,timestamp
                 rows=[json.loads(l) for l in self.log.read_text().splitlines()]
                 return 200,{'ok':True,'results':{ref:{'phase':'submitted','record_found':True,'receipt':{'timestamp':timestamp(next(r['ts'] for r in rows if reference(r)==ref)),'results':[{'type':'SUCCESS'}]}} for ref in payload['references']}}
+            if payload['action']=='signal-contact-outbox': return 200,{'ok':True,'outgoing':[]}
             if payload['action']=='delivery-status': return 200,{'ok':True,'phase':'queued'}
             raise AssertionError(payload)
         fake=patch.object(actions,'call',side_effect=broker);fake.start();self.addCleanup(fake.stop)
