@@ -199,7 +199,7 @@ def household_text(value):
     household = re.search(r'\b(grocer(?:y|ies)|meal ?plan|meals?|dinners?|recipes?|pantry|whole foods|peanut butter|tahini|yogurt|milk|bananas?|apples|checkout)\b', clean, re.I)
     if household: return True
     if re.search(r'\b(?:Apple|APPLE)(?:[’\']s)?\b', clean) and re.search(
-            r'\b(?:ML|AI|machine learning|research|RISED|model|models|paper|papers|benchmark|iPhone|Mac|macOS|iOS|Intelligence)\b', clean, re.I):
+            r'\b(?:ML|AI|machine learning|research|RISED|news|model|models|paper|papers|benchmark|iPhone|Mac|macOS|iOS|Intelligence)\b', clean, re.I):
         clean = re.sub(r'\b(?:Apple|APPLE)(?:[’\']s)?\b', ' ', clean)
     return bool(FOOD.search(clean))
 

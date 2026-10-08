@@ -161,6 +161,10 @@ class KitchenTests(unittest.TestCase):
     def test_apple_news_and_domain_are_not_groceries(self):
         for body in ["Apple's ML research: RISED https://machinelearning.apple.com/research/rised", 'RISED: https://machinelearning.apple.com/research/rised', 'Apple Intelligence research paper']:
             self.assertIsNone(kitchen.delivery_block(self.db,self.policy,'dm:hal',body))
+    def test_apple_news_deployment_notice_and_actual_recipe_are_distinct(self):
+        body = 'The audit fixes include corrected Apple/news classification, structured contact waits, review deduplication, and accurate memory summaries.'
+        self.assertIsNone(kitchen.delivery_block(self.db,self.policy,'dm:hal',body))
+        self.assertIsNotNone(kitchen.delivery_block(self.db,self.policy,'dm:hal','Apple news: a recipe for dinner'))
     def test_tech_words_do_not_exempt_household_source_or_food(self):
         for body in ['Add apples to the cart; this is AI research', 'Apple research: buy milk', 'Apple slices for dinner']:
             self.assertIsNotNone(kitchen.delivery_block(self.db,self.policy,'dm:hal',body))

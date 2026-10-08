@@ -39,3 +39,5 @@ receipt failures/unknown states, alias equivalence, mode/cross-room separation,
 partial index writes, kitchen consent, own-goal continuity and review timeout/dedup.
 Actual deployment evidence, hashes, requests and operator memory cleanup receipts
 are retained in homelab/custos-audit-fixes-2026-10-07/README.md.
+
+A real deployment notice exposed an additional capitalized Apple/news wording case. News is now recognized as brand context, while actual household nouns and verified household source boundaries still take precedence. The original blocked notice receipt is retained; no same-request retry or replacement send was attempted.
