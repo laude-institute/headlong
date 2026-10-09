@@ -439,6 +439,7 @@ _person_aliases() {
             [[ -n "$aliases" ]] && printf '%s\n' "$aliases"
         fi
     done | sort -u
+    return 0
 }
 
 # ---------------------------------------------------------------------------

@@ -179,6 +179,44 @@ n=$(chat history --with "$ANDY_T2" --json | jq 'length')
 n=$(chat history --with Braden --json | jq 'length')
 [[ "$n" == 0 ]] && ok "an unrelated name gets nothing" || bad "an unrelated name gets nothing" "got $n"
 
+# --- person files with empty aliases -------------------------------------------
+# The responder writes every person file on first contact with `aliases: []`
+# and a timestamped name that sorts last in MEM_DIR. A false `[[ -n ]] &&`
+# guard used to be the loop's last status in _person_aliases, and bin/chat
+# runs `set -e -o pipefail`, so the empty aliases made `chat history --with`
+# exit 1 with no output for that person.
+msg z3 "$BRADEN" "$ME" "still here" 15
+MEM2="$WORK/memories-lone"
+mkdir -p "$MEM2"
+cat > "$MEM2/2026-09-30-13-00-00_bbbb2222_braden.md" <<'MEM'
+---
+id: bbbb2222
+type: person
+person_key: slack:U095QV3JKA6
+aliases: []
+summary: Braden, first contact
+---
+First contact note.
+MEM
+rc=0
+out=$(MEM_DIR="$MEM2" chat history --with "$BRADEN" --json) || rc=$?
+n=$(printf '%s' "$out" | jq 'length')
+[[ "$rc" == 0 && "$n" == 1 ]] && ok "a lone person file with empty aliases does not break history" || bad "a lone person file with empty aliases does not break history" "rc=$rc n=$n"
+cat > "$ID/memories/2026-09-30-13-30-00_cccc3333_andy-empty.md" <<'MEM'
+---
+id: cccc3333
+type: person
+person_key: slack:U0614H65RN3
+aliases: []
+summary: Andy, before any alias was learned
+---
+First contact note.
+MEM
+rc=0
+out=$(chat history --with "$ANDY_T2" --json) || rc=$?
+n=$(printf '%s' "$out" | jq 'length')
+[[ "$rc" == 0 && "$n" == 2 ]] && ok "an empty-alias person file sorting last does not break history" || bad "an empty-alias person file sorting last does not break history" "rc=$rc n=$n"
+
 # --- source links ------------------------------------------------------------
 SOURCE_URL="https://laudesters.slack.com/archives/D0BNW58GP5W/p1788451200123456"
 chat send --from "$ANDY_DM" --to "$ME" --source-url "$SOURCE_URL" "linked message" 2>/dev/null
