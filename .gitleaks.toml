@@ -35,3 +35,11 @@ keywords = ["api.telegram.org"]
 [[allowlists]]
 description = "Real Telegram bot token in telegram/tests/test_logging.py (2026-09-03). Rotated 2026-09-04 (old token returns 401); fixture replaced with a fake."
 commits = ["44fe2f48491f66d59f8a7aa7b265cccded3df995"]
+
+[[allowlists]]
+description = "Fake JWT used as a shape fixture in tests/test_redact_sensitive.sh (the shape_case jwt line). Not a real credential: the header and payload carry fixed demo claims and the signature segment is typed gibberish. Added 2026-09-30 when the full history gitleaks job flagged the fixture on PR 154 (fingerprint tests/test_redact_sensitive.sh:jwt:69, commit fa642f2)."
+regexes = ['''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0In0\.abcdefghij0123456789''']
+
+[[allowlists]]
+description = "HMAC test-signing key hardcoded in tests/test_traj_verify.sh line 18 (2026-09-14). Test-only fixture: the file writes it to a temp secrets/traj_signing_key and signs throwaway canonical lines to test the traj verify command; the same hex is used as WRONG_KEY etc. It never signed any real trajectory and the file was deleted from the tree before main (absent at HEAD). Triaged 2026-09-30 when the full-history gitleaks job on PR 154 flagged the two commits that introduced it."
+commits = ["a491aff7177683fd65a2b3429357e786c6ba7857", "1adc15ce94b1247408bc55a5151e57571753cad8"]

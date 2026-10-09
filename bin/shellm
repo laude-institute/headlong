@@ -417,14 +417,52 @@ redact_sensitive() {
         output="${output//${LLM_API_KEY}/<redacted-api-key>}"
     fi
 
-    local _key_var
-    for _key_var in OPENAI_API_KEY OPENROUTER_API_KEY GEMINI_API_KEY OPENCODE_API_KEY; do
-        if [[ -n "${!_key_var:-}" ]]; then
-            output="${output//${!_key_var}/<redacted-api-key>}"
+    # Every other credential env var is masked by value. A computed default
+    # may only beat an env fallback when its target is verified real, and the
+    # reverse holds here too: the value is what proves the credential, not the
+    # name, so a short or empty value is left alone rather than mangling prose.
+    local _key_var _key_val v
+    for _key_var in GITHUB_TOKEN GH_TOKEN HOMEBREW_GITHUB_API_TOKEN GITHUB_PAT \
+                    OPENAI_API_KEY OPENROUTER_API_KEY GEMINI_API_KEY GOOGLE_API_KEY \
+                    OPENCODE_API_KEY SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_USER_TOKEN \
+                    SLACK_TOKEN TELEGRAM_BOT_TOKEN HF_TOKEN HUGGING_FACE_HUB_TOKEN \
+                    AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID \
+                    STRIPE_SECRET_KEY SENDGRID_API_KEY TWILIO_AUTH_TOKEN \
+                    DATABASE_URL REDIS_URL; do
+        _key_val="${!_key_var:-}"
+        if [[ -n "$_key_val" && ${#_key_val} -ge 8 ]]; then
+            v="$_key_val"
+            output="${output//"$v"/<redacted:value>}"
         fi
     done
 
-    printf '%s' "$output" | LC_ALL=C sed -E 's/sk-ant-[A-Za-z0-9._-]+/<redacted-anthropic-key>/g'
+    # Shape pass for credentials that arrived as text and so have no env var to
+    # match against. The sk-ant- rule stays first and keeps its marker: it is
+    # the one shape a reader can attribute to a provider, and
+    # tests/test_redact_sensitive.sh asserts on that exact string.
+    printf '%s' "$output" | LC_ALL=C sed -E \
+        -e 's/sk-ant-[A-Za-z0-9._-]+/<redacted-anthropic-key>/g' \
+        -e 's/(^|[^A-Za-z0-9])(sk-[A-Za-z0-9_.=-]{12,})/\1<redacted:api-key>/g' \
+        -e 's/(^|[^A-Za-z0-9])(gh[pousr]_[A-Za-z0-9]{12,})/\1<redacted:github-token>/g' \
+        -e 's/(^|[^A-Za-z0-9])(github_pat_[A-Za-z0-9_]{12,})/\1<redacted:github-token>/g' \
+        -e 's/(^|[^A-Za-z0-9])(xox[a-z]-[A-Za-z0-9_.-]{8,})/\1<redacted:slack-token>/g' \
+        -e 's/(^|[^A-Za-z0-9])(hf_[A-Za-z0-9]{12,})/\1<redacted:hf-token>/g' \
+        -e 's/AIza[A-Za-z0-9_-]{25,}/<redacted:google-key>/g' \
+        -e 's/(AKIA|ASIA)[A-Z0-9]{16}/<redacted:aws-key>/g' \
+        -e 's/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/<redacted:jwt>/g' \
+        -e 's#://[^/@[:space:]]+:[^/@[:space:]]+@#://<redacted:basic-auth>@#g' \
+        -e '/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/,/-----END [A-Z0-9 ]*PRIVATE KEY-----/c\
+<redacted:private-key>' \
+        -e 's#"auth"[[:space:]]*:[[:space:]]*"[A-Za-z0-9+/=]{16,}"#"auth": "<redacted:docker-auth>"#g' \
+        -e 's/(^|[^A-Za-z0-9])((sk|rk)_live_[A-Za-z0-9]{8,})/\1<redacted:stripe-key>/g' \
+        -e 's/(^|[^A-Za-z0-9])(whsec_[A-Za-z0-9]{8,})/\1<redacted:stripe-hook>/g' \
+        -e 's/(^|[^A-Za-z0-9])(npm_[A-Za-z0-9]{20,})/\1<redacted:npm-token>/g' \
+        -e 's/(^|[^A-Za-z0-9])(glpat-[A-Za-z0-9_-]{10,})/\1<redacted:gitlab-token>/g' \
+        -e 's/(^|[^A-Za-z0-9])(dckr_pat-[A-Za-z0-9_.-]{10,})/\1<redacted:docker-token>/g' \
+        -e 's/(^|[^A-Za-z0-9])(SG\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/\1<redacted:sendgrid-key>/g' \
+        -e 's/(^|[^A-Za-z0-9])(SK[0-9a-f]{32})/\1<redacted:twilio-key>/g' \
+        -e 's/(^|[^A-Za-z0-9])(key-[A-Za-z0-9]{20,})/\1<redacted:mailgun-key>/g' \
+        -e 's/((aws|AWS)_secret_access_key)[[:space:]]*[=:][[:space:]]*[^[:space:]]+/\1=<redacted:aws-secret>/g'
 }
 
 # ---------------------------------------------------------------------------
