@@ -2369,6 +2369,27 @@ _stream_new_output() {
 # Main loop
 # ---------------------------------------------------------------------------
 
+# Observation-only decision hooks. Dynamic scope supplies this run's messages,
+# output and IDs. Nothing returned here is appended to the model trajectory.
+_shellm_decision_observe() {
+    local hook="$1" response_path="${2:-}" tool
+    [[ -r "${HEADLONG_DECISIONS_CONFIG:-/etc/headlong-decisions.json}" ]] || return 0
+    tool="$(dirname "$_SHELLM_SCRIPT_PATH")/decide"
+    [[ -x "$tool" ]] || return 0
+    printf '%s' "${messages_json:-[]}" > "$rundir/decision-messages.json"
+    printf '%s' "${output_json:-null}" > "$rundir/decision-last-step.json"
+    if [[ -z "$response_path" ]]; then
+        response_path="$rundir/decision-empty.txt"
+        : > "$response_path"
+    fi
+    jq -nc --slurpfile messages "$rundir/decision-messages.json" \
+        --slurpfile result "$rundir/decision-last-step.json" --rawfile response "$response_path" \
+        '{messages:$messages[0],last_step:$result[0],response:$response}' \
+        > "$rundir/decision-packet.json" || return 0
+    "$tool" "$rundir/decision-packet.json" --observe "$hook" \
+        --run-id "$_run_step_id" --iteration "$iteration" >/dev/null || true
+}
+
 run_loop() {
     local prompt="$1"
     shift || true
@@ -2848,6 +2869,11 @@ run_loop() {
         _diagnostic_stage=context; _diagnostic_operation=render_context; _diagnostic_iteration=$iteration
         messages_json=$(context "${_ctx_args[@]}") || die "context rendering failed; no model request sent"
 
+        # Sample once at entry and every eight steps; preserve the exact context.
+        if [[ "$iteration" -eq 1 ]] || (( iteration % 8 == 0 )); then
+            _shellm_decision_observe context
+        fi
+
         # Call Claude (capture thinking/reasoning to file)
         local thinking_file="$rundir/.last_thinking"
         : > "$thinking_file"
@@ -3308,6 +3334,10 @@ exit \$__shellm_rc
         fi
         rm -f "$_stdout_tmp" 2>/dev/null || true
 
+        if (( iteration % 4 == 0 )); then
+            _shellm_decision_observe progress
+        fi
+
         # Check for final answer. The terminating block's reasoning and
         # shell-output are recorded above like any other iteration; final
         # carries only the answer and is always the run's last loop step.
@@ -3317,6 +3347,7 @@ exit \$__shellm_rc
             local final_answer
             final_answer=$(cat "$final_path")
             printf '%s' "$final_answer" > "$rundir/final-answer.txt"
+            _shellm_decision_observe response "$rundir/final-answer.txt"
             rm -f "$final_path"
             printf '%s' "$(jq -n \
                 --rawfile content "$rundir/final-answer.txt" \

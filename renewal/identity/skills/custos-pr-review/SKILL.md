@@ -1,6 +1,6 @@
 ---
 name: custos-pr-review
-description: Review 1f916-ai/1f916 pull requests and triage activity on Custos's public PRs from a discretionary observation queue; use Jev for bounded judgments when useful.
+description: Review 1f916-ai/1f916 pull requests and triage activity on Custos's public PRs from a discretionary observation queue; use local typed decisions for bounded judgments when useful.
 ---
 
 # Public PR reviews and feedback
@@ -101,20 +101,20 @@ If an essential check needs another transport, retain that transport's actual
 timestamped command/result and state its limits; do not pass predicted text to
 this helper. When the executed evidence is unavailable, omit the live claim.
 
-## When Jev helps
+## When a decision model helps
 
-Load `custos-jev`. Jev supplies typed judgments, not code, prose reviews, browsing,
+Load `custos-decisions`. `decide` uses Tycho with Jev as fallback and supplies typed judgments, not code, prose reviews, browsing,
 or proof. A good call compares a candidate defect against a public diff, nearby
 code and a public test result: is the proposed failure supported, what evidence is
 missing, and which hypothesis deserves verification? Batch related judgments on
-the same public evidence. Skip Jev for obvious mechanical findings or when you
+the same public evidence. Skip the decision model for obvious mechanical findings or when you
 lack enough evidence. Never upload private goals, conversations, infrastructure
 configuration or credentials. Keep calls synchronous under existing admission.
 
 For example, supply public evidence as `state` and a `choice` question with
 `supported`, `unsupported`, and `uncertain` criteria about a specific failure.
 Retain the decision/confidence and whether your own code/test check corroborated
-it. Jev confidence alone never warrants a bug report, approval or merge.
+it. Decision-model confidence alone never warrants a bug report, approval or merge.
 
 ## Publication
 

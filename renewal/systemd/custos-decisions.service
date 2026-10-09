@@ -1,0 +1,21 @@
+[Unit]
+Description=Custos local Snap decision broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=custos-decisions
+Group=custos-decisions
+WorkingDirectory=/opt/custos-decisions
+ExecStart=/usr/bin/python3 /opt/custos-decisions/custos_decision_broker.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+UMask=0077
+MemoryMax=128M
+TasksMax=32
+LimitNOFILE=128
+
+[Install]
+WantedBy=multi-user.target

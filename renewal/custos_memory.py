@@ -2312,6 +2312,13 @@ def response(store, payload):
             else:
                 raw=run(argv+['-M',encode(messages),'-s',system],timeout=RESPONSE_TIMEOUT)
             plan = compose_plan(raw, argv, incoming, attempt, started)
+            # A private shadow assessment; its result never changes the plan,
+            # memory, receipts, permissions or response delivery.
+            try:
+                from custos_decision_observer import observe_response
+                observe_response(incoming, messages, plan, trigger)
+            except Exception:
+                print('responder: decision observation unavailable; continuing original plan', file=sys.stderr)
             if attempt.get("person_candidate"):
                 # Preserve complete candidate as private, explicitly unverified
                 # material. Never replace a valid person note with its prefix.
