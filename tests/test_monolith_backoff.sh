@@ -52,6 +52,7 @@ n=$RANDOM$RANDOM
 case "$mode" in
     obs)     printf '{"type":"observation","step_id":"o-%s","content":"did a thing","source":"monolith"}\n' "$n" >> "$STUB_TRAJ" ;;
     thought) printf '{"type":"thought","step_id":"t-%s","content":"nothing changed","source":"monolith"}\n' "$n" >> "$STUB_TRAJ" ;;
+    idle)    printf '{"type":"idle","step_id":"i-%s","content":"honestly nothing to do","source":"monolith"}\n' "$n" >> "$STUB_TRAJ" ;;
     fail)    exit 3 ;;
     fail-diag) printf 'diag-run-0001' > "$SHELLM_RUN_ID_OUT"
                printf '{"type":"shell-output","step_id":"diag-so-1","run_id":"diag-run-0001","stdout":"boom: the actual diagnostic","exit":1,"source":"monolith"}\n' >> "$STUB_TRAJ"
@@ -155,6 +156,17 @@ if [[ "$(lvl)" = 2 ]] && near "$d" 10 && grep -q '"type":"idle"' "$TRAJ"; then
     ok "empty wake: idle appended, full ladder (no thought cap)"
 else
     bad "empty wake: idle appended, full ladder (no thought cap)" "level=$(lvl) delay=$d"
+fi
+
+# --- 5b. run idled on its own: fallback marker suppressed (no double idle) ----
+reset_state
+echo idle > "$STUB_MODE_FILE"
+run_step "$WAKE"
+n_idle=$(grep -c '"type":"idle"' "$TRAJ")
+if [[ "$n_idle" = 1 ]] && near "$(delay)" 5; then
+    ok "self-idle: exactly one idle row, fallback suppressed, ladder advances"
+else
+    bad "self-idle: exactly one idle row, fallback suppressed, ladder advances" "idle_rows=$n_idle delay=$(delay) level=$(lvl)"
 fi
 
 # --- 6. failed run: error step + immediate descent ---------------------------
