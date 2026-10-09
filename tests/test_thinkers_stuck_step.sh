@@ -10,7 +10,12 @@
 # attributes the final to the step through the run's launched_by, sends
 # TERM after the grace, KILL 15s later, and appends one error step. A step
 # with no final, or a final from a run it did not launch, is left alone.
-# Fake thinker, no LLM, no docker. Runtime ~40s.
+#
+# The quiet-step guard (THINKERS_STEP_QUIET) is the backstop: a step that
+# puts nothing on the trajectory for that long is ended the same way, final
+# or not (2026-10-07: shellm echoed a dead command's output for 26 hours).
+# Every step of the run it launched restarts the clock.
+# Fake thinker, no LLM, no docker. Runtime ~75s.
 
 set -uo pipefail
 
@@ -32,7 +37,7 @@ env_run() {
     IDENTITY_DIR="$TMP/id" IDENTITY_NAME=testid \
     TRAJ_DIR="$TMP/id/trajectories" TRAJ_ID="$TRAJ_ID" \
     THINKERS_DIR="$TMP/id/thinkers" MEM_DIR="$TMP/id/memories" \
-    THINKERS_STEP_GRACE="${GRACE:-3}" \
+    THINKERS_STEP_GRACE="${GRACE:-3}" THINKERS_STEP_QUIET="${QUIET:-0}" \
     "$@"
 }
 cleanup() { env_run thinkers stop >/dev/null 2>&1 || true; rm -rf "$TMP"; }
@@ -62,6 +67,10 @@ case "$mode" in
     final)  printf '{"type":"final","step_id":"f-%s","run_id":"%s","content":"done","ts":"%s"}\n' "$$" "$rid" "$(date -u +%FT%T.000Z)" >> "$traj" ;;
     other)  printf '{"type":"final","step_id":"f-%s","run_id":"someone-elses-run","content":"done","ts":"%s"}\n' "$$" "$(date -u +%FT%T.000Z)" >> "$traj" ;;
     none)   : ;;
+    steps)  for _ in 1 2 3 4 5; do
+                printf '{"type":"reasoning","step_id":"r-%s-%s","run_id":"%s","thought":"x","ts":"%s"}\n' "$$" "$_" "$rid" "$(date -u +%FT%T.000Z)" >> "$traj"
+                sleep 2
+            done ;;
 esac
 sleep 120
 exit 0
@@ -79,7 +88,7 @@ wait_for() {  # <seconds> <cmd...>
     while ! "$@" && (( i < t )); do sleep 1; i=$((i+1)); done
     "$@"
 }
-error_steps() { local n; n=$(grep -c '"reason":"step-stuck"' "$TRAJ" 2>/dev/null) || n=0; printf '%s\n' "${n:-0}"; }
+error_steps() { local n; n=$(grep -c "\"reason\":\"${1:-step-stuck}\"" "$TRAJ" 2>/dev/null) || n=0; printf '%s\n' "${n:-0}"; }
 pid_gone() { local p; p=$(step_pid); [[ -z "$p" ]] || ! kill -0 "$p" 2>/dev/null; }
 
 # Test 1: a step that outlives its run's final is ended after the grace
@@ -145,10 +154,46 @@ test_guard_disabled() {
     GRACE=0 stop_thinkers
 }
 
+# Test 5: a step that writes nothing is ended at the quiet limit, final or not
+test_quiet_step_is_ended() {
+    setup_identity
+    echo none > "$TMP/id/mode"
+    QUIET=4 start_thinkers
+    append_step '{"type":"action","content":"go","source":"test","ts":"'"$(date -u +%FT%T.000Z)"'"}'
+    wait_for 8 test -s "$TMP/id/record"
+    p=$(step_pid)
+    if wait_for 15 pid_gone; then ok "quiet step ended at the quiet limit"; else bad "quiet step ended at the quiet limit" "pid $p still alive"; fi
+    if grep -q 'STUCK: runner step .* has put nothing on the trajectory' "$RUN/logs/dispatcher.log"; then ok "dispatcher log names the quiet step"
+    else bad "dispatcher log names the quiet step" "$(tail -n 4 "$RUN/logs/dispatcher.log" | tr '\n' ' ')"; fi
+    if wait_for 5 test "$(error_steps step-quiet)" -eq 1; then ok "one step-quiet error step appended"
+    else bad "one step-quiet error step appended" "count=$(error_steps step-quiet)"; fi
+    if grep -q 'exit-trap-ran' "$TMP/id/record"; then ok "TERM let the quiet step's EXIT trap run"
+    else bad "TERM let the quiet step's EXIT trap run"; fi
+    QUIET=4 stop_thinkers
+}
+
+# Test 6: steps of the run restart the quiet clock; it fires once they stop
+test_progress_restarts_quiet_clock() {
+    setup_identity
+    echo steps > "$TMP/id/mode"
+    QUIET=4 start_thinkers
+    append_step '{"type":"action","content":"go","source":"test","ts":"'"$(date -u +%FT%T.000Z)"'"}'
+    wait_for 8 test -s "$TMP/id/record"
+    sleep 8   # twice the limit, with a step every 2s
+    p=$(step_pid)
+    if [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null && [[ "$(error_steps step-quiet)" -eq 0 ]]; then
+        ok "step that keeps writing steps outlives the quiet limit"
+    else bad "step that keeps writing steps outlives the quiet limit"; fi
+    if wait_for 20 pid_gone; then ok "step ended once its run went quiet"; else bad "step ended once its run went quiet" "pid $p still alive"; fi
+    QUIET=4 stop_thinkers
+}
+
 test_stuck_step_is_ended
 test_running_step_untouched
 test_foreign_final_ignored
 test_guard_disabled
+test_quiet_step_is_ended
+test_progress_restarts_quiet_clock
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))

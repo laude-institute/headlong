@@ -46,6 +46,15 @@ THINKERS_REWIND_TOLERANCE="${THINKERS_REWIND_TOLERANCE:-600}"
 # step's output pipe open; the step outlived its final by six hours and the
 # mind was silent the whole time. 0 disables.
 THINKERS_STEP_GRACE="${THINKERS_STEP_GRACE:-300}"
+# Quiet-step guard, the backstop for every other way a step can wedge. A step
+# that is alive but has put nothing on the trajectory for this many seconds
+# (no step of a run it launched; for a step with no run, since its dispatch)
+# is ended the same way. The default sits above shellm's one-block limit
+# (SHELLM_MAX_EXEC_TIME, 3600s), the longest a healthy run goes between
+# steps; raise both together. 2026-10-07: a dead command's 27M trace lines
+# kept shellm echoing for 26 hours, before any final, so the guard above
+# never armed. 0 disables.
+THINKERS_STEP_QUIET="${THINKERS_STEP_QUIET:-5400}"
 VERBOSE=0
 NO_SELF_TRIGGER=0
 
@@ -555,8 +564,12 @@ _start_dispatcher() {
         # later final can be attributed to exactly that step and not to
         # another busy thinker or a nested sub-run (shellm blanks
         # SHELLM_LAUNCHED_BY for children). _stuck holds one record per
-        # thinker whose run has finished but whose step is still alive:
-        #   name<TAB>final_seen_SECONDS<TAB>run_id<TAB>traj_file<TAB>term_sent_SECONDS_or_empty
+        # busy thinker, a clock the tick checks against a limit:
+        #   name<TAB>clock_start_SECONDS<TAB>run_id<TAB>traj_file<TAB>term_sent_SECONDS_or_empty
+        # run_id "-" is the quiet clock (THINKERS_STEP_QUIET), started at
+        # dispatch and restarted by every step of the thinker's run. The
+        # run's final swaps it for the final clock (THINKERS_STEP_GRACE),
+        # which carries the run id and is never restarted.
         _run_owner=""
         _run_owner_n=0
         _stuck=""
@@ -699,6 +712,7 @@ _start_dispatcher() {
             printf '%s %s\n' "$!" "$_dname" >> "$run_dir/step_pids"
             _wd_touch "$_dname"
             _stuck_forget "$_dname"
+            _stuck="${_stuck}${_dname}${_tab}${SECONDS}${_tab}-${_tab}-${_tab}${_nl}"
         }
 
         # --- stuck-step guard (THINKERS_STEP_GRACE) ---------------------------
@@ -713,13 +727,30 @@ _start_dispatcher() {
             _stuck="$_new"
         }
 
+        # Restart a thinker's clock: "-" "-" for the quiet clock, a run id
+        # and its traj file for the final clock. Only a quiet clock that has
+        # not sent TERM is replaced, so a final clock keeps its start.
+        _stuck_clock() {  # <name> <run_id|-> <traj_file|->
+            local _n _a _r _t _term _new=""
+            while IFS=$'\t' read -r _n _a _r _t _term; do
+                [[ -n "$_n" ]] || continue
+                if [[ "$_n" == "$1" ]]; then
+                    [[ "$_r" == "-" && -z "$_term" ]] || return 0
+                    continue
+                fi
+                _new="${_new}${_n}${_tab}${_a}${_tab}${_r}${_tab}${_t}${_tab}${_term}${_nl}"
+            done <<< "$_stuck"
+            _stuck="${_new}${1}${_tab}${SECONDS}${_tab}${2}${_tab}${3}${_tab}${_nl}"
+        }
+
         # A shellm-run step with launched_by names the thinker that owns the
-        # run; remember step_id -> thinker (bounded) so the run's final can be
-        # matched back. Only while that thinker is busy: a run attributed to a
-        # thinker with no live step is history or noise.
+        # run; remember step_id -> thinker (bounded) so the run's later steps
+        # can be matched back. Only while that thinker is busy: a run
+        # attributed to a thinker with no live step is history or noise.
         _stuck_note_run() {  # <step_id> <launched_by>
             [[ -n "$1" && -n "$2" ]] || return 0
             _thinker_busy "$2" || return 0
+            _stuck_clock "$2" - -
             _run_owner="${_run_owner}${1}${_nl}${2}${_nl}"
             if (( ++_run_owner_n > 64 )); then
                 _run_owner="$(printf '%s' "$_run_owner" | tail -n 32)${_nl}"
@@ -727,10 +758,11 @@ _start_dispatcher() {
             fi
         }
 
-        # A final for a run we attributed: the owning step is done with its
-        # run. Start its grace clock unless one is already running.
-        _stuck_note_final() {  # <run_id> <traj_file>
-            local _rid="$1" _ftraj="$2" _oname="" _prev="" _l _rec
+        # A step of a run we attributed. Any step is progress and restarts
+        # the owner's quiet clock. A final means the owning step is done with
+        # its run: start its grace clock unless one is already running.
+        _stuck_note_step() {  # <type> <run_id> <traj_file>
+            local _rid="$2" _oname="" _prev="" _l
             [[ -n "$_rid" && -n "$_run_owner" ]] || return 0
             while IFS= read -r _l; do
                 if [[ "$_prev" == "$_rid" ]]; then _oname="$_l"; fi
@@ -738,23 +770,19 @@ _start_dispatcher() {
             done <<< "$_run_owner"
             [[ -n "$_oname" ]] || return 0
             _thinker_busy "$_oname" || return 0
-            if [[ -n "$_stuck" ]]; then
-                while IFS= read -r _rec; do
-                    [[ "${_rec%%$'\t'*}" == "$_oname" ]] && return 0
-                done <<< "$_stuck"
-            fi
-            _stuck="${_stuck}${_oname}${_tab}${SECONDS}${_tab}${_rid}${_tab}${_ftraj}${_tab}${_nl}"
+            if [[ "$1" == final ]]; then _stuck_clock "$_oname" "$_rid" "$3"
+            else _stuck_clock "$_oname" - -; fi
         }
 
         # Tick: end any step that has outlived its run's final by the grace
-        # period. TERM first — bash runs the step's EXIT trap on TERM, so the
-        # monolith still arms its next wake — then KILL if it is still there
+        # period, or has gone quiet past the quiet limit. TERM first — bash
+        # runs the step's EXIT trap on TERM, so the monolith still arms its
+        # next wake — then KILL if it is still there
         # 15s later. One error step per incident so the operator sees it on
         # the timeline; the dispatcher log carries the survivors.
         _stuck_step_check() {
-            (( THINKERS_STEP_GRACE > 0 )) || return 0
             [[ -n "$_stuck" ]] || return 0
-            local _rec _sname _sat _srid _straj _sterm _new="" _spid _e _age _left
+            local _sname _sat _srid _straj _sterm _new="" _spid _e _age _left _limit _why _reason _advice
             while IFS=$'\t' read -r _sname _sat _srid _straj _sterm; do
                 [[ -n "$_sname" ]] || continue
                 if ! _thinker_busy "$_sname"; then continue; fi   # step ended on its own
@@ -763,16 +791,28 @@ _start_dispatcher() {
                 for _e in $_step_entries; do
                     [[ "${_e%%:*}" == "$_sname" ]] && _spid="${_e#*:}"
                 done
+                _limit=$THINKERS_STEP_GRACE
+                [[ "$_srid" == "-" ]] && _limit=$THINKERS_STEP_QUIET
                 if [[ -z "$_sterm" ]]; then
-                    if (( _age < THINKERS_STEP_GRACE )); then
+                    if (( _limit <= 0 || _age < _limit )); then
                         _new="${_new}${_sname}${_tab}${_sat}${_tab}${_srid}${_tab}${_straj}${_tab}${_nl}"
                         continue
                     fi
+                    if [[ "$_srid" == "-" ]]; then
+                        _straj=$(head -n 1 "$run_dir/traj_files" 2>/dev/null || true)
+                        _why="has put nothing on the trajectory for ${_age}s"
+                        _reason="step-quiet"
+                        _advice="A step that is alive but writes no step is wedged, whatever the cause. If your last block looped or printed without bound, bound it before you run it again."
+                    else
+                        _why="is still running ${_age}s after its run $_srid wrote its final"
+                        _reason="step-stuck"
+                        _advice="A step that never exits arms no next wake, and the mind goes silent. Usual cause: a process the run left in the background holding the step's output open. Do not background servers or long jobs inside a wake; hand them to a scratch identity or a systemd unit instead."
+                    fi
                     _left=$(ps -o pid=,etime=,args= -g "$_spid" 2>/dev/null | grep -v "^ *${_spid} " | cut -c1-120 | tr '\n' ';' || true)
-                    printf '%s [dispatcher] STUCK: %s step (pid %s) is still running %ss after its run %s wrote its final — sending TERM. Still alive in its process group: %s\n' \
-                        "$(date -u +%FT%TZ)" "$_sname" "$_spid" "$_age" "$_srid" "${_left:-none}" >&2
-                    _append_traj_error "$_straj" "step-stuck" \
-                        "dispatcher: the $_sname step (pid $_spid) was still running ${_age}s after its run's final step, so the dispatcher ended it (TERM). A step that never exits arms no next wake, and the mind goes silent. Usual cause: a process the run left in the background holding the step's output open. Do not background servers or long jobs inside a wake; hand them to a scratch identity or a systemd unit instead."
+                    printf '%s [dispatcher] STUCK: %s step (pid %s) %s — sending TERM. Still alive in its process group: %s\n' \
+                        "$(date -u +%FT%TZ)" "$_sname" "$_spid" "$_why" "${_left:-none}" >&2
+                    _append_traj_error "$_straj" "$_reason" \
+                        "dispatcher: the $_sname step (pid $_spid) $_why, so the dispatcher ended it (TERM). $_advice"
                     [[ -n "$_spid" ]] && _kill_tree "$_spid" TERM
                     _new="${_new}${_sname}${_tab}${_sat}${_tab}${_srid}${_tab}${_straj}${_tab}${SECONDS}${_nl}"
                 elif (( SECONDS - _sterm >= 15 )); then
@@ -1045,7 +1085,7 @@ _start_dispatcher() {
 
             case "$_step_type" in
                 shellm-run) _stuck_note_run "$_step_sid" "$_step_lby" ;;
-                final)      _stuck_note_final "$_step_rid" "$_traj_file" ;;
+                *)          _stuck_note_step "$_step_type" "$_step_rid" "$_traj_file" ;;
             esac
 
             # Find matching thinkers by scanning sub_map

@@ -310,7 +310,16 @@ fine.
    its EXIT trap on TERM, so the monolith still arms its next wake), KILL
    15s later, one `error` step with `reason: step-stuck`, and a STUCK line
    in the dispatcher log naming what else was alive in its group. A step
-   with no final, or a final from a run it did not launch, is left alone.
+   with no final, or a final from a run it did not launch, is left alone
+   by this guard. The quiet-step guard (`THINKERS_STEP_QUIET`, default
+   5400s, 0 disables; added 2026-10-09) covers that case: every busy step
+   has a quiet clock that starts at dispatch and restarts on each step of
+   the run it launched, and a step whose clock passes the limit is ended
+   the same way with `reason: step-quiet`. The default sits above
+   `SHELLM_MAX_EXEC_TIME` (3600s), the longest a healthy run goes between
+   steps. It exists because a run can wedge before its final for reasons
+   nobody has listed yet (2026-10-07: shellm echoed 27M trace lines of a
+   dead command for 26 hours).
 3. **Silence alert** (`deploy/thinkers-silence-alert.sh`,
    `headlong-thinkers-silence@<identity>.timer`, every 5 min). If the
    dispatcher pid is alive, no deliberate stop is marked, and the root
