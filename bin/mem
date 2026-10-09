@@ -57,6 +57,58 @@ slugify() {
         | cut -c1-80
 }
 
+# Clip a summary to at most 80 bytes of the first line without splitting
+# a UTF-8 character at the boundary. `mem add` clipped with `cut -c1-80`
+# and `mem edit` with `head -c 80`, and both count bytes on this runtime
+# (probed on GNU coreutils 9.4 under a UTF-8 locale: `cut -c` output was
+# byte-identical to `cut -b` on a two-byte and a three-byte boundary case),
+# so a first line whose 80th byte fell inside an accented letter or an
+# emoji stored a summary ending in bytes that no longer decode as text.
+# ASCII summaries clip byte for byte exactly as before; multi-byte ones
+# may come out a few bytes under the limit.
+clip_summary() (
+    # Byte semantics: lengths and slices below are bytes, not characters.
+    LC_ALL=C
+    local line="${1%%$'\n'*}"
+    if (( ${#line} <= 80 )); then
+        printf '%s\n' "$line"
+        return 0
+    fi
+    # Find where the character containing the 80th byte starts: a byte
+    # under 0x80 stands alone, a lead byte (>= 0xC0) starts one, and a
+    # continuation byte (0x80-0xBF) walks back to its lead.
+    # `printf '%d' "'<byte>"` yields the byte as a C char, and a shell
+    # built where char is signed (bash 3.2 on macOS) sign-extends bytes
+    # >= 0x80 to negative, so every range test against 128+ was false and
+    # a lead byte split by the clip classified as ASCII, keeping the split
+    # byte. Normalize before comparing; both sign conventions then agree.
+    local i=79 b
+    while (( i >= 0 )); do
+        b=$(printf '%d' "'${line:i:1}")
+        if (( b < 0 )); then b=$(( b + 256 )); fi
+        if (( b < 128 )); then break; fi
+        if (( b < 192 )); then i=$(( i - 1 )); continue; fi
+        break
+    done
+    # b is the lead byte of the character containing the 80th byte, or an
+    # ASCII byte that stands alone: keep the full 80 only when that
+    # character completes inside them, else stop just before it.
+    if (( i < 0 || b < 192 )); then
+        printf '%s\n' "${line:0:80}"
+        return 0
+    fi
+    local len=1
+    if (( b >= 240 )); then len=4
+    elif (( b >= 224 )); then len=3
+    else len=2
+    fi
+    if (( i + len <= 80 )); then
+        printf '%s\n' "${line:0:80}"
+    else
+        printf '%s\n' "${line:0:i}"
+    fi
+)
+
 # Extract a field from YAML frontmatter.
 # Usage: frontmatter_field <file> <field>
 frontmatter_field() {
@@ -139,7 +191,7 @@ action_add() {
     hex=$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')
     slug=$(slugify "$text")
     filename="${timestamp}_${hex}_${slug}"
-    summary=$(printf '%s' "$text" | head -1 | cut -c1-80)
+    summary=$(clip_summary "$text")
     created=$(date +"%Y-%m-%d %H:%M:%S")
 
     cat > "$MEM_DIR/${filename}.md" << EOF
@@ -493,7 +545,7 @@ action_edit() {
     # edit: a todo shortlist that is appended to during the day must still
     # expire that night. So do `schedule:` and `tz:` (design/scheduled_goals.md).
     local summary type created id until _k _v
-    summary=$(printf '%s' "$text" | head -1 | head -c 80)
+    summary=$(clip_summary "$text")
     type=$(frontmatter_field "$file" "type")
     created=$(frontmatter_field "$file" "created")
     id=$(frontmatter_field "$file" "id")
