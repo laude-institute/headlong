@@ -86,6 +86,32 @@ Create a .chatrc file with:
     fi
 }
 
+# _refuse_json_body <message>: die if the body is a structured action object
+# rather than words for a person. On 2026-09-20/21 the responder's model
+# returned {"action":"no_reply","message":""} padded with whitespace to its
+# token cap; the object could not be salvaged and the text path sent it as
+# the reply anyway, and six of those reached one Slack thread. The transport
+# is the last line: a body that is an action object is never a message to a
+# person. `--force` overrides it.
+_refuse_json_body() {
+    # die if the body is a structured action object rather than words for a person.
+    # JSON-GUARD-FENCE-FIX: strip markdown code fence markers and blank lines before
+    # the shape check, and look for the action key across the first lines, so a fenced
+    # or pretty-printed action object cannot slip past a line check.
+    local msg first
+    if [ $# -gt 0 ] && [ -n "$1" ]; then msg=$1; else msg=$(cat); fi
+    # JSON-GUARD-BREAK2-FIX: also drop a UTF-8 BOM and CR, accept a
+    # single-quoted action key, and scan 40 lines instead of 8 so a long
+    # pretty-printed object cannot hide its action key past the window.
+    msg=$(printf '%s\n' "$msg" | sed -e '1s/^\xef\xbb\xbf//' -e 's/\r$//' -e '/^[[:space:]]*```[A-Za-z]*[[:space:]]*$/d' -e '/^[[:space:]]*~~~[A-Za-z]*[[:space:]]*$/d' -e '/^[[:space:]]*$/d')
+    first=$(printf '%s\n' "$msg" | head -1)
+    printf '%s' "$first" | grep -qE '^[[:space:]]*\{' || return 0
+    printf '%s\n' "$msg" | head -40 | grep -qE '["'"'"'\'']action["'"'"'\''][[:space:]]*:' || return 0
+    die "refusing to send: this message is a structured action object, not words for a person.
+A reply body must be plain text. If this really is meant literally, add --force."
+}
+
+
 cmd_send() {
     local message="" from="" to="${IDENTITY_NAME:-}" source_url="" force=0 key=""
     while [[ $# -gt 0 ]]; do
@@ -104,6 +130,7 @@ cmd_send() {
         message=$(cat)
     fi
     [[ -z "$message" ]] && die "No message provided. Usage: chat send [--from <name>] [--to <name>] <message>"
+    [[ "$force" -eq 1 ]] || _refuse_json_body "$message"
 
     _resolve_from_to
     _check_target "$to"
@@ -169,6 +196,7 @@ cmd_reply() {
         message=$(cat)
     fi
     [[ -z "$message" ]] && die "No message provided. Usage: chat reply <to_name> <message>"
+    [[ "$force" -eq 1 ]] || _refuse_json_body "$message"
 
     local from="${IDENTITY_NAME:-}"
     [[ -z "$from" ]] && die "IDENTITY_NAME not set. Run: identity shell <name>"
