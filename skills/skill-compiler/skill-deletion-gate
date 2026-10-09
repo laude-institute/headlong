@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+import re
+"""skill-deletion-gate: one reusable accept-reject deletion-mutation gate.
+
+Runs a skill checker over generated cases, measures literal-surface transfer
+against the teacher phrase pool, then applies ONE deletion mutation (drop every
+POOL-ABSENT verdict line, keep the pool-covered surface byte-identical) and
+asks whether the compiled manifest's expect_contains verdict can tell the real
+run from the mutant. Accept an adjunct only when its frozen tests pass on the
+real run AND fail on the mutant; else label it POOL-SLICE-ONLY / BLIND.
+
+Counting rule (stated before any count):
+  one unit = one distinct non-empty stdout line the checker emits.
+  pool = every string >= 4 chars from the pool's OFFERED list (see read_pool).
+  POOL-EXACT   : line equals a pool entry.
+  POOL-FRAGMENT: not exact, but the contained string (>=12 chars) sits inside
+                 the other, in either direction.
+  POOL-ABSENT  : neither -> verifying that behavior needs an INVENTED literal.
+  transfer     = exact + fragment.
+
+POOL-READ-GUARD: read_pool only accepts the pool's 'offered'/'entries'/'pool'
+list (or a top-level list). It never falls back to counting a dict's top-level
+keys, which is the schema-key bug that twice miscounted a pool as 6 strings.
+"""
+import json, os, random, subprocess, sys, argparse
+
+
+def read_pool(path):
+    d = json.load(open(path))
+    if isinstance(d, list):
+        ent = d
+    elif isinstance(d, dict):
+        ent = None
+        for key in ('offered', 'entries', 'pool'):
+            if key in d and isinstance(d[key], (list, dict)):
+                ent = d[key]
+                break
+        if ent is None:
+            raise SystemExit(
+                "POOL-READ-GUARD: %s has no offered/entries/pool list; refusing to "
+                "count dict keys (the known key-fallback bug). keys=%s"
+                % (path, sorted(d)[:12]))
+    else:
+        raise SystemExit("POOL-READ-GUARD: unsupported pool type in %s" % path)
+    out = set()
+
+    def add(x):
+        if isinstance(x, str):
+            if len(x.strip()) >= 4:
+                out.add(x.strip())
+        elif isinstance(x, dict):
+            for kk in ('line', 'text', 'entry', 'content', 'phrase'):
+                if isinstance(x.get(kk), str):
+                    add(x[kk])
+    if isinstance(ent, dict):
+        for k in ent:
+            add(k)
+    elif isinstance(ent, list):
+        for e in ent:
+            add(e)
+    return out
+
+
+def read_literals(adj_path):
+    lits = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if 'expect' in k.lower() and 'contain' in k.lower():
+                    if isinstance(v, str):
+                        lits.append(v)
+                    elif isinstance(v, list):
+                        for x in v:
+                            if isinstance(x, str):
+                                lits.append(x)
+                            elif isinstance(x, dict):
+                                for kk in ('literal', 'text', 'contains', 'value'):
+                                    if isinstance(x.get(kk), str):
+                                        lits.append(x[kk])
+                walk(v)
+        elif isinstance(o, list):
+            for x in o:
+                walk(x)
+    walk(json.load(open(adj_path)))
+    return sorted(dict.fromkeys(lits))
+
+
+def classify(line, pool):
+    if line in pool:
+        return 'exact'
+    for p in pool:
+        if len(line) >= 12 and line in p:
+            return 'fragment'
+        if len(p) >= 12 and p in line:
+            return 'fragment'
+    return 'absent'
+
+
+# ---------- case generators (seeded, reproducible) ----------
+PITCH = ['C4','D4','E4','F4','G4','A4','B4','C5','D5','E5','F5','G5','A5','B5','C6']
+
+NOTE=re.compile(r'^[A-G](?:#|b)?\d$')
+INTERVAL=re.compile(r'^(?:major-|minor-|perfec|octave|unison|triton)$')
+LABELED=re.compile(r"^[A-Za-z][A-Za-z' ]*:\s*(.*)$")
+def _echo_class(line):
+    """rule A+C input-echo classes, on a labeled line's remainder:
+    'note'     = run of pure note tokens (Cantus firmus / Counterpoint echoes)
+    'interval' = run of pure interval tokens (Intervals: echoes)
+    None       = a real verdict line, its prose is not covered by any token run,
+                 so fugue's INVERTIBLE verdict survives the drop."""
+    m=LABELED.match(line.strip())
+    rest=m.group(1) if m else line.strip()
+    toks=rest.split()
+    if not toks:
+        return None
+    if all(NOTE.match(t) for t in toks):
+        return 'note'
+    if all(INTERVAL.match(t) for t in toks):
+        return 'interval'
+    return None
+
+def is_echo(line):
+    return _echo_class(line) is not None
+
+def _cp_cases(seed):
+    random.seed(seed)
+    def idx(p): return PITCH.index(p)
+    def rline(n): return [random.choice(PITCH) for _ in range(n)]
+    def same(cf,n): return [cf[i%len(cf)] for i in range(n)]
+    def par(cf,n,d): return [PITCH[max(0,min(len(PITCH)-1,idx(cf[i%len(cf)])+d))] for i in range(n)]
+    def rev(cf,n): return [cf[len(cf)-1-(i%len(cf))] for i in range(n)]
+    def obl(cf,n): return [cf[0]]*n
+    def stepup(cf,n): return [PITCH[max(0,min(len(PITCH)-1,idx(cf[0])+i))] for i in range(n)]
+    def stepdn(cf,n): return [PITCH[max(0,min(len(PITCH)-1,idx(cf[0])-i))] for i in range(n)]
+    def leaps(cf,n):
+        out=[]; i=idx(cf[0])
+        for k in range(n):
+            i=max(0,min(len(PITCH)-1,i+(7 if k%2==0 else -7))); out.append(PITCH[i])
+        return out
+    GENS=[('random',lambda cf,n:rline(n)),('same',same),('par_up3',lambda cf,n:par(cf,n,3)),
+          ('par_dn5',lambda cf,n:par(cf,n,-5)),('reverse',rev),('oblique',obl),
+          ('step_up',stepup),('step_down',stepdn),('leaps',leaps)]
+    cases=[("1","C4 D4 E4 F4 G4 A4 B4 C5","C5 A4 C5 A4 B4 C5 D5 E5"),
+    ("1","C4 D4 E4 F4 G4 A4 B4 C5","C4 D4 E4 F4 G4 A4 B4 C5"),
+    ("1","C4 D4 E4 F4 G4 A4 B4 C5","F4 A4 B4 A4 F4 A4 B4 A4"),
+    ("1","C4 D4 E4 F4","E4 D4 C4"),
+    ("2","C4 D4 E4 F4 G4 A4 B4 C5","G4 A4 B4 B4 E5 E5 D5 C5 D5 E5 F5 E5 G5 F5 G5 A5"),
+    ("2","C4 D4 E4 F4","E4 D4 F4 E4"),
+    ("3","C4 D4 E4 F4","E4 D4 C4 E4 F4 E4 D4 F4 G4 F4 E4 G4 A4 G4 F4 A4"),
+    ("3","C4 D4 E4 F4","E4 D4 C4 E4 F4 E4 D4 F4"),
+    ("4","C4 D4 E4 F4 G4 A4 B4 C5","E4 E4 F4 F4 G4 G4 A4 A4 B4 B4 C5 C5 D5 D5 E5 C5"),
+    ("4","C4 D4 E4 F4 G4 A4 B4 C5","E4 A4 F4 B4 F4 G4 A4 D5 B4 E5 C5 F5 D5 G5 E5 C5"),
+    ("4","C4 D4 E4 F4","E4 E4 F4 F4"),
+    ("5","C4 D4 E4 F4 G4 A4 B4 C5","E4 A4 F4 B4 G4 C5 A4 D5 B4 E5 C5 F5 D5 G5 E5 C5"),
+    ("5","C4 D4 E4 F4","E4 A4 F4 B4")]
+    SPEC={'1':[4,8],'2':[4,8],'3':[4,8],'4':[4,8],'5':[4,8]}
+    MUL={'1':1,'2':2,'3':4,'4':2,'5':2}
+    for sp,Ls in SPEC.items():
+        for L in Ls:
+            for _ in range(3): cases.append((sp,' '.join(rline(L)),' '.join(rline(L*MUL[sp]))))
+            cf=rline(L)
+            for gname,g in GENS:
+                cases.append((sp,' '.join(cf),' '.join(g(cf,L*MUL[sp]))))
+    return cases
+
+def _fugue_cases(seed):
+    random.seed(seed)
+    NOTES=['C3','D3','E3','F3','G3','A3','B3','C4','D4','E4','F4','G4','A4','B4','C5','D5','E5','F5','G5','A5','B5']
+    def rl(n): return ' '.join(random.choice(NOTES) for _ in range(n))
+    cases=[]
+    for _ in range(24): cases.append(('clean', rl(4), rl(4)))
+    for _ in range(24): cases.append(('bad', rl(4), rl(4)))
+    for _ in range(24): cases.append(('mixed', rl(5), rl(5)))
+    for _ in range(12): cases.append(('crossing', rl(4), rl(4)))
+    return cases
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--skill', required=True, choices=['counterpoint', 'fugue'])
+    ap.add_argument('--checker', required=True)
+    ap.add_argument('--pool', required=True)
+    ap.add_argument('--adjunct', required=True)
+    ap.add_argument('--out', required=True)
+    ap.add_argument('--seed', type=int, default=20261002)
+    a = ap.parse_args()
+    os.makedirs(a.out, exist_ok=True)
+
+    pool = read_pool(a.pool)
+    lits = read_literals(a.adjunct)
+    if a.skill == 'counterpoint':
+        cases = _cp_cases(a.seed)
+        def run(cf, cp):
+            return ['python3', a.checker] + cf.split()[:1]  # placeholder
+    # build runner + cases per skill
+    if a.skill == 'counterpoint':
+        cases = _cp_cases(a.seed)
+        def cmd(c):
+            sp, cf, cp = c
+            return ['python3', a.checker, sp, cf, cp, '--key', 'major']
+    else:
+        cases = _fugue_cases(a.seed)
+        def cmd(c):
+            kind, sub, cs = c
+            return ['python3', a.checker, sub, cs]
+
+    occ = {}
+    percase = []
+    for c in cases:
+        try:
+            r = subprocess.run(cmd(c), capture_output=True, text=True, timeout=60)
+            out = r.stdout or ''
+            rc = r.returncode
+        except Exception as e:
+            out = ''
+            rc = 99
+        lines = [l.strip() for l in out.splitlines() if l.strip()]
+        for l in lines:
+            occ[l] = occ.get(l, 0) + 1
+        absent = [l for l in lines if classify(l, pool) == 'absent']
+        kept = [l for l in lines if classify(l, pool) != 'absent']
+        mutant = '\n'.join(kept) + ('\n' if kept else '')
+        def verdict(text):
+            miss = [l for l in lits if l not in text]
+            return 'PASS' if not miss else 'UNVERIFIED'
+        vr, vm = verdict(out), verdict(mutant)
+        percase.append({'case': list(c), 'rc': rc, 'nlines': len(lines),
+                        'nabsent': len(absent), 'verdict_real': vr, 'verdict_mutant': vm})
+
+    lines_sorted = sorted(occ)
+    n_exact = sum(1 for l in lines_sorted if classify(l, pool) == 'exact')
+    n_frag = sum(1 for l in lines_sorted if classify(l, pool) == 'fragment')
+    n_abs = len(lines_sorted) - n_exact - n_frag
+    transferred = n_exact + n_frag
+    identical = sum(1 for p in percase if p['verdict_real'] == p['verdict_mutant'])
+    distinguishable = sum(1 for p in percase if p['verdict_real'] != p['verdict_mutant'])
+    pass_both = sum(1 for p in percase if p['verdict_real'] == 'PASS' and p['verdict_mutant'] == 'PASS')
+    unv_both = sum(1 for p in percase if p['verdict_real'] == 'UNVERIFIED' and p['verdict_mutant'] == 'UNVERIFIED')
+    cov = set()
+    for l in lines_sorted:
+        for lit in lits:
+            if lit in l:
+                cov.add(l)
+    verdict = 'DELETION-DISTINGUISHABLE' if distinguishable > 0 else 'BLIND-TO-POOL-ABSENT'
+    non_echo = [l for l in lines_sorted if not is_echo(l)]
+    n_note_echo = sum(1 for l in lines_sorted if _echo_class(l) == 'note')
+    n_intv_echo = sum(1 for l in lines_sorted if _echo_class(l) == 'interval')
+    echo_transfer = sum(1 for l in non_echo if classify(l, pool) != 'absent')
+    echo_cov = set(l for l in non_echo if any(lit in l for lit in lits))
+    echo_cov_frac = '%d/%d' % (len(echo_cov), len(non_echo))
+    echo_cov_pct = (100.0*len(echo_cov)/len(non_echo)) if non_echo else 0.0
+    cov_frac = '%d/%d' % (len(cov), len(lines_sorted))
+    cov_pct = (100.0 * len(cov) / len(lines_sorted)) if lines_sorted else 0.0
+
+    with open(os.path.join(a.out, 'counts.env'), 'w') as f:
+        f.write('SKILL=%s\nVERDICT=%s\nCASES=%d\nPOOL=%d\nDISTINCT=%d\nEXACT=%d\nFRAG=%d\n'
+                'ABSENT=%d\nTRANSFER=%d\nOCC=%d\nLITERALS=%d\nLIT_COVERED=%d\n'
+                'IDENTICAL=%d\nDISTINGUISHABLE=%d\nPASS_BOTH=%d\nUNV_BOTH=%d\nCOV_FRACT=%s\n'
+                % (a.skill, verdict, len(percase), len(pool), len(lines_sorted),
+                   n_exact, n_frag, n_abs, transferred, sum(occ.values()),
+                   len(lits), len(cov), identical, distinguishable, pass_both, unv_both, cov_frac))
+    with open(os.path.join(a.out, 'observed-lines.txt'), 'w') as f:
+        for l in lines_sorted:
+            f.write('%d\t%s\t%s\n' % (occ[l], classify(l, pool), l))
+    with open(os.path.join(a.out, 'cases.jsonl'), 'w') as f:
+        for p in percase:
+            f.write(json.dumps(p) + '\n')
+    with open(os.path.join(a.out, 'REPORT.md'), 'w') as f:
+        f.write('# skill-deletion-gate: %s (seed %d)\n\n' % (a.skill, a.seed))
+        f.write('Counting rule: one unit = one distinct non-empty stdout line; pool = %d strings '
+                '>=4 chars from the offered list of %s; exact/fragment/absent as in the tool '
+                'docstring; transfer = exact + fragment.\n\n' % (len(pool), os.path.basename(a.pool)))
+        f.write('cases %d | distinct %d | exact %d fragment %d absent %d | transfer %d/%d\n\n'
+                % (len(percase), len(lines_sorted), n_exact, n_frag, n_abs, transferred, len(lines_sorted)))
+        f.write('compiled expect_contains literals: %d, covering %d of %d distinct lines.\n\n'
+                % (len(lits), len(cov), len(lines_sorted)))
+        f.write('deletion mutant (drop every POOL-ABSENT line, keep covered surface byte-identical): '
+                'identical verdict %d/%d, distinguishable %d/%d, pass-both %d, unverified-both %d.\n\n'
+                % (identical, len(percase), distinguishable, len(percase), pass_both, unv_both))
+        f.write('VERDICT: %s (literal-covered fraction %s = %.1f%% of the distinct verdict surface)\n' % (verdict, cov_frac, cov_pct))
+        for l in lits:
+            f.write('- literal %r covers %d observed line(s)\n'
+                    % (l, sum(1 for o in lines_sorted if l in o)))
+    with open(os.path.join(a.out, 'counts.env'), 'a') as f:
+        f.write('ECHO_RULE=A+C\nECHO_NOTE=%d\nECHO_INTERVAL=%d\n'
+                'ECHO_NON=%d\nECHO_TRANSFER=%d\nECHO_COV=%d\nECHO_COV_FRACT=%s\n'
+                % (n_note_echo, n_intv_echo, len(non_echo), echo_transfer, len(echo_cov), echo_cov_frac))
+    with open(os.path.join(a.out, 'REPORT.md'), 'a') as f:
+        f.write('\n## Echo-excluded (input-echo lines removed, rule A+C)\n\n'
+                'echo classes dropped: %d note-sequence (rule A) + %d interval-sequence (rule C) = %d\n\n'
+                'non-echo distinct lines: %d\n\n'
+                'echo-excluded transfer: %d/%d\n\n'
+                'echo-excluded covered fraction: %s = %.1f%%\n'
+                % (n_note_echo, n_intv_echo, n_note_echo + n_intv_echo,
+                   len(non_echo), echo_transfer, len(non_echo), echo_cov_frac, echo_cov_pct))
+    print('ECHO_RULE=A+C ECHO_NOTE=%d ECHO_INTERVAL=%d' % (n_note_echo, n_intv_echo))
+    print('ECHO_NON=%d ECHO_TRANSFER=%d/%d ECHO_COV_FRACT=%s'
+          % (len(non_echo), echo_transfer, len(non_echo), echo_cov_frac))
+    print('SKILL=%s VERDICT=%s CASES=%d POOL=%d DISTINCT=%d EXACT=%d FRAG=%d ABSENT=%d '
+          'TRANSFER=%d LITS=%d COVERED=%d IDENTICAL=%d DIST=%d PASS_BOTH=%d UNV_BOTH=%d '
+          'COV_FRACT=%s'
+          % (a.skill, verdict, len(percase), len(pool), len(lines_sorted), n_exact, n_frag,
+             n_abs, transferred, len(lits), len(cov), identical, distinguishable, pass_both, unv_both,
+             cov_frac))
+
+if __name__ == '__main__':
+    main()
