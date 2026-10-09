@@ -200,8 +200,19 @@ Use the name of the person you mean to reach: chat reply <their-name> <message>"
     # into the conversation, and gets the same repeat check as `chat send`.
     # A reply stamped to a specific inbound is an answer, and two people (or
     # one person twice) may deserve the same answer, so those are exempt.
-    if [[ -z "$reply_to" && "$force" -eq 0 ]]; then
-        _refuse_repeat "$from" "$to_name" "$message"
+    # A stamped reply stays exempt from the 24h exact-text check (two people,
+    # or one person twice, may deserve the same answer) but not from a short
+    # one: on 2026-09-21 concurrent wakes posted the same line to one thread
+    # three times in 100 seconds, each answering a different inbound, so the
+    # per-inbound answered guard never fired. Same text to the same person
+    # inside CHAT_REPLY_REPEAT_WINDOW (default 10m) is one answer; --force
+    # still sends a deliberate second.
+    if [[ "$force" -eq 0 ]]; then
+        if [[ -z "$reply_to" ]]; then
+            _refuse_repeat "$from" "$to_name" "$message"
+        else
+            _refuse_repeat "$from" "$to_name" "$message" "${CHAT_REPLY_REPEAT_WINDOW:-10m}"
+        fi
     fi
 
     # Answered guard: if a reply from us stamped to this step is already in
@@ -968,13 +979,13 @@ _inbound_from() {
 # mind failed to make on 2026-09-08 (four sends of the same two papers) now
 # lives in the tool; `--force` overrides it (design/outbound_delivery.md, part 6).
 _refuse_repeat() {
-    local from="$1" to="$2" message="$3" tf idx window_s hit
+    local from="$1" to="$2" message="$3" win="${4:-}" tf idx window_s hit
     tf=$(traj path "${ROOT_TRAJ_ID:-$TRAJ_ID}" 2>/dev/null) || return 0
     [[ -n "$tf" && -f "$tf" ]] || return 0
     idx="$(dirname "$tf")/messages.jsonl"
     _index_update "$tf" "$idx" || true
     [[ -f "$idx" ]] || return 0
-    window_s=$(_duration_s "${CHAT_REPEAT_WINDOW:-24h}")
+    window_s=$(_duration_s "${win:-${CHAT_REPEAT_WINDOW:-24h}}")
     [[ "$window_s" =~ ^[0-9]+$ && "$window_s" -gt 0 ]] || return 0
     local msg_file; msg_file=$(mktemp) || return 0
     printf '%s' "$message" > "$msg_file"

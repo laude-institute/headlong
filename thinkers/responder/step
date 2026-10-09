@@ -834,6 +834,14 @@ reply=$(printf '%s' "$reply" | _redact_card)
 
 reply_args=()
 [[ -n "$trigger_step_id" ]] && reply_args+=(--reply-to "$trigger_step_id")
+# A deferral holding line is the same sentence every time on purpose: it is
+# what the responder says while the mind works, and the second person to write
+# in inside CHAT_REPLY_REPEAT_WINDOW deserves it as much as the first. The
+# short repeat window that stops concurrent wakes posting the same answer
+# twice would refuse it and leave that person with nothing, so this one send
+# is deliberate (--force). The per-inbound answered guard still stops a second
+# holding line on the same inbound.
+[[ -n "$deferred_request" ]] && reply_args+=(--force)
 if [[ -n "$reply" ]] && printf '%s' "$reply" | chat reply ${reply_args[@]+"${reply_args[@]}"} "$msg_from"; then
     _extra=$(_finish_metrics)
     _extra=$(printf '%s' "$_extra" | jq -c --argjson s "$structured" --arg p "$_parse" '. + {structured: ($s == 1), parse: $p}')
