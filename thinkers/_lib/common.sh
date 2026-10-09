@@ -787,3 +787,54 @@ _build_shellm_flags() {
         printf '%s\n' "--bin" "$path"
     done
 }
+
+# ---------------------------------------------------------------------------
+# Prompt redaction
+# ---------------------------------------------------------------------------
+
+# Scrub credentials out of a wakeup prompt before it reaches a model. The
+# recent stream, the outbound ledger and the routing signals quote the mind
+# log verbatim, and one pasted token was re-quoted into 133 later log entries
+# because every prompt covering its window carried it back in. A companion
+# change scrubs the same shapes at the traj append write point, but the log
+# already holds the old values and every prompt re-quotes them, so the prompt
+# boundary is where they must stop for good. Keep the shape rules and the env
+# name list in sync with traj_redact in bin/traj.
+prompt_redact() {
+    local s="$1" v n
+    for n in GITHUB_TOKEN GH_TOKEN HOMEBREW_GITHUB_API_TOKEN GITHUB_PAT \
+             ANTHROPIC_API_KEY LLM_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY \
+             GEMINI_API_KEY GOOGLE_API_KEY OPENCODE_API_KEY SLACK_BOT_TOKEN \
+             SLACK_APP_TOKEN SLACK_USER_TOKEN SLACK_TOKEN TELEGRAM_BOT_TOKEN \
+             HF_TOKEN HUGGING_FACE_HUB_TOKEN AWS_SECRET_ACCESS_KEY \
+             AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID STRIPE_SECRET_KEY \
+             SENDGRID_API_KEY TWILIO_AUTH_TOKEN DATABASE_URL REDIS_URL; do
+        v="${!n:-}"
+        [[ -n "$v" && ${#v} -ge 8 ]] && s="${s//"$v"/<redacted:value>}"
+    done
+    printf '%s' "$s" | LC_ALL=C sed -E \
+        -e 's/gh[pousr]_[A-Za-z0-9]{20,}/<redacted:github-token>/g' \
+        -e 's/github_pat_[A-Za-z0-9_]{20,}/<redacted:github-token>/g' \
+        -e 's/xox[a-z]-[A-Za-z0-9_.-]{10,}/<redacted:slack-token>/g' \
+        -e 's/(^|[^A-Za-z0-9])sk-[A-Za-z0-9_.=-]{20,}/\1<redacted:api-key>/g' \
+        -e 's/(^|[^0-9])[0-9]{4}([ -][0-9]{4}){2,3}([^0-9]|$)/\1<redacted:card>\3/g' \
+        -e 's/(^|[^0-9A-Za-z])[0-9]{15,16}([^0-9]|$)/\1<redacted:card>\2/g' \
+        -e 's/(^|[^0-9A-Za-z])(card|pan|credit|debit|amex|visa|mastercard)[^A-Za-z0-9]{0,8}(the |is |was )?[0-9][0-9 -]{11,27}[0-9]/\1\2 <redacted:card>/Ig' \
+        -e 's/hf_[A-Za-z0-9]{20,}/<redacted:hf-token>/g' \
+        -e 's/AIza[A-Za-z0-9_-]{30,}/<redacted:google-key>/g' \
+        -e 's/(AKIA|ASIA)[A-Z0-9]{16}/<redacted:aws-key>/g' \
+        -e 's/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/<redacted:jwt>/g' \
+        -e 's#://[^/@[:space:]]+:[^/@[:space:]]+@#://<redacted:basic-auth>@#g' \
+        -e '/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/,/-----END [A-Z0-9 ]*PRIVATE KEY-----/c\
+<redacted:private-key>' \
+        -e 's#"auth"[[:space:]]*:[[:space:]]*"[A-Za-z0-9+/=]{16,}"#"auth": "<redacted:docker-auth>"#g' \
+        -e 's/(^|[^A-Za-z0-9])((sk|rk)_live_[A-Za-z0-9]{8,})/\1<redacted:stripe-key>/g' \
+        -e 's/(^|[^A-Za-z0-9])(whsec_[A-Za-z0-9]{8,})/\1<redacted:stripe-hook>/g' \
+        -e 's/(^|[^A-Za-z0-9])(npm_[A-Za-z0-9]{20,})/\1<redacted:npm-token>/g' \
+        -e 's/(^|[^A-Za-z0-9])(glpat-[A-Za-z0-9_-]{10,})/\1<redacted:gitlab-token>/g' \
+        -e 's/(^|[^A-Za-z0-9])(dckr_pat-[A-Za-z0-9_.-]{10,})/\1<redacted:docker-token>/g' \
+        -e 's/(^|[^A-Za-z0-9])(SG\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/\1<redacted:sendgrid-key>/g' \
+        -e 's/(^|[^A-Za-z0-9])(SK[0-9a-f]{32})/\1<redacted:twilio-key>/g' \
+        -e 's/(^|[^A-Za-z0-9])(key-[A-Za-z0-9]{20,})/\1<redacted:mailgun-key>/g' \
+        -e 's/((aws|AWS)_secret_access_key)[[:space:]]*[=:][[:space:]]*[^[:space:]]+/\1=<redacted:aws-secret>/g'
+}
