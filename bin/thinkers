@@ -323,8 +323,18 @@ _start_dispatcher() {
     # dispatcher instances — which would double-dispatch every step —
     # self-terminating.
     local dispatcher_token
-    dispatcher_token="$(date +%s).$$.$RANDOM"
-    printf '%s' "$dispatcher_token" > "$run_dir/dispatcher.token"
+    # Minted from 16 bytes of /dev/urandom. The old date+pid+RANDOM mint
+    # collided when two dispatchers started in the same second (pids repeat
+    # across forks), so both passed the ownership check and double-dispatched
+    # every due wake (the 2026-09-22/23 5x and 2x sends).
+    dispatcher_token="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    [[ -n "$dispatcher_token" ]] || dispatcher_token="$(date +%s)-$$-$RANDOM-$$"
+    # Write the token atomically (temp + rename). Two starts writing the same
+    # file in the same instant could otherwise interleave their writes and
+    # leave a token neither one owns, which would make every dispatcher exit
+    # on the ownership check and leave the mind with none.
+    printf '%s' "$dispatcher_token" > "$run_dir/dispatcher.token.$$"
+    mv "$run_dir/dispatcher.token.$$" "$run_dir/dispatcher.token"
 
     # Build subscription map: thinker_name -> [traj_file, types_pattern, trigger_self]
     # We store this as lines: THINKER_NAME\tTRAJ_FILE\tTYPES_REGEX\tTRIGGER_SELF
@@ -421,6 +431,23 @@ _start_dispatcher() {
         trap '_cleanup_dispatcher' EXIT
         trap '_dispatcher_on_signal INT' INT
         trap '_dispatcher_on_signal TERM' TERM
+        # Single-owner the dispatcher role with a real lock, held on fd 4
+        # for the life of the loop and released on exit. The token check alone
+        # could not stop two same-second starts from both dispatching.
+        exec 4>"$run_dir/dispatcher.lock"
+        if command -v flock >/dev/null 2>&1; then
+            # Wait for the lock instead of bowing out. A `thinkers start` means
+            # take over: it has already written its own token, so the incumbent
+            # exits within a tick of seeing it and releases the lock. Bowing out
+            # on contention (flock -n) left NO dispatcher at all whenever a
+            # start overlapped a live one - the incumbent exits on the token
+            # mismatch and the newcomer had already quit.
+            flock -w 15 4 || {
+                printf '%s [dispatcher] lock timeout waiting for the incumbent - exiting\n' \
+                    "$(date -u +%FT%TZ)" >&2
+                exit 0
+            }
+        fi
 
         # Start tail -F for each unique traj file, tagged with traj path.
         # Track our own tail PIDs separately from the shared tail_pids file:
@@ -922,8 +949,63 @@ _start_dispatcher() {
         # the monolith's old per-step `setsid` background timer, which never ran
         # on macOS (no setsid) so spontaneity silently died. Generic over any
         # thinker; the monolith is the only current writer.
+        # Crash recovery for claim receipts. claimed/<name> exists only between
+        # the claim and the launch of its step, so one older than
+        # THINKERS_CLAIM_STALE_SECS means the dispatcher died in that window and
+        # the send would otherwise be lost silently. Re-arm it as a due wake so
+        # the normal path fires it again: a scheduled wake is at-least-once, and
+        # a rare repeat is better than a post that never goes out.
+        _sweep_claims() {
+            local _cf _cbase _cm _cage _cwa _ct _wt _sf _sm _sage _stale="${THINKERS_CLAIM_STALE_SECS:-30}"
+            for _cf in "$run_dir"/claimed/*; do
+                [[ -f "$_cf" ]] || continue
+                _cm=$(stat -c %Y "$_cf" 2>/dev/null || stat -f %m "$_cf" 2>/dev/null || echo 0)
+                _cage=$(( $(date +%s) - _cm ))
+                (( _cage < _stale )) && continue
+                _cbase=$(basename "$_cf")
+                _cwa="$run_dir/$_cbase.wake_at"
+                # A stale claim and a wake_at for the same name collide on one
+                # name-keyed due time, and one pending due time per name is the
+                # scheduler's contract. The wake_at is the live schedule, so drop the
+                # claim and keep the scheduled time. The claim's own due time is in the
+                # past by the time it is stale (a claim only forms once its wake is
+                # already due) and the payload either one fires is the same constant
+                # wake for the name, so re-arming with the claim's time only fires the
+                # live occurrence early: the early send this sweep guards against.
+                if [[ -f "$_cwa" ]]; then
+                    _ct=$(cat "$_cf" 2>/dev/null) || _ct=""
+                    _wt=$(cat "$_cwa" 2>/dev/null) || _wt=""
+                    if [[ "$_wt" =~ ^[0-9]+$ ]]; then
+                        printf '%s [dispatcher]   dropped stale claim %s, kept scheduled wake_at %s\n' "$(date -u +%FT%TZ)" "$_cbase" "$_wt" >&2
+                    elif [[ "$_ct" =~ ^[0-9]+$ ]]; then
+                        printf '%s' "$_ct" > "$_cwa" 2>/dev/null || true
+                        printf '%s [dispatcher]   re-armed stale claim %s (age %ss)\n' "$(date -u +%FT%TZ)" "$_cbase" "$_cage" >&2
+                    else
+                        printf '%s [dispatcher]   dropped stale claim %s (unreadable due time), left the existing wake_at alone\n' "$(date -u +%FT%TZ)" "$_cbase" >&2
+                    fi
+                    rm -f "$_cf"
+                else
+                    mv -f "$_cf" "$_cwa" 2>/dev/null || rm -f "$_cf"
+                    printf '%s [dispatcher]   re-armed stale claim %s (age %ss)\n' "$(date -u +%FT%TZ)" "$_cbase" "$_cage" >&2
+                fi
+            done
+            # A sent receipt that outlived its step is a crash between the launch
+            # and the cleanup. The send already happened, so drop the evidence
+            # rather than re-arm it: re-arming here is exactly the double fire.
+            for _sf in "$run_dir"/sent/*; do
+                [[ -f "$_sf" ]] || continue
+                _sm=$(stat -c %Y "$_sf" 2>/dev/null || stat -f %m "$_sf" 2>/dev/null || echo 0)
+                _sage=$(( $(date +%s) - _sm ))
+                (( _sage < _stale )) && continue
+                rm -f "$_sf"
+                printf '%s [dispatcher]   dropped stale sent receipt %s (age %ss)\n' "$(date -u +%FT%TZ)" "$(basename "$_sf")" "$_sage" >&2
+            done
+            return 0
+        }
+
         _scheduled_wake_check() {
             local _wf _wname _wat _now
+            _sweep_claims
             _now=$(date +%s)
             for _wf in "$run_dir"/*.wake_at; do
                 [[ -f "$_wf" ]] || continue
@@ -937,10 +1019,38 @@ _start_dispatcher() {
                 _thinker_busy "$_wname" && continue
                 _count_active_steps
                 if [[ "$_active_step_count" -ge "$THINKERS_MAX_CONCURRENT" ]]; then continue; fi
-                rm -f "$_wf"
+                # Atomic claim: mv is the mutex. Exactly one dispatcher wins
+                # a due wake file; the others find it gone and skip, so one
+                # wake is dispatched however many dispatchers are ticking.
+                mkdir -p "$run_dir/claimed"
+                # Claim receipt: this file lives from the claim until the step
+                # is launched, so a crash in that window leaves evidence instead
+                # of swallowing the send. touch resets the clock, since mv keeps
+                # the mtime of the wake file's own write time (which can be
+                # hours old for a wake that was armed in advance).
+                _claim="$run_dir/claimed/$_wname"
+                mv "$_wf" "$_claim" 2>/dev/null || continue
+                touch "$_claim" 2>/dev/null
+                if [[ -n "${THINKERS_TEST_DIE_AFTER_CLAIM:-}" ]]; then
+                    # Fault injection for test_dispatcher_single_owner.sh: die
+                    # between the claim and the launch on purpose.
+                    kill -KILL "${BASHPID:-$$}" 2>/dev/null || exit 1
+                fi
+                # Sent receipt: renamed across atomically just before the launch.
+                # From here the send belongs to this dispatcher, and _sweep_claims
+                # never re-arms a sent receipt, so a crash after the launch cannot
+                # send the same wake twice. The trade is deliberate and narrow: a
+                # crash in the mv itself is still covered by the claim receipt
+                # above and stays at-least-once, while anything after the rename
+                # can at worst lose a send, never double it.
+                mkdir -p "$run_dir/sent"
+                _sent="$run_dir/sent/$_wname"
+                mv "$_claim" "$_sent" 2>/dev/null || continue
+                touch "$_sent" 2>/dev/null
                 printf '%s [dispatcher]   scheduled wake -> %s (due %ss ago)\n' "$(date -u +%FT%TZ)" "$_wname" "$((_now - _wat))" >&2
                 _dispatch_step "$_wname" "$(jq -nc --arg source monolith-timer \
                     '{type:"monolith-wake", content:"wake", source:$source}')"
+                rm -f "$_sent"
             done
         }
 
