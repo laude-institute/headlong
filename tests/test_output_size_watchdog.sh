@@ -103,7 +103,7 @@ fi
 
 # The limit applies to one block, and zero keeps the previous unlimited policy.
 fence 'end=$((SECONDS+2)); while [ $SECONDS -lt $end ]; do printf "x%.0s" {1..1000}; echo; sleep 0.05; done; echo completed > completed' > "$WORK/script/1"
-for limit in 0 104857600; do
+for limit in 0 10485760; do
     SHELLM_MAX_OUTPUT_SIZE="$limit" run_shellm "allowed case $limit"
     if [[ -f "$WORK/wd/completed" ]] && ! grep -q 'shellm-watchdog' "$WORK/err"; then
         ok "limit $limit lets bounded output finish"
@@ -111,6 +111,35 @@ for limit in 0 104857600; do
         bad "limit $limit lets bounded output finish"
     fi
 done
+
+# --- a flood of trace lines does not hold the run after the kill -------------
+# A busy loop under xtrace writes one "+ :" line per pass. The progress echo
+# used to replay every line at about 240 a second, so a million lines held the
+# run for over an hour after the command was dead (Audel 2026-10-07: 27M lines,
+# 26 h). The echo now skips to the newest lines and the kept output is bounded.
+fence 'while :; do :; done' > "$WORK/script/1"
+flood_t0=$SECONDS
+SHELLM_MAX_OUTPUT_SIZE=4000000 SHELLM_INACTIVITY_TIMEOUT=600 SHELLM_INACTIVITY_MAX=600 \
+    run_shellm "flood case"
+flood_s=$((SECONDS - flood_t0))
+if grep -q 'shellm-watchdog\] output timeout' "$WORK/err" && grep -qx 'done' "$WORK/out" \
+    && [[ "$flood_s" -lt 60 ]]; then
+    ok "trace flood is killed and the run finishes in ${flood_s}s"
+else
+    bad "trace flood is killed and the run finishes" "${flood_s}s; $(tail -2 "$WORK/err")"
+fi
+if grep -q 'lines not shown' "$WORK/err" && [[ $(wc -l < "$WORK/err") -lt 5000 ]]; then
+    ok "progress echo skips a flood instead of replaying it"
+else
+    bad "progress echo skips a flood instead of replaying it" "$(wc -l < "$WORK/err") stderr lines"
+fi
+flood_traj=("$HEADLONG_HOME/trajectories"/*flood-case/trajectory.jsonl)
+if grep -q 'bytes of output dropped' "${flood_traj[@]}" 2>/dev/null \
+    && [[ $(wc -c < "${flood_traj[0]}") -lt 1000000 ]]; then
+    ok "output kept after an output kill is bounded"
+else
+    bad "output kept after an output kill is bounded" "$(wc -c < "${flood_traj[0]}" 2>/dev/null) trajectory bytes"
+fi
 
 # --- a heartbeat that never ends is killed at SHELLM_MAX_EXEC_TIME -----------
 # The output stays tiny and never goes quiet, so only the wall-clock guard can

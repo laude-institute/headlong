@@ -141,7 +141,7 @@ The LLM sees this and retries with non-interactive flags. For commands that trul
 
 A nested `shellm` run is an exception, because it produces no output for as long as its own model call is thinking. Every block gets an activity beacon file, whose path arrives as `SHELLM_ACTIVITY_FILE`, and a nested run stamps it every `SHELLM_BEACON_INTERVAL` seconds while it works. The watchdog treats a stamped beacon as activity, so a block waiting on sub-runs is not killed at `SHELLM_INACTIVITY_TIMEOUT`. A block that is silent for `SHELLM_INACTIVITY_MAX` seconds (default 900) is killed anyway, so a wedged sub-run cannot hold a run open forever, and the feedback in that case names the sub-run instead of guessing at an interactive prompt.
 
-Two more guards catch a block that is never silent. A block whose output grows past `SHELLM_MAX_OUTPUT_SIZE` bytes (default 100 MB) is killed, which stops a runaway loop. A block that has run for `SHELLM_MAX_EXEC_TIME` seconds (default 3600) is killed whatever it is doing, which stops a command that prints a heartbeat while it waits on something that never finishes. Set either to 0 to turn it off.
+Two more guards catch a block that is never silent. A block whose output grows past `SHELLM_MAX_OUTPUT_SIZE` bytes (default 10 MB) is killed, which stops a runaway loop. Only the first and last 128 KB of such a block are kept, and the progress display skips to the newest 200 lines whenever more than that arrive at once. A block that has run for `SHELLM_MAX_EXEC_TIME` seconds (default 3600) is killed whatever it is doing, which stops a command that prints a heartbeat while it waits on something that never finishes. Set either to 0 to turn it off.
 
 ## Docker sandboxing
 
@@ -363,7 +363,7 @@ All configuration is available as both CLI flags and environment variables. Flag
 | `--effort` | `SHELLM_EFFORT` | `high` | Thinking effort: low, medium, high, xhigh, max |
 | — | `SHELLM_INACTIVITY_TIMEOUT` | `30` | Seconds before killing idle execution |
 | — | `SHELLM_INACTIVITY_MAX` | `900` | Seconds before killing execution that is silent but has a live nested run |
-| — | `SHELLM_MAX_OUTPUT_SIZE` | `104857600` | Bytes of output before killing a block that keeps printing (0 disables) |
+| — | `SHELLM_MAX_OUTPUT_SIZE` | `10485760` | Bytes of output before killing a block that keeps printing (0 disables) |
 | — | `SHELLM_MAX_EXEC_TIME` | `3600` | Seconds before killing a block whatever it is doing (0 disables) |
 | — | `SHELLM_BEACON_INTERVAL` | `5` | Seconds between activity beacon stamps from a nested run |
 | `--workdir DIR` | — | fresh per-run dir | Working directory for the run |

@@ -148,7 +148,13 @@ SHELLM_INACTIVITY_MAX="${SHELLM_INACTIVITY_MAX:-900}"
 # Kill a command whose output file grows past this many bytes, even while it is
 # actively producing output (a runaway loop resets the inactivity counter every
 # check, so silence-based watchdogs never catch it). 0 disables the guard.
-SHELLM_MAX_OUTPUT_SIZE="${SHELLM_MAX_OUTPUT_SIZE:-104857600}"
+# 10 MB: the model reads about 8K of a block's output, and every stage after
+# the kill works on what is left behind.
+SHELLM_MAX_OUTPUT_SIZE="${SHELLM_MAX_OUTPUT_SIZE:-10485760}"
+# The progress echo shows at most this many new lines per poll, and a block
+# killed for output size keeps this many bytes from each end of its output.
+STREAM_MAX_LINES=200
+OUTPUT_KEEP_BYTES=131072
 # Kill a block that has run this many seconds, however it behaves. A command
 # that prints a heartbeat while it waits on something that never finishes
 # passes every other guard (Audel 2026-09-25: a scan blocked 3.5 h reading a
@@ -359,7 +365,7 @@ Environment:
   SHELLM_INACTIVITY_MAX   Seconds before killing execution that is silent but
                           has a live nested shellm run (default: 900)
   SHELLM_MAX_OUTPUT_SIZE  Bytes of output before killing a command that keeps
-                          producing output (default: 104857600; 0 disables)
+                          producing output (default: 10485760; 0 disables)
   SHELLM_MAX_EXEC_TIME    Seconds before killing a block no matter what it is
                           doing (default: 3600; 0 disables)
   SHELLM_BEACON_INTERVAL  Seconds between activity beacon touches (default: 5)
@@ -2425,9 +2431,17 @@ _stream_new_output() {
     local total_lines
     total_lines=$(wc -l < "$output_file" 2>/dev/null || echo 0)
     total_lines=$(echo "$total_lines" | tr -d ' ')
-    if [[ "$total_lines" -gt "$lines_read" ]]; then
+    if [[ "$QUIET" -eq 0 && "$total_lines" -gt "$lines_read" ]]; then
         local new_count=$((total_lines - lines_read))
         local skip_n=$((lines_read + 1))
+        # A flood is not echoed line by line. Each line below costs a fork
+        # (about 240 lines a second), so the 27M trace lines of a busy loop
+        # held a run for 26 h after the command was dead (Audel 2026-10-07).
+        if [[ "$new_count" -gt "$STREAM_MAX_LINES" ]]; then
+            printf '\033[90m  │ [... %s lines not shown ...]\033[0m\n' "$((new_count - STREAM_MAX_LINES))" >&2
+            skip_n=$((total_lines - STREAM_MAX_LINES + 1))
+            new_count=$STREAM_MAX_LINES
+        fi
         # Use tail + head to get new lines (bash 3.2 safe). pipefail OFF in a
         # subshell: the output file is written CONCURRENTLY by the running
         # command, so `head` can close after $new_count lines while `tail` is
@@ -2437,12 +2451,10 @@ _stream_new_output() {
         ( set +o pipefail; tail -n +"$skip_n" "$output_file" | head -n "$new_count" ) | while IFS= read -r line; do
             local redacted_line
             redacted_line=$(redact_sensitive "$line")
-            if [[ "$QUIET" -eq 0 ]]; then
-                if [[ "$redacted_line" == +* ]]; then
-                    printf '\033[36m  $ %s\033[0m\n' "${redacted_line#+ }" >&2
-                else
-                    printf '\033[90m  │ %s\033[0m\n' "$redacted_line" >&2
-                fi
+            if [[ "$redacted_line" == +* ]]; then
+                printf '\033[36m  $ %s\033[0m\n' "${redacted_line#+ }" >&2
+            else
+                printf '\033[90m  │ %s\033[0m\n' "$redacted_line" >&2
             fi
         done
     fi
@@ -3196,8 +3208,17 @@ exit \$__shellm_rc
         local had_nested=0
         [[ -s "$activity_file" ]] && had_nested=1
 
-        local output
-        output=$(cat "$output_file")
+        # A block killed for output size keeps only the two ends of what it
+        # wrote: everything below holds the output in one bash variable.
+        local output _out_bytes
+        _out_bytes=$(( $(wc -c < "$output_file") ))
+        if [[ "$timed_out" -eq 1 && "$kill_reason" == "output" && "$_out_bytes" -gt $((OUTPUT_KEEP_BYTES * 2)) ]]; then
+            output="$(head -c "$OUTPUT_KEEP_BYTES" "$output_file")
+[... $((_out_bytes - OUTPUT_KEEP_BYTES * 2)) bytes of output dropped ...]
+$(tail -c "$OUTPUT_KEEP_BYTES" "$output_file" | tail -n +2)"
+        else
+            output=$(cat "$output_file")
+        fi
         rm -f "$output_file" "$exec_pid_file" "$watchdog_pid_file" "$timeout_marker" "$activity_file"
         local _exec_s=$(( $(date +%s) - _exec_t0 ))
 
