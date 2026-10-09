@@ -67,6 +67,15 @@ GOAL_REVIEW_DAYS="${MONOLITH_GOAL_REVIEW_DAYS:-7}"
 state_dir="$IDENTITY_DIR/run"
 mkdir -p "$state_dir"
 state_file="$state_dir/monolith_backoff_state.json"
+# Separate, atomic cache. Old installs and unreadable caches always run fully.
+fast_file="$state_dir/monolith_fastpath.json"
+fast_signature=""
+fast_started=0
+fast_enabled="${MONOLITH_IDLE_FASTPATH:-1}"
+fast_last=0
+if [[ "$fast_enabled" == 1 && -f "$fast_file" ]]; then
+    fast_last=$(jq -er '.last_full | select(type == "number" and . >= 0 and . == floor)' "$fast_file" 2>/dev/null) || fast_last=0
+fi
 wake_at_file="$state_dir/$THINKER_NAME.wake_at"
 
 # delay in seconds for a backoff level.
@@ -127,6 +136,12 @@ arm_wake() {
     [[ -f "$state_dir/dispatcher.token" ]] || return 0
     local now
     now=$(date +%s)
+    # Preserve the floor even with a custom backoff cap above 15 minutes.
+    if [[ "$fast_enabled" == 1 && "$fast_last" -gt 0 ]]; then
+        local remaining=$(( fast_last + 900 - now ))
+        (( remaining < 0 )) && remaining=0
+        (( delay > remaining )) && delay=$remaining
+    fi
     printf '%s' "$(( now + delay ))" > "$wake_at_file"
 }
 
@@ -220,8 +235,14 @@ PENDING_MAX_AGE="${MONOLITH_PENDING_MAX_AGE:-14d}"
 PENDING_OVERDUE_S="${MONOLITH_PENDING_OVERDUE_S:-14400}"
 PENDING_LIST_MAX="${MONOLITH_PENDING_LIST_MAX:-5}"
 pending_req=""
+pending_ok=0
+pending_json=""
 if command -v chat >/dev/null 2>&1; then
-    pending_req=$(chat pending --json --max-age "$PENDING_MAX_AGE" 2>/dev/null | jq -r \
+    if pending_json=$(chat pending --json --max-age "$PENDING_MAX_AGE" 2>/dev/null) &&
+        printf '%s' "$pending_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        pending_ok=1
+    fi
+    pending_req=$(printf '%s' "$pending_json" | jq -r \
         --argjson overdue "$PENDING_OVERDUE_S" --argjson max "$PENDING_LIST_MAX" '
         def age_text: if . < 3600 then "\(. / 60 | floor) min"
                       elif . < 86400 then "\(. / 3600 | floor) h"
@@ -267,9 +288,50 @@ related_query="$hints $(printf '%s\n' "$recent_context" | tail -n 3 | jq -r '.co
 # Clock and scheduled-goal windows go first, after the placeholder test and
 # the related-memories query: they are present on every wake and are not the
 # wake's topic (design/scheduled_goals.md).
-_sched=$(_prompt_section schedule _schedule_signals "$MEM_DIR") || _sched=""
+schedule_ok=1
+_sched=$(_prompt_section schedule _schedule_signals "$MEM_DIR") || { _sched=""; schedule_ok=0; }
 [[ -n "$_sched" ]] && hints="$_sched
 $hints"
+
+# Only a timer after a successful idle turn may skip. Pending work, reactive
+# triggers and routing nudges always buy a model turn. Probe errors fail open.
+# Store the PRE-run signature: changes during the model call must be noticed.
+if [[ "$fast_enabled" == 1 ]]; then
+    fast_started=$(date +%s)
+    fast_runtime=$(_runtime_line) || fast_runtime=""
+    fast_raw=$(_root_traj_raw_tail) || fast_raw=""
+    fast_schedule=$(printf '%s\n' "$_sched" | sed '/^- Now:/d')
+    if [[ -n "$fast_runtime" && -n "$fast_raw" ]]; then
+        fast_signature=$(printf '%s\n' "$fast_raw" | python3 "$SCRIPT_DIR/../_lib/wake_signature.py" \
+            "$fast_runtime" "$fast_schedule" \
+            "$THINK_MODEL|$SHARE_HINT_EVERY|$GOAL_REVIEW_DAYS|$RELATED_MEMORIES|${HEADLONG_TZ:-UTC}" \
+            "$MEM_DIR" "$IDENTITY_DIR/core_identity_prompt.md" "$SCRIPT_DIR/prompt.md" \
+            "$SKILLS_DIR" "$SKILLS_KERNEL_DIR" \
+            "$SCRIPT_DIR/step" "$SCRIPT_DIR/../_lib/common.sh" \
+            "$SCRIPT_DIR/../_lib/wake_signature.py") || fast_signature=""
+    fi
+    if [[ "$trigger_type" == "monolith-wake" && "$pending_ok" == 1 && "$schedule_ok" == 1 &&
+          -n "$fast_signature" &&
+          "$(printf '%s' "$pending_json" | jq 'length')" == 0 &&
+          "$hints" != *"GOAL REVIEW"* && "$hints" != *"consider **share**"* &&
+          "$_sched" != *"DUE NOW"* ]] &&
+        (( fast_last > 0 && fast_started >= fast_last && fast_started - fast_last < 900 )) &&
+        jq -e --arg sig "$fast_signature" '.eligible == true and .signature == $sig' "$fast_file" >/dev/null 2>&1; then
+        jq -nc --arg trigger "$trigger_step_id" \
+            '{type:"idle",content:"idle",source:"monolith",reason:"unchanged-wake-signature",
+              model_skipped:true,trigger_step:$trigger}' | traj append >/dev/null
+        ticks_at_level=$(( ticks_at_level + 1 ))
+        if (( ticks_at_level >= BACKOFF_HOLD )); then
+            if (( $(_delay_for_level "$level") < BACKOFF_CAP )); then level=$(( level + 1 )); fi
+            ticks_at_level=0
+        fi
+        next_delay=$(_delay_for_level "$level")
+        related_shown="$related_prev"
+        _save_state
+        printf '  unchanged idle wake — model skipped (next in at most %ss)\n' "$next_delay" >&2
+        exit 0
+    fi
+fi
 
 prompt_file="$SCRIPT_DIR/prompt.md"
 [[ -f "$prompt_file" ]] || { printf 'monolith/step: error: prompt.md not found at %s\n' "$prompt_file" >&2; exit 1; }
@@ -614,6 +676,14 @@ else
     fi
 fi
 _save_state
+if [[ "$fast_enabled" == 1 ]]; then
+    fast_last="$fast_started"
+    fast_tmp=$(mktemp "$state_dir/monolith_fastpath.XXXXXX")
+    jq -nc --arg sig "$fast_signature" --argjson t "$fast_last" \
+        --argjson rc "$run_rc" --argjson work "$did_work" --argjson probe "$(( pending_ok && schedule_ok ))" \
+        '{signature:$sig,last_full:$t,eligible:($rc == 0 and $work == 0 and $probe == 1 and $sig != "")}' > "$fast_tmp"
+    mv "$fast_tmp" "$fast_file"
+fi
 
 if [[ -n "$run_response" ]]; then
     printf '  [monolith] %s\n' "$(printf '%s' "$run_response" | head -1)"
