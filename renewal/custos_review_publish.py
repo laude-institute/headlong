@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import subprocess
 
 from custos_dream import write_json
@@ -96,3 +97,6 @@ def main(argv=None):
     except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
         print(json.dumps({'ok': False, 'error': str(error) if isinstance(error, ValueError) else type(error).__name__,
                           'retry': 'Read back the original review/marker; an uncertain submission must not be repeated.'})); return 1
+
+if __name__ == '__main__':
+    sys.exit(main())

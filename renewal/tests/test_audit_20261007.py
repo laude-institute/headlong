@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -268,5 +269,10 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'unchanged body'):self.send(update_of=1,update_evidence='same conclusion again')
         self.assertEqual(len(self.posts),1)
 
+
+    def test_direct_module_run_exits_nonzero_not_silent(self):
+        module = str(Path(__file__).resolve().parents[1] / 'custos_review_publish.py')
+        result = subprocess.run([sys.executable, module], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
 
 if __name__=='__main__':unittest.main()
