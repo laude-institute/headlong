@@ -681,7 +681,9 @@ _index_apply() {
         _index_range \
             | grep -F '"type":"message"' \
             | jq -c --argjson cap "$_INDEX_CONTENT_CAP" 'fromjson? // empty
-                | select(.type == "message" and (.from // "") != "" and (.to // "") != "")
+                | select(.type == "message"
+                         and ((.from // "") | type) == "string" and (.from // "") != ""
+                         and ((.to // "") | type) == "string" and (.to // "") != "")
                 | {step_id, ts, from, to, reply_to, filename, key,
                    content: ((.content // "") | tostring
                              | if length > $cap then .[0:$cap] + "…[truncated]" else . end)}
