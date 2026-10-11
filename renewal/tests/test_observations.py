@@ -21,7 +21,7 @@ class NativeFixture:
         self.messages = {}
         self.fail_capture = False
 
-    def capture(self, payload):
+    def capture(self, payload, deferred=False):
         if self.fail_capture:
             raise APIError("native_capture_failed")
         key = payload["request_id"]
@@ -767,6 +767,14 @@ class ScheduleTests(unittest.TestCase):
         self.run_at("2026-09-21T09:03:00-06:00")
         self.assertEqual(self.emitted(), ["schedule:mealplan-monday:2026-09-14T09:00",
                                           "schedule:mealplan-monday:2026-09-21T09:00"])
+
+    def test_configured_kitchen_task_is_captured_once_before_observation(self):
+        self.config['schedules'][0]['native_task'] = True
+        self.run_at('2026-09-14T09:03:00-06:00')
+        self.run_at('2026-09-14T09:30:00-06:00')
+        self.assertEqual(len(self.native.goals),1)
+        self.assertEqual(self.native.events[0][0],'capture')
+        self.assertEqual(len([e for e in self.native.events if e[0]=='capture']),1)
 
     def test_a_slot_missed_beyond_grace_is_recorded_not_replayed(self):
         self.run_at("2026-09-14T16:00:01-06:00")  # 7 h late, default grace 6 h

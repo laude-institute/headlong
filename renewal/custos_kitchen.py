@@ -18,7 +18,7 @@ REMINDER = re.compile(r'\b(remind|reminder|alarm|nudge|ping me|ping us)\b', re.I
 STOP = re.compile(r"\b(we['’]?re all set|we are all set|leave (?:it|the rest) (?:be|to us)|take no action|skip (?:it|this week)|not this week|stop (?:reminding|nagging)|no more (?:pings|reminders))\b", re.I)
 CONTEXT = re.compile(r"\b(?:we|I|[A-Z][a-z]+ and I) (?:like|love|usually|often) to (?:make|eat|cook)|\b(?:just|only) (?:giving|sharing) context\b", re.I)
 REQUEST = re.compile(r"\b(?:can you|could you|would you)\b|(?:^|[\n.!?]\s*)(?:(?:hi|thanks|thank you)[!, ]*\s*)?(?:please\s+)?(?:add|remove|drop|swap|put|grab|include|keep|move|change|let['’]s|we need|I need|I['’]d like|I want)\b", re.I)
-INVENTORY = re.compile(r"\b(?:we|I) (?:already )?have\b|\b(?:we|I) (?:don['’]t|do not) need\b", re.I)
+INVENTORY = re.compile(r"\b(?:we|I) (?:already )?have\b|\b(?:we|I) (?:don['’]t|do not) need\b|\b(?:we['’]?re|we are|I['’]?m|I am) (?:out of|low on)\b", re.I)
 KINDS = {'request', 'question', 'preference', 'inventory', 'context', 'stop'}
 ACTIONS = {'add','remove','swap','recipe','plan','pickup','inventory','preference','query','stop','context'}
 
@@ -48,6 +48,8 @@ def fallback(body):
     if REMINDER.search(clean) or BUILD.search(clean): return None
     if CONTEXT.search(clean) and not REQUEST.search(clean):
         return {'kind': 'context', 'action': 'context', 'evidence': CONTEXT.search(clean)[0]}
+    if INVENTORY.search(clean) and re.search(r'\b(onions?|garlic|spices?|cumin|paprika|vinegar|salt|pepper|flour|eggs?|butter|stock|panko|breadcrumbs?|parsley|sage|thyme)\b',clean,re.I):
+        return {'kind':'inventory','action':'inventory','evidence':clean[:400]}
     if not FOOD.search(clean) and not re.search(r'https?://|\b(?:Thursday|Monday|Tuesday|Wednesday|Friday|Saturday|Sunday)\b', clean, re.I): return None
     if re.search(r"\b(?:what(?:['’]s| is)|which)\b.*\b(?:meal|dinner|recipe)\b", clean, re.I): return {'kind': 'question', 'action': 'query', 'evidence': clean[:400]}
     if INVENTORY.search(clean): return {'kind': 'inventory', 'action': 'inventory', 'evidence': INVENTORY.search(clean)[0]}
@@ -93,6 +95,9 @@ def hint(intent):
     return ('NOW: read `mealplan context`, load custos-mealplan, import a requested recipe URL with `mealplan recipe import URL` when needed, and apply only the source-backed '
             + intent['action'] + ' change using revision/cursor and a stable operation ID. '
             'Use mealplan change then reconcile/calendar as needed; preserve household edits. '
+            'Every agreed recipe or pantry modification includes the relevant verified cart edits; no separate shopping request is needed. '
+            'Record dated pantry observations with mealplan pantry, preserving the original date, source quote, confidence and quantity. '
+            'Custos suggestions use propose; only household approval uses approve/dinner. '
             'Return one verified result to the source message, then complete the task. Checkout is never owed work. '
             'Source interpretation: ' + json.dumps(intent, ensure_ascii=False))
 
@@ -204,7 +209,42 @@ def household_text(value):
     return bool(FOOD.search(clean))
 
 
-def delivery_block(db, policy, conversation, message, request_id=None, created=0, kind='completion'):
+def scheduled_authorized(db, policy, conversation, send_id, now=None):
+    """Only operator-configured contacts, exact IDs, destinations and due windows.
+
+    The actions spool owns deduplication. No caller-supplied flag grants authority.
+    A later household opt-out or same-week skip wins at the instant of delivery.
+    """
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    cfg = policy.get('kitchen_checkins', {})
+    if not cfg.get('enabled') or conversation != cfg.get('target') or not isinstance(send_id,str): return False
+    clock = datetime.fromtimestamp(time.time() if now is None else now, ZoneInfo('America/Denver'))
+    approved = float(cfg.get('authorized_at',0))
+    if send_id == cfg.get('bootstrap_id'):
+        if not approved <= clock.timestamp() <= approved+7*86400: return False
+    else:
+        match = re.fullmatch(r'kitchen-(wednesday|friday):(\d{4}-\d{2}-\d{2})', send_id)
+        if not match: return False
+        schedule = cfg.get(match[1],{})
+        try:
+            hour, minute = map(int,schedule['at'].split(':'))
+            slot = datetime.fromisoformat(match[2]).replace(hour=hour,minute=minute,tzinfo=clock.tzinfo)
+        except (ValueError,KeyError,TypeError): return False
+        if slot.weekday() != (2 if match[1]=='wednesday' else 4) or slot.timestamp() < approved: return False
+        if not slot <= clock <= slot+timedelta(hours=6): return False
+    for row in db.execute('SELECT payload FROM inbox'):
+        item = json.loads(row['payload']); person=policy.get('people',{}).get(item.get('sender_aci'),{})
+        if person.get('authority') != 'operator' or person.get('label') not in {'Hal','Dani'} or item.get('reaction'): continue
+        at = item.get('timestamp',0)/1000
+        if at <= approved: continue
+        body = item.get('body','')
+        if re.search(r'\b(stop|cancel|no more|don.t|do not)\b.{0,45}\b(check.?ins?|recaps?|meal.?plan(?:ning)? (?:messages|reminders)|kitchen reminders)\b|\b(no more reminders|stop reminding|leave the rest to us)\b',body,re.I): return False
+        if re.search(r'\b(skip this week|not this week)\b',body,re.I) and datetime.fromtimestamp(at,clock.tzinfo).isocalendar()[:2] == clock.isocalendar()[:2]: return False
+    return True
+
+
+def delivery_block(db, policy, conversation, message, request_id=None, created=0, kind='completion', send_id=None):
     """Send-time check over host-verified intake; no second goals store or LLM."""
     rows = db.execute("SELECT id,payload FROM inbox ORDER BY json_extract(payload,'$.timestamp') DESC").fetchall()
     source = None; latest_stop = 0; kitchen_source = False
@@ -215,6 +255,12 @@ def delivery_block(db, policy, conversation, message, request_id=None, created=0
         if person.get('authority') != 'operator' or person.get('label') not in {'Hal', 'Dani'}: continue
         if row['id'] == request_id and item.get('conversation') == conversation: source = item; kitchen_source = household_text(text)
         if STOP.search(text): latest_stop = max(latest_stop, item.get('timestamp', 0) / 1000)
+    if scheduled_authorized(db,policy,conversation,send_id):
+        if re.search(r'last call|order locks|(?:reminder|nudge).*checkout|place (?:it|the order)|check ?out now', message or '', re.I):
+            return 'scheduled kitchen contact does not authorize checkout pressure'
+        return None
+    if send_id and send_id.startswith(('kitchen-wednesday:','kitchen-friday:','kitchen-pantry-bootstrap-')):
+        return 'kitchen contact is not due, is cancelled, or has the wrong destination'
     if not (kitchen_source or household_text(message)): return None
     # A real explicitly requested timer has its own durable record and receipt.
     if source and REMINDER.search(source.get('body', source.get('text', ''))) and not STOP.search(source.get('body', '')): return None

@@ -46,7 +46,10 @@ class Native:
         if not self.path.is_file():
             raise APIError("native_root_missing")
 
-    def capture(self, payload):
+    def capture(self, payload, deferred=False):
+        if deferred:
+            from custos_memory import Store as NativeStore
+            return NativeStore().capture(payload, deferred=True)
         result = subprocess.run(["custos-memory", "capture"], input=canonical(payload), text=True, capture_output=True, timeout=45)
         if result.returncode:
             raise APIError("native_capture_failed")
@@ -657,7 +660,12 @@ class Observer:
             if age > int(item.get("grace_seconds", 6 * 3600)):
                 self.store.disposition(identity, "schedule_missed", {"name": item["name"], "slot": slot.isoformat(), "late_seconds": int(age)})
                 continue
-            if not self.emit(identity, "Scheduled wake \"" + item["name"] + "\" (" + slot.strftime("%A %Y-%m-%d %H:%M %Z") + "): " + item["content"], authority="operator", schedule=item["name"]):
+            content = "Scheduled wake \"" + item["name"] + "\" (" + slot.strftime("%A %Y-%m-%d %H:%M %Z") + "): " + item["content"]
+            if item.get('native_task'):
+                self.native.capture({'request_id':identity,'sender':'operator:kitchen-schedule','authority':'operator',
+                    'source_url':identity, 'content':content, 'next_action':content,
+                    'completion':'Requested check-in has a verified submission receipt, or the household cancelled/skipped it; no purchase asserted.'}, deferred=True)
+            if not self.emit(identity, content, authority="operator", schedule=item["name"]):
                 return
 
     def daily_metrics(self):

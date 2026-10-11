@@ -279,6 +279,11 @@ def main():
                 status, contacts = call({'action': 'signal-contacts'})
                 target = resolve_target(target, contacts.get('destinations') or contacts.get('contacts') or (contacts if isinstance(contacts, list) else []))
             route = route_for(target)
+            scheduled = False
+            if payload['request_id'].startswith(('kitchen-wednesday:','kitchen-friday:','kitchen-pantry-bootstrap-')):
+                code, permission = call({'action':'kitchen-contact-check','target':target,'request_id':payload['request_id']})
+                if code != 200 or not permission.get('allowed'): raise ValueError('scheduled kitchen contact is not currently authorized')
+                scheduled = True
             if args.goal and record_goal and record_goal['origin'].get('sender') == 'operator:ai-news-review':
                 from custos_contact_guard import timestamp
                 with Store().lock():
@@ -294,7 +299,7 @@ def main():
                     if args.reply_to or payload.get('reply_to') or payload.get('delivery_kind') or payload.get('correction_of'):
                         raise ValueError('--social is for unsolicited contact, not a correlated completion or correction')
                     social_guard(route)
-                elif payload.get('delivery_kind') != 'correction':
+                elif payload.get('delivery_kind') != 'correction' and not scheduled:
                     guard(route)
             except ValueError as refusal:
                 waiting = park_cooldown(args.goal, payload, target, args.social, refusal)

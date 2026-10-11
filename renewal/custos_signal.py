@@ -800,7 +800,7 @@ class Bridge:
                                    (encoded({'error':'attachment snapshot unavailable or corrupt'}), row['id']))
                         db.commit(); continue
                 params.update({'groupId':group} if group else {'recipient':[target[3:]]})
-                blocked = kitchen.delivery_block(self.spool.db, self.policy, target, p['message'], p.get('reply_to'))
+                blocked = kitchen.delivery_block(self.spool.db, self.policy, target, p['message'], p.get('reply_to'), send_id=row['id'])
                 if not blocked: blocked = self.claim_bot_error(target, 'action:' + row['id'], p.get('reply_to'), db)
                 if not blocked:
                     blocked = self.spool.claim_delivery(target, p.get('reply_to'), 'action:' + row['id'],

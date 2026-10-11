@@ -29,7 +29,12 @@ def flow_command(a, cycle):
     if a.cmd == 'context':
         cursor, messages = guard.family_messages()
         result = {'cursor': cursor, 'messages': messages, 'plan': call('GET', path),
-                  'policy': {'automatic_followups': False, 'purchase_status': 'unknown'}}
+                  'pantry':call('GET','/pantry'),
+                  'policy': {'scheduled_checkins':'Wednesday 15:00 and Friday 12:00 America/Denver; read custos-mealplan', 'purchase_status': 'unknown'}}
+    elif a.cmd in ('checkin','audit'):
+        result = call('GET',path+'/'+a.cmd)
+    elif a.cmd == 'pantry' and not a.file:
+        result = call('GET','/pantry')
     elif a.cmd == 'reconcile' and not a.file:
         result = call('GET', path + '/preview')
     else:
@@ -39,7 +44,7 @@ def flow_command(a, cycle):
         if not isinstance(task, str) or not re.fullmatch('[a-f0-9]{8}', task): raise ValueError('active native task ID required')
         if not isinstance(body.get('source_ids'), list) or not body['source_ids']: raise ValueError('source_ids required')
         with guard.mutation_guard(body.get('cursor'), cycle, task):
-            result = call('POST', path + '/' + {'reconcile':'apply'}.get(a.cmd, a.cmd), body)
+            result = call('POST', '/pantry/change' if a.cmd == 'pantry' else path + '/' + {'reconcile':'apply'}.get(a.cmd, a.cmd), body)
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
@@ -117,7 +122,7 @@ def show_prefs(p):
     print("staples (bought every week): " + (", ".join(p.get("staples", [])) or "(none)") + "  (`mealplan learn staples \"4 apples\"` / --remove)")
     if p.get("products"):
         print("pinned products: " + "; ".join(f"{k} -> {v.get('name') or v.get('asin')}" for k, v in p["products"].items()) + "  (`mealplan product \"item\" ASIN`)")
-    print(f"pantry: {p.get('pantry_count', len(p.get('pantry', [])))} items assumed on hand + dried spices/seeds/oils by rule, skipped from lists (`mealplan learn pantry \"item\"` / --remove)")
+    print("pantry: use `mealplan pantry` for dated stock, confidence and expiry; legacy pantry preferences are unconfirmed candidates")
 
 
 def show_plan(p):
@@ -141,8 +146,12 @@ def main():
     ap.add_argument("--dinner", action="append", default=[], metavar="DATE=SLUG"); ap.add_argument("--note"); ap.add_argument("--date"); ap.add_argument("--json", action="store_true"); ap.add_argument("--remove", action="store_true"); ap.add_argument("asin", nargs="?"); ap.add_argument("--qty", type=int); ap.add_argument("--force", action="store_true"); ap.add_argument("--snapshot", action="store_true"); ap.add_argument("--products", action="store_true"); ap.add_argument("--sync", action="store_true"); ap.add_argument("--read", action="store_true", help="I have read and recorded every family message since the plan was last touched"); ap.add_argument("--n", type=int, default=10)
     ap.add_argument("--file", help="JSON request with revision, cursor, task and operation_id")
     a = ap.parse_args()
-    wk = a.week or (call('GET', '/flow/active')['cycle_id'] if a.cmd in {'context','change','reconcile','quantity','calendar','plan','list','cart'} else None)
-    if a.cmd in {'context', 'change', 'reconcile', 'quantity', 'calendar'}:
+    if a.cmd in ('checkin','audit') and not a.week:
+        today = datetime.now(ZoneInfo('America/Denver')).date()
+        monday = today + timedelta(days=(7-today.weekday()))
+        year,week,_ = monday.isocalendar(); a.week = f'{year}-W{week:02d}'
+    wk = a.week or (call('GET', '/flow/active')['cycle_id'] if a.cmd in {'context','change','reconcile','quantity','calendar','plan','list','cart','pantry'} else None)
+    if a.cmd in {'context', 'change', 'reconcile', 'quantity', 'calendar','checkin','audit','pantry'}:
         try: return flow_command(a, wk)
         except (ValueError, OSError) as error: sys.exit(str(error))
     if ((a.cmd == 'plan' and a.sub != 'show') or (a.cmd == 'list' and a.sub != 'preview')

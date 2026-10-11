@@ -211,6 +211,12 @@ class Channel:
             with sqlite3.connect('file:' + str(self.spool) + '?mode=ro', uri=True) as db:
                 db.row_factory = sqlite3.Row
                 return kitchen.household_context(db, load_policy(self.policy))
+        if payload.get('action') == 'kitchen-contact-check' and set(payload) == {'action','target','request_id'}:
+            policy = load_policy(self.policy)
+            target = resolve(payload['target'],policy)
+            with sqlite3.connect('file:' + str(self.spool) + '?mode=ro',uri=True) as db:
+                db.row_factory = sqlite3.Row
+                return {'ok':True,'allowed':kitchen.scheduled_authorized(db,policy,target,payload['request_id'])}
         if payload == {'action': 'signal-contacts'}:
             return {'ok': True, 'contacts': destinations(load_policy(self.policy))}
         if payload.get('action') == 'signal-lane-status' and set(payload) == {'action', 'target'}:

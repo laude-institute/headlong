@@ -79,7 +79,28 @@
       "results"
     ]
   },
-  "schedules": [],
+  "schedules": [
+    {
+      "name": "mealplan-wednesday",
+      "weekday": "wed",
+      "at": "15:00",
+      "tz": "America/Denver",
+      "enabled": true,
+      "native_task": true,
+      "grace_seconds": 21600,
+      "content": "Hal requested the Wednesday 3 p.m. kitchen check-in. Read custos-mealplan. Use mealplan checkin for the upcoming cycle, read the actual household requests and calendar, show names and links for recipes the family sent, and propose recipes for remaining planned dinners. If none were sent, propose all five. Save suggestions as propose only; zero shopping until household approval. Send ONE message to Collette Haus with request_id kitchen-wednesday:YYYY-MM-DD (today's Denver date), then verify its receipt and close this task. Retain requested recipes even if undated. No reminder on silence; no checkout chasing. Honor any newer opt-out or skip."
+    },
+    {
+      "name": "mealplan-friday",
+      "weekday": "fri",
+      "at": "11:30",
+      "tz": "America/Denver",
+      "enabled": true,
+      "native_task": true,
+      "grace_seconds": 21600,
+      "content": "Hal requested a Friday NOON kitchen recap. Start preparation now: read custos-mealplan and current household context; use mealplan audit for the same upcoming cycle as Wednesday. Inspect every accepted recipe, actual cart quantities, pantry confidence/expiry through cooking dates and shared ingredient quantities. Reconcile only approved groceries and verify a fresh audit afterward. Keep unapproved proposals out of cart. At noon send ONE Collette Haus recap containing all recipe titles/links, cart/pantry audit results and one compact question listing every unresolved miss. If access fails, send the recipe recap and disclose the verification failure. Before noon park the native task until noon; no sleeping worker. Send request_id kitchen-friday:YYYY-MM-DD, verify receipt, close task without waiting for checkout. Honor newer opt-out or skip."
+    }
+  ],
   "github_prs": {
     "enabled": true,
     "author": "custos-1f916",
