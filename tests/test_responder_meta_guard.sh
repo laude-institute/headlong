@@ -108,33 +108,60 @@ export META_FIXTURE="$WORK/injected-meta" META_INJECTIONS="$WORK/injections"
 cat > "$WORK/stub/jq" <<'STUB'
 #!/usr/bin/env bash
 for arg do
-    if [[ "$arg" == *'$prev.llm_ms'* && "${INJECT_META:-0}" == 1 ]]; then
+    if [[ "$arg" == *'$prev.llm_ms'* ]] &&
+       { [[ "${INJECT_META:-0}" == 1 ]] ||
+         { [[ "${INJECT_META:-0}" == fallback ]] && [[ $(wc -l < "$STUB_CALLS") -eq 2 ]]; }; }; then
         printf "injected\n" >> "$META_INJECTIONS"
         cat "$META_FIXTURE"
         exit 0
     fi
 done
+# Fault the file-backed sync read, not jq's result: let real jq report the
+# filesystem failure. A directory is unreadable as JSON even under root.
+if [[ -n "${SYNC_FILE_FAULT:-}" && "$*" == *'select(length == 1)'* ]]; then
+    target="${!#}"
+    if [[ -f "$target" ]]; then
+        if [[ "$SYNC_FILE_FAULT" == missing ]]; then
+            rm "$target"
+        else
+            mv "$target" "$target.saved"
+            mkdir "$target"
+        fi
+        "$REAL_JQ" "$@"
+        rc=$?
+        if [[ -d "$target" ]]; then
+            rmdir "$target"
+            mv "$target.saved" "$target"
+        fi
+        exit "$rc"
+    fi
+fi
 exec "$REAL_JQ" "$@"
 STUB
 chmod +x "$WORK/stub/jq"
 
 check_case() {
     local id="$1" mode="$2" inject="$3" expected_calls="$4" expected_failure="$5"
-    local rc=0 n o
+    local rc=0 n o expected_injections
+    shift 5
     msg "$id" "fixture request"
     : > "$META_INJECTIONS"
-    STUB_MODE="$mode" INJECT_META="$inject" run_step "$id" || rc=$?
+    STUB_MODE="$mode" INJECT_META="$inject" run_step "$id" "$@" || rc=$?
     n=$(grep -c '^CALL' "$STUB_CALLS")
     o=$(obs_for "$id")
     [[ "$rc" == 0 ]] && ok "$id step completes" || bad "$id step completes" "rc=$rc"
     [[ "$n" == "$expected_calls" ]] && ok "$id call count $expected_calls" || bad "$id call count" "expected $expected_calls got $n"
     if [[ "$expected_failure" == metadata ]]; then
-        [[ "$(wc -l < "$META_INJECTIONS" | tr -d ' ')" == "$n" ]] &&
-            ok "$id injected every aggregate" || bad "$id fault injector missed writer"
+        expected_injections="$n"
+        [[ "$inject" == fallback ]] && expected_injections=1
+        [[ "$inject" == 0 ]] && expected_injections=0
+        [[ "$(wc -l < "$META_INJECTIONS" | tr -d ' ')" == "$expected_injections" ]] &&
+            ok "$id injected intended aggregate" || bad "$id fault injector missed writer"
         printf '%s' "$o" | "$REAL_JQ" -e '
             .decision == "reply-failed" and .failure == "metadata"
             and .meta_error == true and (.timed_out != true)
-            and (.llm_calls == null)
+            and (.llm_calls == null) and (.llm_ms == null)
+            and (.truncated != true)
         ' >/dev/null 2>&1 && ok "$id names unknown metadata, not zero spend or timeout" || bad "$id metadata observation" "$o"
     else
         [[ "$(field "$o" .failure)" == "$expected_failure" ]] &&
@@ -176,6 +203,44 @@ printf '%s' '{"llm_calls":1,"llm_ms":1,"truncated":1}' > "$META_FIXTURE"
 check_case numeric-truncated timeout 1 1 metadata
 printf '%s' '{"llm_calls":1,"llm_ms":"1"}' > "$META_FIXTURE"
 check_case string-duration timeout 1 1 metadata
+
+# A fast refusal is NOT a timeout. Unknown metadata alone must block retry.
+printf '%s' '{"llm_calls":1,' > "$META_FIXTURE"
+check_case corrupt-fast-refusal fail 1 1 metadata
+
+# The final sync protects successful structured and plain-text call paths.
+printf '%s' '{"reply":"fixture answer","handoff":null}' > "$STUB_REPLY_FILE"
+check_case corrupt-structured-success reply 1 1 metadata
+printf '%s' 'fixture answer' > "$STUB_REPLY_FILE"
+check_case corrupt-plain-success reply 1 1 metadata RESPONDER_STRUCTURED=0
+
+# A healthy first refusal can retry; corruption on call two must still stop.
+check_case corrupt-fallback fail fallback 2 metadata
+
+# Actual filesystem read errors take the same unknown state.
+check_case missing-meta-file fail 0 1 metadata SYNC_FILE_FAULT=missing
+check_case unreadable-meta-file fail 0 1 metadata SYNC_FILE_FAULT=directory
+
+# Zero duration and explicit false are known values, not unreadable input.
+printf '%s' '{"llm_calls":1,"llm_ms":0,"timed_out":false,"truncated":false}' > "$META_FIXTURE"
+check_case zero-duration-false-flags fail 1 2 empty
+o=$(obs_for zero-duration-false-flags)
+printf '%s' "$o" | "$REAL_JQ" -e '
+    .llm_ms == 0 and .llm_calls == 1 and .timed_out == false
+    and .truncated == false and (.meta_error != true)
+' >/dev/null 2>&1 && ok "known zero and false preserved" || bad "known zero and false preserved" "$o"
+
+# Both absent flags are valid; explicit null and noninteger duration are not.
+printf '%s' '{"llm_calls":1,"llm_ms":0}' > "$META_FIXTURE"
+check_case absent-flags fail 1 2 empty
+printf '%s' '{"llm_calls":1,"llm_ms":0,"timed_out":null}' > "$META_FIXTURE"
+check_case null-flag fail 1 1 metadata
+printf '%s' '{"llm_calls":1,"llm_ms":-1}' > "$META_FIXTURE"
+check_case negative-duration fail 1 1 metadata
+printf '%s' '{"llm_calls":1,"llm_ms":0.5}' > "$META_FIXTURE"
+check_case fractional-duration fail 1 1 metadata
+printf '%s' '{"llm_calls":1}' > "$META_FIXTURE"
+check_case missing-duration fail 1 1 metadata
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

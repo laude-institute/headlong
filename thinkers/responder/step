@@ -45,11 +45,12 @@ t_start_ms=$(_now_ms)
 # served_by (from bin/llm's usage record; served_by is OpenRouter's upstream
 # host, one model id there is two dozen hosts at different speeds),
 # truncated, timed_out. Failures add `failure`: timeout, truncated, parse,
-# markup, empty, send.
+# markup, empty, send, metadata.
 _llm_meta='{}'
 _llm_timed_out=0
 _llm_truncated=0
 _llm_calls=0
+_llm_meta_error=0
 # _reply_llm runs inside a command substitution (its stdout is the reply),
 # so its record travels through a file (_rl_meta_file, made right before the
 # call) and _rl_sync pulls it into this shell.
@@ -82,11 +83,36 @@ _reply_llm() {   # _reply_llm <llm args...>; stdout = the reply, rc = llm's rc
     rm -f "$usage" "$err"
     return "$rc"
 }
-_rl_sync() {   # after each _reply_llm: its record into this shell's variables
-    _llm_meta=$(cat "$_rl_meta_file" 2>/dev/null); [[ -n "$_llm_meta" ]] || _llm_meta='{}'
-    _llm_timed_out=$(printf '%s' "$_llm_meta" | jq -r 'if .timed_out == true then 1 else 0 end' 2>/dev/null) || _llm_timed_out=0
-    _llm_truncated=$(printf '%s' "$_llm_meta" | jq -r 'if .truncated == true then 1 else 0 end' 2>/dev/null) || _llm_truncated=0
-    _llm_calls=$(printf '%s' "$_llm_meta" | jq -r '.llm_calls // 0' 2>/dev/null) || _llm_calls=0
+_rl_sync() {   # after each _reply_llm: validate one complete aggregate
+    # Unknown is not zero, and not a timeout. Once unreadable, this call
+    # chain cannot authorize a retry or a send, even if a later read works.
+    [[ "$_llm_meta_error" -eq 0 ]] || return 0
+    local parsed
+    if parsed=$(jq -ces '
+        select(length == 1) | .[0] | select(type == "object")
+        | select(.llm_calls | type == "number")
+        | select(.llm_calls >= 1 and .llm_calls == (.llm_calls | floor))
+        | select(.llm_ms | type == "number")
+        | select(.llm_ms >= 0 and .llm_ms == (.llm_ms | floor))
+        | select((has("timed_out") | not) or (.timed_out | type == "boolean"))
+        | select((has("truncated") | not) or (.truncated | type == "boolean"))
+        | ., (if .timed_out == true then 1 else 0 end),
+             (if .truncated == true then 1 else 0 end), .llm_calls
+        ' "$_rl_meta_file" 2>/dev/null); then
+        {
+            IFS= read -r _llm_meta
+            IFS= read -r _llm_timed_out
+            IFS= read -r _llm_truncated
+            IFS= read -r _llm_calls
+        } <<< "$parsed"
+    else
+        _llm_meta_error=1
+        _llm_meta='{"meta_error":true}'
+        _llm_timed_out=""
+        _llm_truncated=""
+        _llm_calls=""
+    fi
+    return 0
 }
 
 # Card redaction for everything this step writes: the reply sent back, the
@@ -625,7 +651,10 @@ if [[ "$structured" -eq 1 ]]; then
     _parse="structured"
     if ! reply=$(_reply_llm -m "$REPLY_MODEL" -M "$convo_json" -s "$reply_system" --json-schema "$_schema_file"); then
         _rl_sync
-        if [[ "$_llm_timed_out" -eq 1 || "$_llm_truncated" -eq 1 ]]; then
+        if [[ "$_llm_meta_error" -eq 1 ]]; then
+            printf '  structured reply metadata unreadable — not retrying\n' >&2
+            reply=""
+        elif [[ "$_llm_timed_out" -eq 1 || "$_llm_truncated" -eq 1 ]]; then
             # The budget is spent (the wall clock, or the whole token cap on
             # nothing visible); a second attempt would only double the wait.
             printf '  structured reply call spent its budget (timed out: %s, truncated: %s) — not retrying\n' "$_llm_timed_out" "$_llm_truncated" >&2
@@ -639,8 +668,10 @@ if [[ "$structured" -eq 1 ]]; then
             _compose_reply_system 0
             reply=$(_reply_llm -m "$REPLY_MODEL" -M "$convo_json" -s "$reply_system") || true
             _rl_sync
-            _llm_meta=$(printf '%s' "$_llm_meta" | jq -c '. + {fallback: true}' 2>/dev/null || printf '%s' "$_llm_meta")
-            printf '%s' "$_llm_meta" > "$_rl_meta_file"
+            if [[ "$_llm_meta_error" -eq 0 ]]; then
+                _llm_meta=$(printf '%s' "$_llm_meta" | jq -c '. + {fallback: true}' 2>/dev/null || printf '%s' "$_llm_meta")
+                printf '%s' "$_llm_meta" > "$_rl_meta_file"
+            fi
         fi
     fi
 else
@@ -648,6 +679,13 @@ else
 fi
 _rl_sync
 rm -f "$_rl_meta_file"
+
+# Do not send a reply whose call record cannot establish its budget state.
+if [[ "$_llm_meta_error" -eq 1 ]]; then
+    printf '  reply metadata unreadable — appending failure observation\n' >&2
+    _obs "reply failed: the model call record for $msg_from could not be read, so nothing was sent. Reply to them yourself. Their message was: $trigger_excerpt" reply-failed "$(_fail_metrics metadata)"
+    exit 0
+fi
 
 # Nothing came back and the call itself was the reason: say which.
 if [[ -z "$(printf '%s' "$reply" | tr -d '[:space:]')" ]]; then
