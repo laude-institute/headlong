@@ -182,7 +182,11 @@ _workspace_section() {  # _workspace_section <workdir>
         [[ -n "$d" ]] || continue
         # awk drains find to EOF; head -n cap would exit early and SIGPIPE the
         # writer under pipefail once a directory holds more than the pipe buffer.
-        n=$(find "$d" -type f 2>/dev/null | awk -v n="$cap" 'NR<=n' | wc -l | tr -d ' ')
+                # find exits 1 when a subtree is unreadable, even with stderr
+        # discarded; under set -e -o pipefail that killed the whole
+        # section (mode-000 fixture under scratch/, real workdir,
+        # 2026-10-05). Count what is readable instead of dying on it.
+        n=$({ find "$d" -type f 2>/dev/null || true; } | awk -v n="$cap" 'NR<=n' | wc -l | tr -d ' ')
         lines+=("$(printf '%s\t%s' "$n" "${d##*/}/")")
     done < <(find "$wd" -mindepth 1 -maxdepth 1 -type d ! -name '.*' ! -name '__pycache__' 2>/dev/null | sort)
     loose=$(find "$wd" -mindepth 1 -maxdepth 1 -type f ! -name '.*' 2>/dev/null | wc -l | tr -d ' ')
