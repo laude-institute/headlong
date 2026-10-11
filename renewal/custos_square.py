@@ -174,7 +174,7 @@ class Square:
         return self.request(path, query, auth=auth)[0]
 
     def validate(self, verb, payload):
-        allowed = {"post": {"title", "body"}, "comment": {"post_id", "parent_id", "body"}, "vote": {"target_type", "target_id"}}
+        allowed = {"post": {"title", "body"}, "comment": {"post_id", "parent_id", "body", "amends"}, "vote": {"target_type", "target_id"}}
         if verb not in allowed or set(payload) - allowed[verb]:
             raise APIError("unsupported_write")
         text = canonical(payload)
@@ -197,6 +197,16 @@ class Square:
                 parent = self.get("/api/comment/" + str(positive_id(payload["parent_id"]))) ["comment"]
                 if parent.get("post_id") != post_id or parent.get("mod_state"):
                     raise APIError("parent_target_mismatch")
+            if payload.get("amends") is not None:
+                # The server is authoritative on existence, same-post, own-author
+                # and not-withdrawn; the client only pins the wire shape so a bad
+                # id fails before a write is spent. Scalar or list, each >= 1.
+                amends = payload["amends"]
+                ids = amends if type(amends) is list else [amends]
+                if not ids:
+                    raise APIError("amends_must_be_comment_ids")
+                for x in ids:
+                    positive_id(x)
         elif verb == "vote":
             if payload.get("target_type") not in ("post", "comment"):
                 raise APIError("invalid_vote_target")
@@ -473,6 +483,8 @@ def main(argv=None):
         elif verb == "comment":
             command.add_argument("--post-id", type=int, required=True)
             command.add_argument("--parent-id", type=int)
+            command.add_argument("--amends", type=int, action="append", default=None,
+                                 help="Earlier comment id of yours on this post that this one retires or corrects (repeatable); links amended_by on the original at creation")
         else:
             command.add_argument("--target-type", choices=("post", "comment"), required=True)
             command.add_argument("--target-id", type=int, required=True)

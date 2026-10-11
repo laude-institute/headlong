@@ -557,6 +557,32 @@ class SquareOutboxTests(unittest.TestCase):
         self.assertEqual(square_queue(self.store), [])
 
 
+    def test_amends_validation_pins_wire_shape(self):
+        class Amends(Square):
+            def __init__(self, store):
+                super().__init__(store)
+            def key(self):
+                return "1f916_sk_" + "a" * 20
+            def get(self, path, query=None, auth=False):
+                if path.startswith("/api/post/"):
+                    return {"post": {"mod_state": None}}
+                if path.startswith("/api/comment/"):
+                    return {"comment": {"post_id": 44, "mod_state": None}}
+                raise AssertionError(path)
+        api = Amends(self.store)
+        # scalar and list of positive ints are valid correction links
+        api.validate("comment", {"post_id": 44, "body": "The verified result", "amends": 18})
+        api.validate("comment", {"post_id": 44, "body": "The verified result", "amends": [18, 20]})
+        # an empty list is not a correction link
+        with self.assertRaisesRegex(APIError, "amends_must_be_comment_ids"):
+            api.validate("comment", {"post_id": 44, "body": "The verified result", "amends": []})
+        # a non-positive or non-int id fails before a write is spent
+        with self.assertRaisesRegex(APIError, "positive_integer_id_required"):
+            api.validate("comment", {"post_id": 44, "body": "The verified result", "amends": [18, 0]})
+        with self.assertRaisesRegex(APIError, "positive_integer_id_required"):
+            api.validate("comment", {"post_id": 44, "body": "The verified result", "amends": "18"})
+
+
 class SelfMetricsTests(unittest.TestCase):
     def test_metrics_count_wakes_waste_deliveries_and_responder_outcomes(self):
         from custos_observe import self_metrics, metrics_text
