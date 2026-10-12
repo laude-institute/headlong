@@ -33,7 +33,8 @@ hasnt(){ if printf '%s' "$2" | grep -qF -- "$3"; then bad "$1" "unexpected '$3'"
 
 CAP=16384
 TODAY=$(date -u +%Y-%m-%d)
-FUTURE=$(date -u -d '+60 days' +%Y-%m-%d)
+# BSD date (the macOS runner) has no -d: try its -v form first, fall back to GNU.
+FUTURE=$(date -u -v+60d +%Y-%m-%d 2>/dev/null || date -u -d '+60 days' +%Y-%m-%d)
 
 gdir() { local d="$1"; rm -rf "$d"; mkdir -p "$d"; printf '%s' "$d"; }
 wgoal() { # wgoal <dir> <name> <until|-> <body-file>
