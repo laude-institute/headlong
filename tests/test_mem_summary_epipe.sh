@@ -30,7 +30,6 @@ bytes=$(wc -c < "$WORK/big.md")
 # so the expectation is the stripped form.
 # --- mem add: the whole body lands in the store, or the failure is named ---
 mem add "seed memory for the epipe test" >/dev/null 2>&1 || { bad "setup add"; printf '\n%d passed, %d failed\n' "$pass" "$fail"; exit 1; }
-count=$(ls -1 "$MEM_DIR"/*.md | wc -l)
 seed=$(grep -l "seed memory for the epipe test" "$MEM_DIR"/*.md | head -1)
 id=$(sed -n 's/^id: //p' "$seed")
 
