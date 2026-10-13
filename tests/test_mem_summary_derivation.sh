@@ -90,7 +90,7 @@ grep -q '^summary: A plain edited body$' "$F" && ok "plain edit unchanged" || ba
 
 # Replacing every whitespace match took seconds for a 12 KB body on bash 3.2.
 # A coarse deadline catches that regression; normal writes take well below a
-# second. Keep the fixture below pipe-buffer sizes to isolate the input guard.
+# second. The same fixture also catches early pipe closure during summary extraction.
 # Use this suite's interpreter, including bash 3.2 in the macOS CI job.
 if python3 - "$BASH" "$REPO/bin/mem" "$WORK" <<'PYTEST'
 import os
@@ -128,7 +128,8 @@ for action in ("add", "edit"):
             print(f"ok   {label}: completed within 3s; summary and body preserved")
         except (subprocess.SubprocessError, AssertionError, ValueError) as exc:
             # Do not print argv: the argument case contains the whole fixture.
-            print(f"FAIL {label}: {type(exc).__name__}")
+            detail = f" (exit {exc.returncode})" if isinstance(exc, subprocess.CalledProcessError) else ""
+            print(f"FAIL {label}: {type(exc).__name__}{detail}")
             failures += 1
 sys.exit(bool(failures))
 PYTEST

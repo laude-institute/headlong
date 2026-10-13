@@ -139,7 +139,8 @@ action_add() {
     hex=$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')
     slug=$(slugify "$text")
     filename="${timestamp}_${hex}_${slug}"
-    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | head -1 | cut -c1-80)
+    # Drain the body so upstream writers cannot fail with SIGPIPE.
+    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p' | cut -c1-80)
     created=$(date +"%Y-%m-%d %H:%M:%S")
 
     cat > "$MEM_DIR/${filename}.md" << EOF
@@ -493,7 +494,8 @@ action_edit() {
     # edit: a todo shortlist that is appended to during the day must still
     # expire that night. So do `schedule:` and `tz:` (design/scheduled_goals.md).
     local summary type created id until _k _v
-    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | head -1 | cut -c1-80)
+    # Drain the body so upstream writers cannot fail with SIGPIPE.
+    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p' | cut -c1-80)
     type=$(frontmatter_field "$file" "type")
     created=$(frontmatter_field "$file" "created")
     id=$(frontmatter_field "$file" "id")
