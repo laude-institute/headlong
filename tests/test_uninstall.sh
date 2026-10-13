@@ -46,7 +46,7 @@ check "uninstall.sh TOOLS == install.sh BIN+AUX+headlong-tui" test "$INSTALL_LIS
 make_install() {  # make_install <home>
     local home="$1" app="$1/.headlong/app"
     mkdir -p "$home/.headlong" "$home/.local/bin"
-    git clone -q --local "$REPO" "$app" 2>/dev/null || { bad "local clone"; return 1; }
+    git clone -q "$REPO" "$app" 2>/dev/null || { bad "local clone"; return 1; }
     rm -rf "$app/tui"   # no cargo build in a test
     ( cd "$app" && HOME="$home" HEADLONG_HOME="$home/.headlong" PREFIX="$home/.local/bin" \
         bash install.sh --symlinks --no-init >/dev/null 2>&1 ) || { bad "install.sh --symlinks"; return 1; }
@@ -121,7 +121,7 @@ check "--delete-identities: state home gone"     test ! -e "$H2/.headlong"
 # --- 4. user-owned checkout is left alone --------------------------------------
 H3="$WORK/h3"; CLONE="$WORK/myclone"
 mkdir -p "$H3/.local/bin"
-git clone -q --local "$REPO" "$CLONE" 2>/dev/null || { bad "clone for h3"; exit 1; }
+git clone -q "$REPO" "$CLONE" 2>/dev/null || { bad "clone for h3"; exit 1; }
 rm -rf "$CLONE/tui"
 ( cd "$CLONE" && HOME="$H3" HEADLONG_HOME="$H3/.headlong" PREFIX="$H3/.local/bin" bash install.sh --symlinks --no-init >/dev/null 2>&1 ) || { bad "install from own clone"; exit 1; }
 ( cd "$CLONE" && HOME="$H3" PATH="$CLONE/bin:$CLONE/tools:$PATH" identity new bob --default >/dev/null 2>&1 ) || { bad "identity new bob"; exit 1; }
