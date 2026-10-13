@@ -75,10 +75,25 @@ class SignalTests(unittest.TestCase):
         self.assertEqual(probe.address("0100007F", False), "127.0.0.1")
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(probe.socket, "gethostname", return_value="johan"):
             path = Path(directory) / "tcp"
-            path.write_text("header\n 0: 00000000:1F90 2C56A8C0:A001 01 rest\n")
+            listener = "header\n 0: 00000000:1F90 00000000:0000 0A rest\n"
+            path.write_text(listener + " 1: 00000000:1F90 2C56A8C0:A001 01 rest\n")
             self.assertEqual(probe.snapshot((str(path),)), {"foreign_busy": False, "backend_idle": False})
-            path.write_text("header\n 0: 00000000:1F90 0100007F:A001 01 rest\n")
+            path.write_text(listener + " 1: 00000000:1F90 0100007F:A001 01 rest\n")
             self.assertEqual(probe.snapshot((str(path),)), {"foreign_busy": True, "backend_idle": False})
+
+    def test_missing_listener_is_unavailable_even_when_ssh_works(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(probe.socket, "gethostname", return_value="johan"):
+            path = Path(directory) / "tcp"
+            for sockets in ("header\n", "header\n 0: 00000000:1F90 2C56A8C0:A001 01 rest\n"):
+                path.write_text(sockets)
+                with self.assertRaisesRegex(RuntimeError, "inference listener unavailable"):
+                    probe.snapshot((str(path),))
+
+    def test_listener_without_active_clients_is_idle(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(probe.socket, "gethostname", return_value="johan"):
+            path = Path(directory) / "tcp"
+            path.write_text("header\n 0: 00000000:1F90 00000000:0000 0A rest\n")
+            self.assertEqual(probe.snapshot((str(path),)), {"foreign_busy": False, "backend_idle": True})
 
 
 class MutableBusy:

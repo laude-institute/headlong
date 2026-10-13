@@ -1751,6 +1751,26 @@ normalize_toolcall_markup() {
         printf '%s' "$response"; return 1
     fi
     local lifted
+    # MiMo emits the same bash/command wrapper with adjacent tags. Recover only
+    # one complete, recognized envelope, leaving its shell body byte-for-byte
+    # intact. Do not globally split/strip tags: they may be literal shell data.
+    # Other compact shapes remain unmodified for the whole-script syntax guard.
+    if grep -qE '<tool_call>[[:blank:]]*<function=' <<< "$response"; then
+        lifted=$(python3 -c '
+import re, sys
+text = sys.stdin.read()
+match = re.fullmatch(r"\s*<tool_call>\s*<function=bash>\s*<parameter=command>(.*?)</parameter>\s*</function>\s*</tool_call>\s*", text, re.S)
+if not match:
+    sys.exit(1)
+code = match.group(1)
+# Multiple/nested envelopes are ambiguous; never concatenate their commands.
+if re.search(r"</?tool_call>|<function=", code) or not code.strip():
+    sys.exit(1)
+sys.stdout.write(code)
+' <<< "$response") || { printf '%s' "$response"; return 1; }
+        printf '%s' $'```bash\n'"$lifted"$'\n```'
+        return 0
+    fi
     lifted=$(awk '
         BEGIN { started = 0 }
         !started {

@@ -40,6 +40,20 @@ def _load(value):
     return brain_mod.load_brain_policy(handle.name)
 
 
+class ProviderRoutingPolicyTests(unittest.TestCase):
+    def test_provider_selection_is_validated(self):
+        backup = {"provider": "openrouter", "model": "xiaomi/mimo-v2.6-pro",
+                  "key_file": "/var/lib/custos-brain/openrouter-api-key"}
+        routing = {"only": ["xiaomi"], "allow_fallbacks": False}
+        self.assertEqual(policy(backup={**backup, "provider_routing": routing})["backup"]["provider_routing"], routing)
+        for bad in [[], {}, {"only": [], "allow_fallbacks": False},
+                    {"only": [""], "allow_fallbacks": False},
+                    {"only": ["xiaomi"], "allow_fallbacks": "false"},
+                    {"only": ["xiaomi"], "allow_fallbacks": False, "url": "https://example.test"}]:
+            with self.subTest(routing=bad), self.assertRaises(ValueError):
+                policy(backup={**backup, "provider_routing": bad})
+
+
 class Fixture:
     def __init__(self, directory, **changes):
         self.now = T0
@@ -419,6 +433,30 @@ class CloudWireTests(unittest.IsolatedAsyncioTestCase):
         status, _, body = await asyncio.wait_for(request, 2)
         self.assertEqual(status, 200); self.assertIn(b"local", body)
 
+    async def test_unavailable_probe_sentinel_uses_pinned_mimo_with_observer_running(self):
+        from unittest import mock
+        import custos_busy as producer
+        self.brain.flip_local("test")
+        self.brain.p.pop("tycho", None)
+        self.brain.p["backup"].update(model="xiaomi/mimo-v2.6-pro",
+                                     provider_routing={"only": ["xiaomi"], "allow_fallbacks": False})
+        # This is the sentinel the running observer publishes after the backend
+        # probe exits nonzero (including a reachable host with no listener).
+        producer.publish({"observed_at": 0, "foreign_busy": True, "backend_idle": False}, Path(self.directory.name))
+        self.gateway.busy = gateway.BusySignal(Path(self.directory.name)/"busy.json", 5)
+        real_fstat = gateway.os.fstat
+        def root_stat(fd):
+            actual = real_fstat(fd)
+            return type("Metadata", (), {"st_uid": 0, "st_mode": actual.st_mode})()
+        with mock.patch.object(gateway.os, "fstat", side_effect=root_stat):
+            status, _, body = await self.request("GET", "/brain")
+            self.assertEqual(json.loads(body)["effective_model"], "xiaomi/mimo-v2.6-pro")
+            status, _, body = await asyncio.wait_for(self.request("POST", "/v1/chat/completions", self.chat()), 2)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.johan_calls, 0)
+        self.assertEqual(len(self.openrouter_calls), 1)
+        self.assertEqual(self.openrouter_calls[0][2]["provider"], {"only": ["xiaomi"], "allow_fallbacks": False})
+
     async def test_local_connect_failure_before_response_uses_tycho(self):
         self.brain.flip_local("test")
         self.johan.close(); await self.johan.wait_closed()
@@ -437,6 +475,23 @@ class CloudWireTests(unittest.IsolatedAsyncioTestCase):
         _, headers, sent = self.openrouter_calls[0]
         self.assertEqual(headers["authorization"], "Bearer test-key")
         self.assertEqual(sent["model"], "deepseek/deepseek-v4.1-flash")
+        self.assertNotIn("provider", sent)
+
+    async def test_openrouter_provider_selection_survives_normal_and_streaming_gateway_requests(self):
+        self.brain.flip_local("test")
+        self.busy.stale = True
+        self.tycho.close(); await self.tycho.wait_closed()
+        self.brain.p["backup"]["provider_routing"] = {"only": ["xiaomi"], "allow_fallbacks": False}
+        for streaming in (False, True):
+            chat = self.chat()
+            chat["stream"] = streaming
+            status, _, body = await self.request("POST", "/v1/chat/completions", chat)
+            self.assertEqual(status, 200)
+            self.assertIn(b"backup", body)
+            sent = self.openrouter_calls[-1][2]
+            self.assertEqual(sent["provider"], {"only": ["xiaomi"], "allow_fallbacks": False})
+            self.assertEqual(sent["stream"], streaming)
+            self.assertEqual(sent["max_tokens"], chat["max_tokens"])
 
 
 if __name__ == "__main__":

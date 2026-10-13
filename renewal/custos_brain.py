@@ -155,6 +155,13 @@ def load_brain_policy(path):
         scheme, host, _, _ = split_url(backup["url"])
         if scheme not in ("http", "https") or (scheme == "http" and host not in ("127.0.0.1", "localhost")):
             raise ValueError("brain backup URL must use HTTPS (except loopback tests)")
+        routing = backup.get("provider_routing")
+        if routing is not None:
+            if (not isinstance(routing, dict) or set(routing) != {"only", "allow_fallbacks"} or
+                    not isinstance(routing["only"], list) or not routing["only"] or
+                    not all(isinstance(item, str) and item.strip() for item in routing["only"]) or
+                    type(routing["allow_fallbacks"]) is not bool):
+                raise ValueError("brain backup provider_routing needs a nonempty only list and boolean allow_fallbacks")
     value.setdefault("effort", {"medium": "medium", "xhigh": "xhigh"})
     value.setdefault("codex_url", CODEX_URL)
     value.setdefault("ntfy_topic", None)
@@ -562,6 +569,8 @@ class Brain:
 
         request = dict(chat)
         request["model"] = backup["model"]
+        if backup.get("provider_routing") is not None:
+            request["provider"] = backup["provider_routing"]
         body = json.dumps(request, ensure_ascii=False, allow_nan=False,
                           separators=(",", ":")).encode("utf-8")
         headers = {"Authorization": "Bearer " + key,

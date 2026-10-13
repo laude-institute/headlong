@@ -47,7 +47,14 @@ def snapshot(paths=("/proc/net/tcp", "/proc/net/tcp6")):
                     continue
                 active += 1
                 foreign += address(peer.rsplit(":", 1)[0], filename.endswith("tcp6")) != "192.168.86.44"
-    return {"foreign_busy": bool(foreign), "backend_idle": listening and active == 0}
+    # A reachable SSH server is not a reachable inference server. Publishing a
+    # fresh "busy" observation without a listener makes the gateway wait until
+    # its deadline forever, preventing its existing unavailable-backend fallback.
+    # Exit nonzero through main's existing handler so the observer publishes its
+    # unavailable sentinel. Genuine socket contention still waits for Johan.
+    if not listening:
+        raise RuntimeError("inference listener unavailable")
+    return {"foreign_busy": bool(foreign), "backend_idle": active == 0}
 
 
 if __name__ == "__main__":
