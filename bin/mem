@@ -126,10 +126,10 @@ action_add() {
     fi
     local text="$*"
 
-    # Read from stdin if no text arg
-    if [[ -z "${text//[[:space:]]/}" ]]; then
+    # Test for content without copying every whitespace match (slow on bash 3.2).
+    if [[ "$text" != *[![:space:]]* ]]; then
         text=$(cat)
-        [[ -z "${text//[[:space:]]/}" ]] && die "No text provided"
+        [[ "$text" != *[![:space:]]* ]] && die "No text provided"
     fi
 
     mkdir -p "$MEM_DIR"
@@ -481,9 +481,9 @@ action_edit() {
     fi
 
     local text="$*"
-    if [[ -z "${text//[[:space:]]/}" ]]; then
+    if [[ "$text" != *[![:space:]]* ]]; then
         text=$(cat)
-        [[ -z "${text//[[:space:]]/}" ]] && die "No text provided"
+        [[ "$text" != *[![:space:]]* ]] && die "No text provided"
     fi
 
     local now

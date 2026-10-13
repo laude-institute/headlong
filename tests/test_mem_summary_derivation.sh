@@ -64,6 +64,15 @@ after_sum=$(sed -n 's/^summary: //p' "$F" | head -1)
 grep -q '^Edited first real line$' "$F" \
   && ok "the body survives the refused edit" || bad "body clobbered by the refused edit"
 
+# --- edit: a whitespace-only argument preserves the entire file too ---
+cp "$F" "$WORK/before-edit"
+err=$(mem edit "$id" $' \t\n ' </dev/null 2>&1 >/dev/null); rc=$?
+[[ $rc -ne 0 ]] && ok "a whitespace-only edit argument fails" || bad "whitespace-only edit argument fails"
+printf '%s' "$err" | grep -q "No text provided" \
+  && ok "the argument edit error names the problem" || bad "argument edit error" "$err"
+cmp -s "$F" "$WORK/before-edit" \
+  && ok "the refused argument edit preserves every byte" || bad "argument edit changed the file"
+
 # --- exactly one summary line, never empty ---
 n_all=$(grep -c '^summary:' "$F" || true)
 n_empty=$(grep -c '^summary: *$' "$F" || true)
@@ -78,6 +87,56 @@ id2=$(sed -n 's/^id: //p' "$F")
 printf 'A plain edited body\n' | mem edit "$id2" >/dev/null 2>&1
 F=$(grep -l "^id: $id2$" "$MEM_DIR"/*.md | head -1)
 grep -q '^summary: A plain edited body$' "$F" && ok "plain edit unchanged" || bad "plain edit unchanged"
+
+# Replacing every whitespace match took seconds for a 12 KB body on bash 3.2.
+# A coarse deadline catches that regression; normal writes take well below a
+# second. Keep the fixture below pipe-buffer sizes to isolate the input guard.
+# Use this suite's interpreter, including bash 3.2 in the macOS CI job.
+if python3 - "$BASH" "$REPO/bin/mem" "$WORK" <<'PYTEST'
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+bash, mem, work = sys.argv[1:]
+body = "\n \nTitle\n" + "abcde\n" * 1998 + "\nLast line"
+failures = 0
+for action in ("add", "edit"):
+    for source in ("stdin", "argument"):
+        label = f"multiline {action} via {source}"
+        store = Path(work) / f"{action}-{source}"
+        env = dict(os.environ, MEM_DIR=str(store))
+        args = [bash, mem, action]
+        try:
+            if action == "edit":
+                seed = subprocess.run(
+                    [bash, mem, "add", "Seed"], input="", text=True,
+                    capture_output=True, env=env, timeout=3, check=True,
+                )
+                args.append(seed.stdout.strip())
+            if source == "argument":
+                args.append(body)
+            subprocess.run(
+                args, input=body if source == "stdin" else "", text=True,
+                capture_output=True, env=env, timeout=3, check=True,
+            )
+            files = list(store.glob("*.md"))
+            assert len(files) == 1, "expected one memory file"
+            header, stored = files[0].read_text().split("\n---\n\n", 1)
+            assert "summary: Title" in header.splitlines(), "wrong summary"
+            assert stored == body + "\n", "body or blank lines changed"
+            print(f"ok   {label}: completed within 3s; summary and body preserved")
+        except (subprocess.SubprocessError, AssertionError, ValueError) as exc:
+            # Do not print argv: the argument case contains the whole fixture.
+            print(f"FAIL {label}: {type(exc).__name__}")
+            failures += 1
+sys.exit(bool(failures))
+PYTEST
+then
+  ok "multiline add/edit are bounded and preserve content"
+else
+  bad "multiline add/edit are bounded and preserve content"
+fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
