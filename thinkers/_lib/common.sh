@@ -124,7 +124,7 @@ _runtime_line() {
     done
     [[ -n "$sha" ]] || return 0
     subject=$(git -C "$root" log -1 --format=%s 2>/dev/null | cut -c1-60) || subject=""
-    head_t=$(_mtime_utc "$root/.git/HEAD")
+    head_t=$(_checkout_time_utc "$root")
     sync_t=""
     if [[ -d "${IDENTITY_DIR:-}/thinkers" ]]; then
         local newest
@@ -151,6 +151,29 @@ _mtime_utc() {  # _mtime_utc <file> -> "YYYY-MM-DD HH:MMZ" or ""
     local t
     t=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null) || { printf ''; return 0; }
     _epoch_utc "$t"
+}
+
+# The runtime line's "checked out" time: when HEAD last moved, from the last
+# reflog entry. .git/HEAD's mtime is the wrong source twice over: HEAD is a
+# symref whose content never changes under an ff-only pull, so its mtime froze
+# at clone birth while every pull moved main (a checkout that ff-pulls daily
+# read "checked out 2026-09-14 08:02Z", the clone's birth, through 31 later
+# pulls), and in a linked worktree .git/HEAD is not a regular path at all, so
+# the segment was dropped there (contrib/opencode/docs/validation.md records
+# test_workspace_runtime.sh failing that way). Fall back to the mtime when no
+# reflog answers.
+_checkout_time_utc() {  # _checkout_time_utc <git-root> -> "YYYY-MM-DD HH:MMZ" or ""
+    local sel t
+    sel=$(git -C "$1" reflog show -1 --date=unix --format='%gd' HEAD 2>/dev/null) || sel=""
+    t=${sel#*[{]}
+    t=${t%%[^0-9]*}
+    case "$t" in ''|*[!0-9]*) _mtime_utc "$1/.git/HEAD"; return 0 ;; esac
+    # a bare position renders "@{0}": refuse 1970 rather than print it
+    if [ "$t" -ge 946684800 ]; then
+        _epoch_utc "$t"
+    else
+        _mtime_utc "$1/.git/HEAD"
+    fi
 }
 
 _epoch_utc() {  # _epoch_utc <epoch> -> "YYYY-MM-DD HH:MMZ"
