@@ -398,23 +398,21 @@ _last_diagnostic_id() {
             // (last | .sid)
             // empty' 2>/dev/null
 }
-# The run's OWN idle marker (the router prompt asks it to append one when it
-# honestly idles). Unlike the wrapper's fallback below, it usually carries a
-# reason in .content.
-_last_idle_id() {
+# Only an idle linked to this run can suppress its fallback. Consume the whole
+# cached probe before testing the match, so the writer cannot hit SIGPIPE.
+_run_has_idle() {
+    [[ -n "$1" ]] || return 1
     printf '%s\n' "$_probe_tail" \
-        | jq -Rr 'fromjson? // empty | select(.type == "idle")
-            | .step_id // empty' 2>/dev/null \
-        | tail -n 1
+        | jq -Rne --arg rid "$1" '[inputs | fromjson? // empty
+            | select(.type == "idle" and .run_id == $rid)]
+            | length > 0' >/dev/null 2>&1
 }
 before_visible=""
 before_thought=""
-before_idle=""
 if traj exists 2>/dev/null; then
     _refresh_probe
     before_visible=$(_last_visible_id) || before_visible=""
     before_thought=$(_last_thought_id) || before_thought=""
-    before_idle=$(_last_idle_id) || before_idle=""
 fi
 
 # shellm writes its run header's step_id here, so a fallback idle can carry
@@ -522,27 +520,17 @@ fi
 
 after_visible=""
 after_thought=""
-after_idle=""
 if traj exists 2>/dev/null; then
     _refresh_probe
     after_visible=$(_last_visible_id) || after_visible=""
     after_thought=$(_last_thought_id) || after_thought=""
-    after_idle=$(_last_idle_id) || after_idle=""
 fi
 did_visible=0
 [[ "$after_visible" != "$before_visible" ]] && did_visible=1
 did_thought=0
 [[ "$after_thought" != "$before_thought" ]] && did_thought=1
-did_idle=0
-[[ "$after_idle" != "$before_idle" ]] && did_idle=1
-# Any durable step (either tier) gates the fallback idle/error marker below.
-# did_idle does not count as work — idling is a decision, not output — but it
-# DOES mark the wake: the run already wrote its idle step, so the wrapper's
-# contentless fallback idle below is suppressed (double-idle, observed
-# 2026-09-15: 259 of 267 monolith runs that day wrote TWO idle rows with the
-# same run_id, ~4s apart — one authored by the mind, one by this fallback —
-# inflating any idle count or close-read by 2x). The fallback survives for
-# runs that crash/refuse/write nothing at all; the error path still wins.
+# Visible work and thoughts are durable output. Idle does not count as work
+# or reset the backoff, even when the run wrote its own idle marker.
 did_work=0
 [[ "$did_visible" -eq 1 || "$did_thought" -eq 1 ]] && did_work=1
 
@@ -556,6 +544,8 @@ run_errored=0
 [[ "$run_rc" -ne 0 ]] && run_errored=1
 if [[ "$did_work" -eq 0 ]]; then
     idle_run_id=$(cat "$run_id_file" 2>/dev/null) || idle_run_id=""
+    did_idle=0
+    _run_has_idle "$idle_run_id" && did_idle=1
     # Failure-path certification: the run's shell-output steps (the real
     # diagnostic) are already in the trajectory, but this bare error step
     # never references them — a stranger sees "no durable step" and cannot
@@ -570,7 +560,7 @@ if [[ "$did_work" -eq 0 ]]; then
         diagnostic_step=$(_last_diagnostic_id "$idle_run_id") || diagnostic_step=""
     fi
     if [[ "$run_errored" -eq 1 ]]; then
-        # (unchanged: a failed run is an error step, never an idle)
+        # A failed run needs an error marker even if it already wrote an idle.
         printf '  run FAILED (rc=%s) — recording error\n' "$run_rc" >&2
         jq -nc \
             --arg source "$THINKER_NAME" \
