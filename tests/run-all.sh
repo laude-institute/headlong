@@ -23,6 +23,32 @@ set -uo pipefail
 # there instead of the test's own temp app dir. Every test unsets or exports its own
 # values, so the suite itself needs none of these.
 unset IDENTITY_NAME IDENTITY_DIR MEM_DIR SKILLS_DIR SKILLS_KERNEL_DIR TRAJ_ID TRAJ_DIR ROOT_TRAJ_ID
+# The same contract covers the rest of an activated identity's runtime env.
+# Running the suite from inside a live wake leaked these into the children and
+# reddened suites that assert defaults: the wake's model picks
+# (SHELLM_MODEL/THINK_MODEL/... and the per-thinker MONOLITH_*/ROLLUP/RECAP
+# ones) reached suites that assert unset-model behavior; HEADLONG_TZ moved the
+# clock line off UTC; SHELLM_ALERT_CHANNEL/HEADLONG_ALERT_TOKEN made the
+# "missing config" silence case not missing; the run-state and LLM_* usage
+# vars pointed fixtures at the live run's tmp and ledger; TMPDIR planted
+# mktemp output inside the caller's run dir. SHELLM_TRAJ_DIR outranks the
+# TRAJ_DIR a fixture exports (bin/shellm resolves it first), so a nested real
+# shellm wrote its run row into the live identity's trajectories instead of
+# the fixture's. Suites export their own values
+# (CI sets only SHELLM_ENV), so none of these are load-bearing here.
+unset SHELLM_MODEL SHELLM_FAST_MODEL THINK_MODEL SHELLM_TRAJ_DIR \
+      MONOLITH_REPLY_MODEL MONOLITH_REQUEST_MODEL ROLLUP_MODEL RECAP_MAP_MODEL \
+      SHELLM_EFFORT SHELLM_MAX_TOKENS SHELLM_MAX_ITERATIONS \
+      SHELLM_HOME SHELLM_WORKDIR SHELLM_WORKDIRS_DIR SHELLM_CONF_DIR \
+      SHELLM_ENVS_DIR SHELLM_BROKER_DIR SHELLM_API_URL \
+      SHELLM_RUNDIR SHELLM_RUN_ID_OUT SHELLM_RUN_STEP_ID \
+      SHELLM_TRIGGER_STEP_ID SHELLM_ACTIVITY_FILE SHELLM_WAKE \
+      SHELLM_LAUNCHED_BY SHELLM_NO_BANNER SHELLM_TRUNCATE \
+      _SHELLM_PARENT_CONTAINER _SHELLM_PARENT_RUN _SHELLM_PARENT_TRAJ_ID \
+      _SHELLM_ROOT_RUNDIR \
+      HEADLONG_TZ SHELLM_ALERT_CHANNEL HEADLONG_ALERT_TOKEN \
+      LLM_RUN_ID LLM_USAGE_FILE LLM_API_URL LLM_PROVIDER LLM_MAX_TOKENS \
+      TMPDIR
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pattern="${1:-}"
