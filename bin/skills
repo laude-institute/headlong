@@ -169,14 +169,10 @@ skills_dir() {
 
 # Build deduplicated list of skill search directories.
 # Checks: .skills (project), kernel dir (if set), SKILLS_DIR (identity/override)
-# Buffered and emitted in one write: find_skill returns on the first match, so
-# its early close raced the per-dir echoes and the next echo died with a broken
-# pipe (65 live firings 2026-09-14..2026-10-05, 10 of 10 on `skills show chat`).
-# One write closes the deterministic case, but bash chunks large writes, so a
-# long list's tail can still meet the reader's close (reproduced 1-in-200 under
-# load after buffering alone). That close is the reader's contract, first match
-# wins: the reader already has what it came for, so the residual is benign and
-# silenced here, because the stderr noise polluting captures was the defect.
+# Buffer before emitting so directory resolution cannot race an early reader.
+# This is one printf call, not a promise of one OS write for arbitrary paths.
+# Keep write diagnostics for draining callers; find_skill alone expects an
+# early close and silences its producer below.
 _all_skill_dirs() {
     local d real _seen="" _list=""
     for d in ".skills" ${SKILLS_KERNEL_DIR:+"$SKILLS_KERNEL_DIR"} "$SKILLS_DIR"; do
@@ -189,7 +185,7 @@ _all_skill_dirs() {
         _list="${_list}${d}
 "
     done
-    printf '%s' "$_list" 2>/dev/null || true
+    printf '%s' "$_list"
 }
 
 # Label a skill directory as project, kernel, or local.
@@ -229,7 +225,8 @@ find_skill() {
                 return
             fi
         done
-    done < <(_all_skill_dirs)
+    # First match wins, so this reader may close before its producer finishes.
+    done < <(_all_skill_dirs 2>/dev/null || true)
     return 1
 }
 
