@@ -238,6 +238,9 @@ class ActionsClientTests(unittest.TestCase):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         import custos_actions_client as cac
         self.cac = cac
+        temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+        environment = patch.dict("os.environ", {"IDENTITY_DIR": temp.name})
+        environment.start(); self.addCleanup(environment.stop)
 
     def test_route_matches_the_bridge_and_labels_resolve_uniquely(self):
         import hashlib

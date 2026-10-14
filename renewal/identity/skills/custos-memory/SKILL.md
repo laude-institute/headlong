@@ -171,3 +171,20 @@ resumes on a terminal receipt or eligible lane, and uses a six-hour fallback che
 Terminal suppression wakes the task for reconciliation, not another send. Keep the
 staged text and original eligibility evidence in the goal; do not repeatedly compute
 reopening times or poll within a wake. The send-time host guard still decides.
+
+
+## Event waits and resolved duplicate reviews
+
+A receipt wait records its current phase and resumes only when that phase changes;
+a terminal refusal is not a fresh event on every wake. `check_at` is optional for
+transport waits, and is an explicit reconsideration time when supplied. A wait can
+instead name `dependency_goal`; it resumes when that managed goal is resolved or
+an own contact goal is explicitly resolved. Do not extend expiry or add unchanged
+notes while waiting. Identical consecutive notes are retained once.
+
+After inspecting a possible duplicate and finding distinct work, persist the
+comparison with `custos-memory duplicate-review` and JSON fields `goal_id`,
+`duplicate_of`, `evidence`. The warning stays suppressed only while both compared
+outcome signatures remain unchanged. A true duplicate should still be closed with
+the earlier evidence. Delivery work uses the actual action/outbox receipt; a
+successful local edit and an unsent notification are separate outcomes.

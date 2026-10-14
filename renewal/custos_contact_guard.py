@@ -11,6 +11,19 @@ import subprocess
 UTC = dt.timezone.utc
 UNSENT = {'blocked', 'suppressed', 'failed', 'withdrawn', 'expired'}
 
+MEANING = ('ok controls the eligibility decision; a null resume_at means no deadline is set '
+           'and is not a block on its own.')
+
+
+def _signal(result, state):
+    """Attach explicit result state to a Signal eligibility decision."""
+    meaning = MEANING
+    if state == 'cooldown':
+        meaning += ' resume_at is the cooldown deadline for this conversation.'
+    result['state'] = state
+    result['meaning'] = meaning
+    return result
+
 
 def route_for(target):
     return 'signal-' + hashlib.sha256(target.encode()).hexdigest()[:24]
@@ -60,7 +73,8 @@ def evaluate(rows, target, route, hours, cross, receipt, now, me='custos'):
     reserves its conversation even after a reply or the ordinary time window.
     """
     base = {'applicable': True, 'target': target, 'route': route, 'hours': hours,
-            'mode': 'social' if cross else 'mind', 'resume_at': None}
+            'mode': 'social' if cross else 'mind', 'resume_at': None,
+            'channel': 'signal', 'receipt_namespaces': ['action', 'outbox']}
     messages = [r for r in rows if not r.get('_reaction') and 'Signal reaction (ambient event' not in r.get('content', '')]
     groups = {r.get('from') for r in messages if r.get('to') == me and metadata(r, 'scope') == 'group'}
     aci = target[3:] if target.startswith('dm:') else ''
@@ -109,9 +123,10 @@ def evaluate(rows, target, route, hours, cross, receipt, now, me='custos'):
     if historical: base['historical_untracked'] = len(historical)
     reserved = [{k: v for k, v in r.items() if not k.startswith('_')} for r in reserved if r not in historical]
     if reserved:
-        return {**base, 'ok': False, 'reason': 'delivery-unresolved', 'reservations': reserved,
-                'error': 'A Signal send is in flight or its acceptance is unknown; reconcile its receipt before another send.'}
-    if hours <= 0: return {**base, 'ok': True}
+        return _signal({**base, 'ok': False, 'reason': 'delivery-unresolved', 'reservations': reserved,
+                        'error': 'A Signal send is in flight or its acceptance is unknown; reconcile its receipt before another send.'},
+                       'unresolved')
+    if hours <= 0: return _signal({**base, 'ok': True}, 'open')
     deadlines = []
     for room in relevant:
         conv = [r for r in effective if (r.get('from') == me and r.get('to') == room) or (r.get('from') == room and r.get('to') == me)]
@@ -122,10 +137,11 @@ def evaluate(rows, target, route, hours, cross, receipt, now, me='custos'):
         deadlines.append((last['_time'] + hours * 3600, room))
     if deadlines:
         end, room = max(deadlines)
-        return {**base, 'ok': False, 'reason': 'cooldown', 'anchor_route': room, 'resume_at': iso(end),
-                'error': ('you spoke last in this conversation; ' if room == route else 'your last group message is unanswered. Do not move the ask to a DM; ') + 'guard reopens at ' + iso(end) +
-                         ' unless an eligible reply arrives first. Stage the text; do not sleep, loop or poll, or change channels.'}
-    return {**base, 'ok': True}
+        return _signal({**base, 'ok': False, 'reason': 'cooldown', 'anchor_route': room, 'resume_at': iso(end),
+                        'error': ('you spoke last in this conversation; ' if room == route else 'your last group message is unanswered. Do not move the ask to a DM; ') + 'guard reopens at ' + iso(end) +
+                                 ' unless an eligible reply arrives first. Stage the text; do not sleep, loop or poll, or change channels.'},
+                       'cooldown')
+    return _signal({**base, 'ok': True}, 'open')
 
 
 def indexed_rows(trajectory):
@@ -172,7 +188,10 @@ def check(value, hours=None, cross=None):
     if status != 200 or not isinstance(data, dict) or not data.get('ok'):
         raise ValueError('Signal contacts unavailable; eligibility is unknown')
     target, route = canonical(value, data.get('destinations') or data.get('contacts') or [])
-    if target is None: return {'applicable': False, 'ok': True}
+    if target is None:
+        return {'applicable': False, 'ok': True, 'channel': 'native', 'state': 'not-applicable',
+                'receipt_namespaces': [],
+                'meaning': 'no Signal send or receipt is involved; this target is not an allowlisted Signal conversation.'}
     policy = json.loads((Path(os.environ['IDENTITY_DIR']) / 'social-policy.json').read_text())
     cross = os.environ.get('CHAT_GUARD_CROSS_ROOM') == '1' if cross is None else cross
     if hours is None:

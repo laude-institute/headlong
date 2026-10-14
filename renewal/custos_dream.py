@@ -1,7 +1,8 @@
-"""Scheduled memory review inside the existing mind. No inference or network here."""
+"""Scheduled memory review inside the existing mind. No inference or sending; delivery review uses bounded read-only receipts."""
 import argparse
 import datetime as dt
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -66,9 +67,12 @@ class Dream:
     def inventory(self):
         reviewed = read_json(self.root / "reviewed.json", {})
         rows = []
+        delivery_issues = self.delivery_issues()
+        affected = {issue.get('goal_id') for issue in delivery_issues}
         proposals = {read_json(p).get("person_key") for p in (self.root / "person-proposals").glob("*.json")}
         for path, header, body, fields, record in self.store.files():
             key = fields["id"]; digest = sha(path.read_bytes()); flags = []
+            if key in affected: flags.append("delivery-receipt-contradiction")
             if not fields.get("summary") or fields.get("summary") == "---": flags.append("bad-summary")
             if body.startswith("---\n"): flags.append("nested-frontmatter")
             if record and record.get("status") == "active" and record["origin"].get("ambient") and not cm.is_task(record) and not record.get("response") and not record.get("responder_attempt"):
@@ -311,6 +315,42 @@ class Dream:
             return Path(subprocess.check_output(["traj", "path", root], stderr=subprocess.DEVNULL, timeout=20).decode().strip())
         except Exception: return None  # noqa: BLE001 - no trajectory, no audit
 
+    def delivery_issues(self, hours=24, path=None):
+        """Find actual unsent/unresolved Signal receipts, even if prose says sent."""
+        path = Path(path) if path else self.trajectory_path()
+        if not path or not path.exists(): return []
+        since = (self.clock().astimezone(UTC) - dt.timedelta(hours=hours)).timestamp()
+        from custos_contact_guard import reference, timestamp
+        outgoing = {}
+        with path.open() as stream:
+            for line in stream:
+                try: row = json.loads(line)
+                except ValueError: continue
+                if row.get('type') != 'message' or row.get('from') != os.environ.get('IDENTITY_NAME', 'custos') or not str(row.get('to', '')).startswith('signal-'): continue
+                try:
+                    if timestamp(row.get('ts')) < since: continue
+                except (ValueError, TypeError): continue
+                ref = reference(row)
+                if ref: outgoing[ref] = row
+        # A day's anomalous volume is bounded and explicitly reported.
+        outgoing = dict(list(outgoing.items())[-128:])
+        if not outgoing: return []
+        goals = {record.get('trigger_step'): fields['id'] for _, _, _, fields, record in self.store.files() if record and record.get('trigger_step')}
+        from custos_actions_client import call
+        try:
+            code, result = call({'action': 'delivery-status-batch', 'references': list(outgoing)}, timeout=3)
+            if code != 200 or not result.get('ok'): raise ValueError('receipt lookup unavailable')
+        except (OSError, ValueError, http.client.HTTPException):
+            return [{'kind': 'delivery-receipts-unavailable', 'detail': 'Could not verify recent Signal delivery; no success claim is justified.'}]
+        issues = []
+        for ref, row in outgoing.items():
+            receipt = result.get('results', {}).get(ref, {'phase': 'unknown'})
+            if cm.submitted(receipt): continue
+            issues.append({'kind': 'delivery-receipt-contradiction', 'reference': ref, 'phase': receipt.get('phase', 'unknown'),
+                'goal_id': row.get('goal_id') or goals.get(row.get('reply_to')), 'reply_to': row.get('reply_to'),
+                'detail': 'No confirmed submission. Keep completed task work separate from notification; inspect receipt and correct memory without automatically resending.'})
+        return issues
+
     def audit(self, hours=24, path=None):
         """Deterministic read of the last `hours` of the root trajectory: wasted wakes, failed runs, asks nobody
         touched, promises the responder made without a goal, sends that failed, helpers that died. No inference.
@@ -418,6 +458,9 @@ class Dream:
         for r in promised:
             out["problems"].append({"kind": "promise-in-reply", "detail": f"{r['ts'][11:19]} to {r['to']}: {r['text'][:120]}"})
         for r in failed_sends[:10]: out["problems"].append({"kind": "failed-send", "detail": f"{r['ts'][11:19]} {r['source']}: {r['text'][:120]}"})
+        issues = self.delivery_issues(hours, path)
+        out['counts']['receipt_delivery_issues'] = len(issues)
+        out['problems'].extend(issues)
         for r in helper_failures[:10]: out["problems"].append({"kind": "helper-failure", "detail": f"{r['ts'][11:19]} run {r['run']}: {r['text']}"})
         return self._save_audit(out)
 

@@ -200,11 +200,11 @@ def validate_record(record):
         gate_time(record["not_before"])
     if record.get("waiting"):
         wait = record["waiting"]
-        keys(wait, {"reason", "since", "resume_sender"}, {"check_at", "receipt", "signal_target"})
+        keys(wait, {"reason", "since", "resume_sender"}, {"check_at", "receipt", "signal_target", "receipt_phase", "dependency_goal"})
         text(wait["reason"], "waiting reason", 2000)
         text(wait["resume_sender"], "resume sender", 2048, empty=True)
         gate_time(wait["since"])
-        for field in ('receipt', 'signal_target'):
+        for field in ('receipt', 'signal_target', 'dependency_goal'):
             if field in wait:
                 text(wait[field], field, 2048)
         if wait.get('receipt') and not re.fullmatch(r'(?:outbox|action|square):[A-Za-z0-9:._-]{1,160}', wait['receipt']):
@@ -588,7 +588,7 @@ class Store:
             return {"goal_id": goal_id, "request_id": origin["request_id"], "created": True}
 
     def wait(self, payload):
-        keys(payload, {"goal_id", "reason"}, {"resume_sender", "check_at", "expected_sha256", "receipt", "signal_target"})
+        keys(payload, {"goal_id", "reason"}, {"resume_sender", "check_at", "expected_sha256", "receipt", "signal_target", "dependency_goal"})
         reason = text(payload["reason"], "reason", 2000)
         with self.lock():
             item = self.find(payload["goal_id"]); record = item[4]
@@ -598,12 +598,14 @@ class Store:
                 if payload.get('expected_sha256') and hashlib.sha256(item[0].read_bytes()).hexdigest() != payload['expected_sha256']:
                     raise MemoryError('goal changed since inspection; re-read before waiting')
                 wait = {'reason': reason, 'since': now(), 'resume_sender': text(payload.get('resume_sender', ''), 'resume_sender', 2048, empty=True)}
-                for field in ('receipt', 'signal_target', 'check_at'):
+                for field in ('receipt', 'signal_target', 'check_at', 'dependency_goal'):
                     if payload.get(field): wait[field] = text(payload[field], field, 2048)
-                if not any(wait.get(k) for k in ('receipt', 'signal_target', 'check_at', 'resume_sender')):
+                if not any(wait.get(k) for k in ('receipt', 'signal_target', 'check_at', 'resume_sender', 'dependency_goal')):
                     raise MemoryError('own wait needs an explicit event or check_at')
                 if wait.get('check_at') and gate_time(wait['check_at']) <= dt.datetime.now(dt.timezone.utc):
                     raise MemoryError('check_at must be in the future')
+                if wait.get('receipt'): wait['receipt_phase'] = delivery_status(wait['receipt']).get('phase', 'unknown')
+                if wait.get('dependency_goal'): self.find(wait['dependency_goal'])
                 return own.park(self, item, wait)
             if record["status"] != "active" or not is_task(record):
                 raise MemoryError("only active deferred tasks can wait")
@@ -611,11 +613,13 @@ class Store:
                 raise MemoryError("goal changed since inspection; re-read before waiting")
             wait = {"reason": reason, "since": now(),
                     "resume_sender": text(payload.get("resume_sender", record["origin"]["sender"]), "resume_sender", 2048, empty=True)}
-            for field in ('receipt', 'signal_target'):
+            for field in ('receipt', 'signal_target', 'dependency_goal'):
                 if payload.get(field): wait[field] = text(payload[field], field, 2048)
-            if wait.get('receipt') or wait.get('signal_target'):
+            if wait.get('receipt') or wait.get('signal_target') or wait.get('dependency_goal'):
                 wait['resume_sender'] = ''
-                wait['check_at'] = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=6)).isoformat()
+            if wait.get('receipt'): wait['receipt_phase'] = delivery_status(wait['receipt']).get('phase', 'unknown')
+            if wait.get('dependency_goal'):
+                if self.find(wait['dependency_goal'])[3]['id'] == item[3]['id']: raise MemoryError('cannot wait on self')
             if payload.get("check_at"):
                 if gate_time(payload["check_at"]) <= dt.datetime.now(dt.timezone.utc):
                     raise MemoryError("check_at must be in the future")
@@ -702,10 +706,24 @@ class Store:
             if record["status"] != "active":
                 raise MemoryError("only active directed goals take notes")
             pad = record.setdefault("scratchpad", [])
+            if pad and pad[-1]['text'] == line:
+                return {'goal_id': payload['goal_id'], 'notes': len(pad), 'unchanged': True}
             pad.append({"at": now(), "text": line})
             del pad[:-40]
             self.save(item, record)
             return {"goal_id": payload["goal_id"], "notes": len(pad)}
+
+    def duplicate_review(self, payload):
+        keys(payload, {'goal_id', 'duplicate_of', 'evidence'})
+        evidence = text(payload['evidence'], 'evidence', 2000)
+        with self.lock():
+            item = self.find(payload['goal_id']); other = self.find(payload['duplicate_of'])
+            if not item[4] or item[4]['status'] != 'active' or not other[4]: raise MemoryError('managed active goal and compared request required')
+            from custos_dream import read_json, write_json
+            p = self.state_dir() / 'duplicate-reviews.json'; reviews = read_json(p, {})
+            reviews[item[3]['id'] + ':' + other[3]['id']] = {'outcome': item[4]['goal']['outcome'], 'compared_outcome': other[4]['goal']['outcome'], 'evidence': evidence}
+            write_json(p, reviews)
+            return {'goal_id': item[3]['id'], 'duplicate_of': other[3]['id'], 'reviewed': True}
 
     def check(self, payload):
         """Checklist on a goal: add items, mark them done. The goal line shows k/n,
@@ -758,7 +776,7 @@ class Store:
                 item = self.find(payload["goal_id"])
                 record = item[4]
                 if disposition == 'completed' and record['status'] == 'active':
-                    unresolved = unresolved_deliveries(self, record)
+                    unresolved = unresolved_deliveries(self, record, item[3]["id"])
                     if unresolved:
                         reference, phase = unresolved[-1]
                         record['events'].append({'at': now(), 'delivery_unresolved': reference, 'phase': phase})
@@ -912,7 +930,7 @@ class Store:
                     if wait:
                         event = next((r for r in inbound if r["origin"]["sender"] == wait["resume_sender"]
                                       and gate_time(r["received_at"]) > gate_time(wait["since"])), None)
-                        transport_event = wait_event(wait)
+                        transport_event = wait_event(wait, self)
                         if transport_event:
                             self._resume((path, header, body, fields, record), transport_event)
                         elif event:
@@ -957,7 +975,7 @@ class Store:
                     own_row = own.get(self, own_item) or {}
                     wait = own_row.get('waiting')
                     if wait:
-                        event = wait_event(wait)
+                        event = wait_event(wait, self)
                         inbound_event = next((r for r in inbound if r['origin']['sender'] == wait.get('resume_sender') and gate_time(r['received_at']) > gate_time(wait['since'])), None)
                         if event or inbound_event or (wait.get('check_at') and gate_time(wait['check_at']) <= context_now):
                             own.resume(self, own_item, event or 'Scheduled/inbound event reached; reconsider usefulness and eligibility once')
@@ -982,6 +1000,8 @@ class Store:
                             completed.append((cfields.get("id"),) + duplicate_signature(crecord["goal"]["outcome"]))
                     except ValueError:
                         continue
+        from custos_dream import read_json
+        duplicate_reviews = read_json(self.state_dir() / 'duplicate-reviews.json', {})
         for row in goals:
             if not row["directed"] or row.get("kind") != "task":
                 continue
@@ -1000,6 +1020,9 @@ class Store:
             words, ids = duplicate_signature(row["summary"])
             for cid, cwords, cids in completed:
                 if words and cwords and ids == cids and len(words & cwords) / len(words | cwords) >= 0.5:
+                    review = duplicate_reviews.get(row['goal_id'] + ':' + cid)
+                    if review and duplicate_signature(review['outcome'][:240]) == (words, ids) and duplicate_signature(review['compared_outcome']) == (cwords, cids):
+                        continue
                     row["possible_duplicate_of"] = cid
                     break
         authority_order = {"operator": 0, "agent": 1, "external": 2}
@@ -1871,13 +1894,15 @@ def submitted(result):
             and not receipt.get('converted_to_reaction'))
 
 
-def unresolved_deliveries(store, record):
-    if not os.environ.get('TRAJ_ID') or not record.get('trigger_step'):
+def unresolved_deliveries(store, record, goal_id=None):
+    if not os.environ.get('TRAJ_ID'):
         return []
     outgoing = [r for r in trajectory(store) if r.get('type') == 'message'
                 and r.get('from') == os.environ.get('IDENTITY_NAME', 'custos')
                 and str(r.get('to', '')).startswith('signal')
-                and r.get('reply_to') == record['trigger_step']
+                and ((record.get('trigger_step') and r.get('reply_to') == record['trigger_step'])
+                     or r.get('reply_to') == record['origin']['request_id']
+                     or (goal_id and r.get('goal_id') == goal_id))
                 and r.get('delivery_kind', 'completion') != 'acknowledgment'
                 and not r.get('reaction')]
     refs = [('action:' + r['request_id']) if r.get('delivered_by') == 'custos-actions'
@@ -1894,10 +1919,20 @@ def unresolved_deliveries(store, record):
     return unresolved
 
 
-def wait_event(wait):
+def wait_event(wait, store=None):
+    if wait.get('dependency_goal'):
+        if store is None: return None
+        try: item = store.find(wait['dependency_goal'])
+        except MemoryError: return None
+        if item[4]: done = item[4]['status'] != 'active'
+        else:
+            import custos_own_waits as own
+            done = not own.active(item) or bool((own.get(store, item) or {}).get('contact_resolved'))
+        return 'Dependency resolved; reconsider the deferred work once' if done else None
     if wait.get('receipt'):
         result = delivery_status(wait['receipt'])
         phase = result.get('phase', 'unknown')
+        if phase == wait.get('receipt_phase'): return None
         if phase in {'submitted', 'suppressed', 'blocked', 'failed', 'uncertain', 'succeeded', 'delivered', 'withdrawn', 'expired'}:
             return 'Transport receipt changed: ' + wait['receipt'] + ' is ' + phase + '; inspect receipt before closure or another send'
     elif wait.get('signal_target'):
@@ -2765,7 +2800,7 @@ Examples (replace the sample ID and evidence with actual values):
 An acknowledgment alone is not completion. Valid dispositions: completed, declined, abandoned.''')
     parser.add_argument("command", choices=["capture", "capture-envelope", "context", "pending", "show", "update", "complete", "respond",
                                             "replay-unanswered", "archive-conversations", "expire-asks", "note", "check", "wait", "resume", "correction",
-                                            "validate", "person-merge", "person-alias-remove", "person-normalize", "people-context", "attention", "contact-resolve"])
+                                            "validate", "person-merge", "person-alias-remove", "person-normalize", "people-context", "attention", "contact-resolve", "duplicate-review"])
     parser.add_argument("goal_id", nargs="?", help="Goal ID for show, update and complete (writes also take JSON on stdin)")
     parser.add_argument("words", nargs="*", help="complete: [completed|declined|abandoned] evidence…; update: the next action")
     parser.add_argument("--json", action="store_true")
@@ -2780,6 +2815,8 @@ An acknowledgment alone is not completion. Valid dispositions: completed, declin
         parser.error("Only show, update, complete, note, check, validate and person repair commands take positional arguments; see --help for examples.")
     try:
         store = Store()
+        if args.command == 'duplicate-review':
+            print(encode(store.duplicate_review(strict_json(sys.stdin.read())))); return 0
         if args.command == 'contact-resolve':
             evidence = ' '.join(args.words).strip()
             if not evidence: raise MemoryError('contact resolution evidence is required')

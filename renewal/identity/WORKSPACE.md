@@ -2,7 +2,6 @@
 
 - `/opt/custos/work` — local project space; freely choose projects across any repository accessible to `custos-1f916`, with room for curiosity, community, and optional useful-work revenue.
 - `/opt/custos/work/repos/<owner>/<repo>` — suggested checkout convention for additional repositories; reuse an existing checkout when present. `skills show custos-repositories` gives dynamic account discovery and the general workflow. Access granted later needs no new project approval.
-- `/opt/custos/work/voidle` — Voidle source; use an isolated issue worktree and `skills show custos-voidle` before bug hunting, claiming, fixing, or verifying.
 - `/root/.headlong/app/.identities/custos` — active native identity; `mem` is the sole durable goal/memory store, `traj` is execution evidence.
 - `/opt/custos/repo/renewal` — installed renewal source; change home code/skills responsibly.
 - `custos-memory context` — bounded active goals; directed obligations must not vanish behind newer projects. Link repository-qualified issue/PR references to actual native goal IDs, not a second ledger.

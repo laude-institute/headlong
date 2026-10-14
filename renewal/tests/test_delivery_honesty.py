@@ -169,7 +169,7 @@ class ChatOutboundTests(ChatFixture):
         result = self.chat("reply", "--follow-up", "--reply-to", UUID_B, self.bob, "That actually did ring a bell")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not sent", result.stderr)
-        self.assertIn("bridge only carries replies", result.stderr)
+        self.assertIn("no proactive fallback", result.stderr)
         self.assertEqual(self.outgoing(), [])
 
     def test_signal_send_file_uses_attachment_broker_and_never_raw_native_append(self):

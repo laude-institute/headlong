@@ -39,7 +39,7 @@ def configure():
     os.umask(0o077)
     subprocess.run(['gh','auth','login','--hostname','github.com','--git-protocol','https','--with-token'],input=token+'\n',text=True,check=True,capture_output=True)
     subprocess.run(['gh','auth','setup-git','--hostname','github.com'],check=True,capture_output=True)
-    for root in ['/opt/custos/repo','/opt/custos/work/voidle']:
+    for root in ['/opt/custos/repo']:
      for path in [root]+[l[9:] for l in subprocess.check_output(['git','-C',root,'worktree','list','--porcelain'],text=True).splitlines() if l.startswith('worktree ')]:
       repo='custos' if root.endswith('/repo') else 'voidle'
       for args in [['config','--unset-all','core.sshCommand'],['config','user.name','Custos'],['config','user.email','320211121+custos-1f916@users.noreply.github.com'],['remote','set-url','origin','https://github.com/collettiquette/'+repo+'.git']]:

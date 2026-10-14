@@ -53,6 +53,8 @@ def resume(store, item, evidence):
 
 def note(store, item, text):
     rows = read(store); key = item[3]['id']; old = get(store, item) or {'sha256': hashlib.sha256(item[0].read_bytes()).hexdigest()}
+    if old.get('notes') and old['notes'][-1]['text'] == text:
+        return {'goal_id': key, 'notes': len(old['notes']), 'directed': False, 'unchanged': True}
     old['notes'] = (old.get('notes', []) + [{'at': dt.datetime.now(dt.timezone.utc).isoformat(), 'text': text}])[-40:]
     rows[key] = old; write(store, rows)
     return {'goal_id': key, 'notes': len(old['notes']), 'directed': False}

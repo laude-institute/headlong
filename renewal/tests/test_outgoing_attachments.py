@@ -141,6 +141,7 @@ class AttachmentActionsTests(unittest.TestCase):
 class ClientTests(unittest.TestCase):
     def test_cli_attaches_bytes_and_records_only_metadata(self):
         with tempfile.TemporaryDirectory() as root:
+            env = patch.dict(os.environ, {'IDENTITY_DIR': root}); env.start(); self.addCleanup(env.stop)
             path = Path(root) / 'report.txt'; path.write_text('file contents')
             body = json.dumps({'request_id':'file-one','target':'dm:'+HAL,'message':'Here it is'})
             with patch.object(sys, 'argv', ['custos-actions','signal-send','--attach',str(path)]), \

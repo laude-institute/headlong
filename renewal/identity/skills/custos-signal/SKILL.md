@@ -263,3 +263,24 @@ not create an operator request or extend native expiry. Reconsider usefulness wh
 it resumes. After verified delivery, or a deliberate stale/no-contact decision,
 record `custos-memory contact-resolve ID evidence` to release optional news behind
 it. An expired or edited native goal automatically invalidates its old wait.
+
+
+## October 14 delivery contract
+
+`chat reply --reply-to` accepts a unique native step ID/prefix or an exact inbound
+Signal request ID. Both resolve to the same verified conversation. Unknown or
+wrong-room explicit identifiers are refused; they never become proactive sends.
+`custos-actions signal-send --reply-to` supports the same identifiers. Keep `--goal`
+when delivering deferred work so its receipt stays attached to the task.
+
+Read the explicit guard `state`: `open`, `cooldown`, or `unresolved`. `ok` is the
+decision. `resume_at:null` only means there is no deadline; open/null is eligible,
+unresolved/null needs receipt reconciliation. Native operator chat has no Signal
+receipt and cannot reset a Signal contact window. Command results name their
+channel; a queue acknowledgment is never a successful submission.
+
+Every signal-send request is staged locally before submission. Staged-payload
+identity applies even without `--goal`; omitting it cannot resolve a conflict.
+Use the never-attempted `signal-revise-staged` procedure in custos-ai-news for an
+unsent revision. An attempt marker preserves uncertainty across crashes. Reuse the
+exact payload after transport uncertainty; never change an attempted request.

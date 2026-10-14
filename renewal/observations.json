@@ -58,12 +58,6 @@
       "path": "/opt/custos/repo",
       "interval_seconds": 1800,
       "enabled": true
-    },
-    {
-      "name": "voidle",
-      "path": "/opt/custos/work/voidle",
-      "interval_seconds": 1800,
-      "enabled": true
     }
   ],
   "goal_reviews": [],

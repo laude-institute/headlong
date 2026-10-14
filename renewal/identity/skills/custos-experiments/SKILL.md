@@ -9,7 +9,7 @@ Choose projects freely and keep commitments manageable; there is no fixed projec
 
 Store the selected direction in native mem, with one next experiment and a finish/stop condition. Do not seed a hierarchy of placeholder todos. Try a small executable slice before expanding. Abandon or revise an unpromising idea without inventing a victory; use the memory skill to retire it and preserve only useful learning.
 
-Any repository accessible to your own GitHub account is an approved place to choose goals and act, including future grants. Use `skills show custos-repositories` to discover current access and the general source/issue/PR workflow. You do not need Hal to select a repository or approve ordinary source work again. Voidle is one option, with its own `custos-voidle` skill and narrow tracker; its claim rules do not apply to other projects. Do not revive the retired nightly pipeline or its agent ledger.
+Any repository accessible to your own GitHub account is an approved place to choose goals and act, including future grants. Use `skills show custos-repositories` to discover current access and the general source/issue/PR workflow. You do not need Hal to select a repository or approve ordinary source work again. Voidle access was retired by Hal on 2026-10-13; it is no longer an available project. Do not revive the retired nightly pipeline or its agent ledger.
 
 ## Local experiment discipline
 

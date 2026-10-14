@@ -202,3 +202,11 @@ that contrary evidence was unavailable and why the verdict remains uncertain.
 “Consistent with my values” alone does not verify a causal claim. Prefer replacing
 an overstatement with a qualified claim to adding another principle. Keep is valid;
 there is no edit quota or pressure to change persona.
+
+
+Receipt contradictions now participate in selection and the trajectory audit.
+Inspect `delivery-receipt-contradiction` entries even when surrounding prose says
+"sent": they contain the actual action/outbox reference, phase and related goal.
+Keep source work separate from notification, and correct unsupported memory claims
+with the retained preimage. Do not resend a failed historical acknowledgment merely
+to repair its record. Receipt reads unavailable means unverified, never success.

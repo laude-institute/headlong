@@ -167,9 +167,9 @@ _known_name() {
 # <full step id>: the request id of the bridge-delivered inbound message it
 # names (the bridge keys its outbox on exactly this lookup), else nothing.
 _transport_receipt_request() {
-    local rt="$1" dir="${IDENTITY_DIR:-}/.state/transport" found=""
+    local rt="$1" route="$2" dir="${IDENTITY_DIR:-}/.state/transport" found=""
     [[ -n "$rt" && -n "${IDENTITY_DIR:-}" && -d "$dir" ]] || return 0
-    found=$(jq -r --arg rt "$rt" 'select(.step_id == $rt) | .original.request_id // empty' "$dir"/*.json 2>/dev/null | head -1) || found=""
+    found=$(jq -r --arg rt "$rt" --arg route "$route" 'select(.step_id == $rt and .phase == "queued" and .original.sender == $route) | .original.request_id // empty' "$dir"/*.json 2>/dev/null | head -1) || found=""
     printf '%s' "$found"
 }
 
@@ -221,11 +221,12 @@ _outbound_check() {
     fi
     case "$to" in
         signal-*)
-            [[ -n "$rt" ]] && req=$(_transport_receipt_request "$rt")
+            [[ -n "$rt" ]] && req=$(_transport_receipt_request "$rt" "$to")
             if [[ -n "$req" ]]; then
                 OUTBOUND_NOTE="queued for the Signal bridge as a reply to ${rt:0:8}"
                 return 0
             fi
+            [[ -n "$rt" ]] && die "not sent: explicit Signal reply correlation is unknown, ambiguous, or belongs to another conversation; no proactive fallback."
             _send_via_actions "$to" "$message" || rc=$?
             case "$rc" in
                 0) return 10 ;;
@@ -301,6 +302,10 @@ To keep a note for yourself, append a thought step instead of a message."
          + (if $source_url == "" then {} else {source_url:$source_url} end)' \
         | _chat_append
 
+    if [[ "$to" != signal-* ]]; then
+        printf 'Native channel message recorded; no Signal submission or Signal receipt exists.\n' >&2
+        return 0
+    fi
     printf 'Message recorded%s; transport submission is pending.\n' "${OUTBOUND_NOTE:+ ($OUTBOUND_NOTE)}" >&2
 }
 
@@ -361,6 +366,15 @@ Use the name of the person you mean to reach: chat reply <their-name> <message>"
         elif [[ "$_rrc" -eq 2 ]]; then
             die "not sent: --reply-to '$reply_to' matches more than one message step; use the full step id (chat history --with NAME --json)"
         fi
+    fi
+
+    # Signal accepts an exact inbound request ID as well as a native step ID.
+    # Canonicalize before deduplication, then stamp the native ID the bridge uses.
+    if [[ "$to_name" == signal-* && -n "$reply_to" ]]; then
+        local _transport_matches
+        _transport_matches=$(jq -s --arg id "$reply_to" --arg route "$to_name"             '[.[] | select((.step_id == $id or .original.request_id == $id) and .phase == "queued" and .original.sender == $route)] | if length == 1 then .[0].step_id else empty end'             "${IDENTITY_DIR:-}/.state/transport/"*.json 2>/dev/null) || _transport_matches=""
+        [[ -n "$_transport_matches" ]] || die "not sent: explicit Signal reply correlation is unknown, ambiguous, or belongs to another conversation; no proactive fallback."
+        reply_to=$(printf '%s' "$_transport_matches" | jq -r .)
     fi
 
     if [[ -z "$reply_to" ]]; then
@@ -428,6 +442,10 @@ Use the name of the person you mean to reach: chat reply <their-name> <message>"
          + (if $follow_up == 1 then {follow_up:true} else {} end)' \
         | _chat_append
 
+    if [[ "$to_name" != signal-* ]]; then
+        printf 'Native channel reply recorded; no Signal submission or Signal receipt exists.\n' >&2
+        return 0
+    fi
     printf 'Reply recorded for delivery%s; submission is pending. Check custos-actions delivery-status outbox:STEP_ID before claiming delivery.\n' "${OUTBOUND_NOTE:+ ($OUTBOUND_NOTE)}" >&2
 }
 

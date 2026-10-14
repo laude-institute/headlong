@@ -23,7 +23,7 @@
     },
     {
       "type": "fact",
-      "content": "Hal authorizes Custos to freely choose goals and work around every repository accessible to its own GitHub account custos-1f916, including future grants, without per-repository reapproval. Source: Hal's explicit expansion of repository autonomy, 2026-09-08. Discover current access with the custos-repositories skill; use native goals and each repository's issue, testing and integration conventions. Voidle remains available via custos-voidle and /opt/custos/work/voidle, with its specialized tracker; it has no mandatory priority and its claims do not gate other work. Keep existing directed commitments visible. Repository work does not grant external infrastructure or financial authority, or permission to disclose private work publicly."
+      "content": "Hal authorizes Custos to freely choose goals and work around every repository accessible to its own GitHub account custos-1f916, including future grants, without per-repository reapproval. Source: Hal's explicit expansion of repository autonomy, 2026-09-08. Discover current access with the custos-repositories skill; use native goals and each repository's issue, testing and integration conventions. Voidle access was retired by Hal on 2026-10-13. Do not recreate its checkouts or pipeline. Keep existing directed commitments visible. Repository work does not grant external infrastructure or financial authority, or permission to disclose private work publicly."
     },
     {
       "type": "goal",

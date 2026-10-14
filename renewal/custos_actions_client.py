@@ -189,7 +189,7 @@ def park_cooldown(goal_id, payload, target, social, refusal):
                        'signal_target': target, 'check_at': decision['resume_at']})
 
 
-def record(route, message, request_id, phase, files=None, reply_to=None, social=False, delivery_kind="completion", correction_of=None):
+def record(route, message, request_id, phase, files=None, reply_to=None, social=False, delivery_kind="completion", correction_of=None, goal_id=None):
     """Append the accepted send to the root trajectory as a message step."""
     root = os.environ.get('ROOT_TRAJ_ID') or os.environ.get('TRAJ_ID')
     if not root:
@@ -197,6 +197,7 @@ def record(route, message, request_id, phase, files=None, reply_to=None, social=
     step = {'type': 'message', 'from': os.environ.get('IDENTITY_NAME', 'custos'), 'to': route, 'content': message,
             'source': 'custos-actions', 'delivered_by': 'custos-actions', 'request_id': request_id, 'phase': phase}
     step['delivery_kind'] = delivery_kind
+    if goal_id: step['goal_id'] = goal_id
     if correction_of: step['correction_of'] = correction_of
     if social:
         step['social_intent'] = True
@@ -213,7 +214,7 @@ def resolve_reply(step, route):
     matches = []
     for path in (Path(os.environ['IDENTITY_DIR']) / '.state' / 'transport').glob('*.json'):
         record = json.loads(path.read_text())
-        if record['step_id'].startswith(step):
+        if record['step_id'].startswith(step) or record['original']['request_id'] == step:
             matches.append(record)
     if len(matches) != 1 or matches[0]['phase'] != 'queued' or matches[0]['original']['sender'] != route:
         raise ValueError('reply-to must uniquely name a delivered message in this conversation')
@@ -222,7 +223,7 @@ def resolve_reply(step, route):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('action', choices=['signal-guard', 'signal-lane-status', 'signal-contacts', 'signal-send', 'signal-ask', 'signal-await', 'signal-release', 'automata-status', 'automata-deploy', 'automata-rollback', 'status', 'delivery-status'])
+    p.add_argument('action', choices=['signal-prepare-batch', 'signal-revise-staged', 'signal-guard', 'signal-lane-status', 'signal-contacts', 'signal-send', 'signal-ask', 'signal-await', 'signal-release', 'automata-status', 'automata-deploy', 'automata-rollback', 'status', 'delivery-status'])
     p.add_argument('request_id', nargs='?')
     p.add_argument('--attach', action='append', default=[], metavar='FILE', help='attach a guest file (repeat up to four; 8 MiB total)')
     p.add_argument('--reply-to', metavar='STEP', help='quote a delivered native Signal message (unique step ID/prefix)')
@@ -231,16 +232,21 @@ def main():
     p.add_argument('--delivery-kind', choices=['acknowledgment', 'completion', 'correction'])
     p.add_argument('--correction-of', help='original submitted outbox:STEP or action:ID')
     args = p.parse_args()
+    draft_lock = None
     try:
         if (args.goal or args.social or args.attach or args.reply_to or args.delivery_kind or args.correction_of) and args.action != 'signal-send':
             raise ValueError('--attach and --reply-to are for signal-send')
-        if args.action in ('signal-lane-status', 'signal-send', 'signal-ask', 'automata-deploy', 'automata-rollback'):
+        if args.action in ('signal-prepare-batch', 'signal-revise-staged', 'signal-lane-status', 'signal-send', 'signal-ask', 'automata-deploy', 'automata-rollback'):
             raw = sys.stdin.buffer.read(32769)
             if len(raw) > 32768: raise ValueError('request too large')
             payload = json.loads(raw)
             if not isinstance(payload, dict) or 'action' in payload: raise ValueError('object without action required')
         else:
             payload = {}
+        if args.action in {'signal-prepare-batch', 'signal-revise-staged'}:
+            import custos_signal_drafts as drafts
+            result = drafts.prepare_batch(payload) if args.action == 'signal-prepare-batch' else drafts.revise(payload, call)
+            print(json.dumps(result, ensure_ascii=False)); return 0
         if args.action == 'signal-guard':
             if not args.request_id: raise ValueError('conversation required')
             result = guard(args.request_id)
@@ -270,15 +276,25 @@ def main():
                 record_goal = goal_item[4]
                 if not (own.active(goal_item) or (record_goal and record_goal['status'] == 'active' and is_task(record_goal))):
                     raise ValueError('--goal must name an active native goal')
-            if args.goal:
-                staged = Path(os.environ['IDENTITY_DIR']) / '.state' / 'staged-signal' / (hashlib.sha256(payload['request_id'].encode()).hexdigest() + '.json')
-                if staged.exists() and staged.read_bytes() != json.dumps(payload, sort_keys=True, ensure_ascii=False).encode():
-                    raise ValueError('staged request ID has a different payload; reconcile before sending')
+            if args.attach:
+                if 'attachments' in payload: raise ValueError('use --attach or JSON attachments, not both')
+                payload['attachments'] = attachments.read_files(args.attach)
+            if 'attachments' in payload: attachments.validate(payload['attachments'])
+            if args.reply_to:
+                if 'reply_to' in payload: raise ValueError('use --reply-to or JSON reply_to, not both')
+                payload['reply_to'] = args.reply_to
+            import custos_signal_drafts as drafts
+            draft_lock = drafts.locked(); draft_lock.__enter__()
+            draft_payload = dict(payload)
+            drafts.stage(draft_payload)
+            delivery_goal = drafts.associate_goal(payload["request_id"], goal_item[3]["id"] if args.goal else None)
             target = payload.get('target')
             if not (isinstance(target, str) and target.startswith(('dm:', 'group:'))):
                 status, contacts = call({'action': 'signal-contacts'})
                 target = resolve_target(target, contacts.get('destinations') or contacts.get('contacts') or (contacts if isinstance(contacts, list) else []))
             route = route_for(target)
+            if payload.get('reply_to'):
+                payload['reply_to'], reply_step = resolve_reply(payload['reply_to'], route)
             scheduled = False
             if payload['request_id'].startswith(('kitchen-wednesday:','kitchen-friday:','kitchen-pantry-bootstrap-')):
                 code, permission = call({'action':'kitchen-contact-check','target':target,'request_id':payload['request_id']})
@@ -289,11 +305,22 @@ def main():
                 with Store().lock():
                     pending = own.pending_contact(Store(), target)
                 if pending and timestamp(pending['priority_since']) < timestamp(record_goal['received_at']):
-                    check_at = max(dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1),
-                                   dt.datetime.fromisoformat(pending.get('check_at') or pending['since']))
-                    waiting = Store().wait({'goal_id': args.goal, 'resume_sender': '', 'check_at': check_at.isoformat(),
+                    waiting = Store().wait({'goal_id': args.goal, 'resume_sender': '', 'dependency_goal': pending['goal_id'],
                         'reason': 'Batch optional news behind older contact goal ' + pending['goal_id'] + '; reassess that contact, resolve it if stale, then group news.'})
                     print(json.dumps({'ok': False, 'reason': 'older-contact-pending', 'contact_goal': pending['goal_id'], 'goal_wait': waiting})); return 1
+            is_news = payload['request_id'].startswith('ainews-') or bool(args.goal and record_goal and record_goal['origin'].get('sender') == 'operator:ai-news-review')
+            if is_news:
+                if not payload.get('draft_sources'):
+                    raise ValueError('news sends require signal-prepare-batch with current individual drafts and stable source keys')
+                from custos_news_delivery import check_batch
+                decision = check_batch(payload, target, call)
+                if not decision['ok']:
+                    waiting = None
+                    if args.goal:
+                        from custos_memory import Store
+                        waiting = Store().wait({'goal_id': args.goal, 'reason': decision['meaning'], 'resume_sender': '', **decision['wait']})
+                    print(json.dumps({**decision, 'origin': 'local-news-policy', 'goal_wait': waiting})); return 1
+                drafts.check_duplicate_items(payload, call)
             try:
                 if args.social:
                     if args.reply_to or payload.get('reply_to') or payload.get('delivery_kind') or payload.get('correction_of'):
@@ -302,39 +329,40 @@ def main():
                 elif payload.get('delivery_kind') != 'correction' and not scheduled:
                     guard(route)
             except ValueError as refusal:
-                waiting = park_cooldown(args.goal, payload, target, args.social, refusal)
+                waiting = park_cooldown(args.goal, draft_payload, target, args.social, refusal)
                 print(json.dumps({'ok': False, 'error': 'not sent: ' + str(refusal), 'request_id': payload['request_id'], 'goal_wait': waiting}))
                 return 1
-            if args.attach:
-                if 'attachments' in payload:
-                    raise ValueError('use --attach or JSON attachments, not both')
-                payload['attachments'] = attachments.read_files(args.attach)
-            if 'attachments' in payload:
-                attachments.validate(payload['attachments'])
-            if args.reply_to:
-                if 'reply_to' in payload:
-                    raise ValueError('use --reply-to or JSON reply_to, not both')
-                payload['reply_to'], reply_step = resolve_reply(args.reply_to, route)
+            payload.pop('draft_sources', None)
+            payload.pop('news_urgent_reason', None)
+            # Reserve before the first write; after a crash even unknown host
+            # status cannot be mistaken for a never-attempted draft.
+            drafts.mark_attempt(draft_payload, payload)
+            write_attempted = True
         payload['action'] = args.action
         status, result = call(payload)
         result = explain_status(result)
+        if route is not None:
+            result = {**result, 'channel': 'signal', 'receipt_reference': 'action:' + payload['request_id']}
         print(json.dumps(result, ensure_ascii=False))
         ok = status == 200 and result.get('ok')
         if ok and route is not None:
             if payload.get('attachments') or reply_step:
                 record(route, payload['message'], payload['request_id'], result.get('phase', 'queued'),
-                       payload.get('attachments'), reply_step, social=args.social, delivery_kind=payload.get('delivery_kind', 'completion'), correction_of=payload.get('correction_of'))
+                       payload.get('attachments'), reply_step, social=args.social, delivery_kind=payload.get('delivery_kind', 'completion'), correction_of=payload.get('correction_of'), goal_id=delivery_goal)
             else:
-                record(route, payload['message'], payload['request_id'], result.get('phase', 'queued'), social=args.social, delivery_kind=payload.get('delivery_kind', 'completion'), correction_of=payload.get('correction_of'))
+                record(route, payload['message'], payload['request_id'], result.get('phase', 'queued'), social=args.social, delivery_kind=payload.get('delivery_kind', 'completion'), correction_of=payload.get('correction_of'), goal_id=delivery_goal)
         return 0 if ok else 1
     except GuardRefusal as error:
         print(json.dumps(error.decision)); return 1
     except (ValueError, GoalMemoryError) as error:
-        print(json.dumps({'ok': False, 'error': str(error)[:200]}))
+        print(json.dumps({'ok': False, 'origin': 'local-client', 'host_write_attempted': bool(locals().get('write_attempted')), 'error': str(error)[:400]}))
         return 2
     except (OSError, http.client.HTTPException, RecursionError, subprocess.SubprocessError):
         print(json.dumps({'ok': False, 'error': 'Unavailable or invalid request; a write may be queued. Check status and reuse its exact request ID.'}))
         return 2
+
+    finally:
+        if draft_lock is not None: draft_lock.__exit__(None, None, None)
 
 
 if __name__ == '__main__':
