@@ -40,3 +40,10 @@ also imports recent news keys so deduplication crosses the release boundary.
 
 Tests run in the disposable no-network hermetic VM. See the homelab repair record
 for exact qualification/deployment receipts, migration evidence and rollback.
+# Live verification follow-up
+
+The state-summary read exceeded 90 seconds because ingress recovery rescanned
+1,231 archived records for each of 1,226 archived messages. Recovery now reuses
+positive archive matches once per pass, still validates envelopes and checks
+live archives on misses. The summary includes own structured waits and reports
+unavailable current state with a failing exit code instead of stale-cache data.

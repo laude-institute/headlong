@@ -531,7 +531,7 @@ class Store:
         return self.commit(record_label(record) + summary + MARKER + encode(record),
                            memory_type="goal" if is_task(record) else "memory", existing=item)
 
-    def capture(self, payload, trigger_step=None, deferred=False):
+    def capture(self, payload, trigger_step=None, deferred=False, _archived_ids=None):
         keys(payload, {"request_id", "sender", "source_url", "content", "authority"},
              {"outcome", "next_action", "completion", "ambient", "allow_reaction", "images", "signal_routing"})
         origin = {key: text(payload[key], key, MAX_CONTENT if key == "content" else 2048,
@@ -560,7 +560,11 @@ class Store:
         if trigger_step is not None:
             text(trigger_step, "trigger_step", 2048)
         with self.lock():
-            if origin["request_id"] in self.archived_request_ids():
+            # Recovery can reuse positive archive matches for this pass. An
+            # index miss still checks live archives, preserving concurrent
+            # archival protection and all validation above.
+            if (origin["request_id"] in (_archived_ids or ())
+                    or origin["request_id"] in self.archived_request_ids()):
                 # Already answered and archived: never a second reply.
                 return {"goal_id": None, "request_id": origin["request_id"], "created": False, "archived": True}
             existing = self.request(origin["request_id"])
@@ -865,6 +869,7 @@ class Store:
             rejected = {body.rsplit(NOTE_MARKER, 1)[1] for _, _, body, _, _ in items
                         if NOTE_MARKER + "invalid-ingress:" in body}
         rejected |= self.rejected_ingress()
+        archived = self.archived_request_ids()
         rejections = []
         for step in trajectory(self):
             if step.get("type") != "message" or step.get("to") != me or step.get("from") == me:
@@ -879,10 +884,10 @@ class Store:
                     if previous["origin"] != incoming:
                         raise InvalidInput("native ingress request identity conflicts with captured provenance")
                     if not previous.get("trigger_step"):
-                        self.capture(incoming, trigger)
+                        self.capture(incoming, trigger, _archived_ids=archived)
                         previous["trigger_step"] = trigger
                     continue
-                self.capture(incoming, trigger)
+                self.capture(incoming, trigger, _archived_ids=archived)
                 known[incoming["request_id"]] = {"origin": incoming, "trigger_step": trigger}
             except InvalidInput as error:
                 # The complete original remains in the append-only trajectory.

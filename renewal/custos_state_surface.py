@@ -12,11 +12,12 @@ state. Sources:
     hours, cross-room) and completion (mind window, same-room) double-text
     guards reopen. NOTE: signal-lane-status alone does NOT reflect the
     double-text guard - that is enforced at send time via `chat guard`.
-  - goals (custos-memory pending --json)  deterministic; opt-in via
-    --goals, cached to .state-surface-goals.json (TTL 30 min)
+  - goals (custos-memory context --json) deterministic; opt-in via
+    --goals, including own goals and their structured waits
   - receipts (custos-actions delivery-status)  on demand via --receipt REF
 
-No model calls. Goal inspection may reconcile structured waits; its cache is a display aid, not eligibility authority.
+No model calls. Goal inspection may reconcile structured waits. A failed fresh
+read is reported as unavailable; cached goals never establish current state.
 """
 import hashlib, json, os, re, subprocess, sys
 from pathlib import Path
@@ -85,15 +86,8 @@ def delta(d):
     return f"in {s//3600}h{(s%3600)//60:02d}m"
 
 def collect_goals(use_cache=True):
-    if use_cache and os.path.exists(CACHE):
-        try:
-            with open(CACHE) as f:
-                c = json.load(f)
-            if NOW.timestamp() - c.get('ts', 0) < CACHE_TTL:
-                return c.get('data'), 'cache'
-        except Exception:
-            pass
-    rc, so, se = run(['custos-memory', 'pending', '--json'], timeout=90)
+    # Keep the argument for callers of the older helper, but always read fresh.
+    rc, so, se = run(['custos-memory', 'context', '--json'], timeout=90)
     if rc == 0:
         try:
             data = json.loads(so)
@@ -105,14 +99,7 @@ def collect_goals(use_cache=True):
         except Exception:
             pass
         return data, 'fresh'
-    if os.path.exists(CACHE):
-        try:
-            with open(CACHE) as f:
-                c = json.load(f)
-            return c.get('data'), 'cache (stale; fresh read failed: ' + se[:80] + ')'
-        except Exception:
-            pass
-    return f"command failed rc={rc}: {se[:120]}", 'fresh'
+    return f"current goals unavailable; command failed rc={rc}: {se[:120]}", 'unavailable'
 
 def collect_todos():
     rc, so, se = run(['mem', 'list', '--type', 'todo', '-s'], timeout=30)
@@ -247,7 +234,7 @@ def fmt_receipt(r):
 def text_output(now, goals, goals_src, todos, todos_err, pr, pr_err, lanes, receipts):
     out = [f"state-surface @ {now.strftime('%Y-%m-%d %H:%M:%SZ')}"]
     if goals is not None:
-        out.append(f"\nGOALS (custos-memory pending; {goals_src}):")
+        out.append(f"\nGOALS (custos-memory context; {goals_src}):")
         if isinstance(goals, str):
             out.append(f"  {goals}")
         else:
@@ -357,6 +344,7 @@ def main():
         }, indent=2, default=str))
     else:
         print(text_output(NOW, goals, goals_src, todos, todos_err, pr, pr_err, lanes, receipts))
+    return 2 if args.goals and not isinstance(goals, dict) else 0
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

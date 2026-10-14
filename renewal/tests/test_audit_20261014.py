@@ -184,6 +184,26 @@ class DraftTests(unittest.TestCase):
 
 
 class MemoryTests(memory_tests.MemoryFixture):
+    def test_recovery_reads_archives_once_for_many_archived_requests(self):
+        ids = {'archived:' + str(i) for i in range(100)}
+        rows = [{'type':'message', 'to':'custos', 'from':self.payload['sender'],
+                 'step_id':'step-' + key, 'request_id':key, 'authority':'agent',
+                 'source_url':self.payload['source_url'], 'content':self.payload['content']}
+                for key in sorted(ids)]
+        with patch.dict(os.environ, {'TRAJ_ID':'fixture'}), patch.object(cm,'trajectory',return_value=iter(rows)), patch.object(self.store,'archived_request_ids',return_value=ids) as archive:
+            self.store.reconcile()
+        archive.assert_called_once_with()
+        self.assertEqual(list(self.store.files()), [])
+
+    def test_archive_index_miss_still_checks_newly_archived_requests(self):
+        with patch.object(self.store,'archived_request_ids',return_value={self.payload['request_id']}) as archive:
+            result=self.store.capture(self.payload, _archived_ids={'older-request'})
+        self.assertTrue(result['archived']); archive.assert_called_once_with()
+
+    def test_archive_index_does_not_skip_envelope_validation(self):
+        with self.assertRaises(cm.InvalidInput):
+            self.store.capture({**self.payload,'authority':'untrusted-admin'}, _archived_ids={self.payload['request_id']})
+
     def capture(self):
         return self.store.capture({**self.payload, 'outcome': 'Find sources', 'next_action': 'Read', 'completion': 'Checked'}, trigger_step='inbound', deferred=True)['goal_id']
 
