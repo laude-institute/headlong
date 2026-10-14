@@ -194,6 +194,15 @@ class MemoryTests(memory_tests.MemoryFixture):
             with self.assertRaises(cm.MemoryError): self.store.complete({'goal_id':goal,'disposition':'completed','evidence':'queued'})
         self.assertEqual(self.store.find(goal)[4]['status'],'active')
 
+    def test_missing_trajectory_append_cannot_hide_attempted_goal_delivery(self):
+        goal = self.capture()
+        payload = {'request_id':'lost-log', 'target':'dm:hal', 'message':'result'}
+        with patch.dict(os.environ, {'IDENTITY_DIR':str(self.root), 'TRAJ_ID':''}):
+            drafts.stage(payload); drafts.associate_goal('lost-log',goal); drafts.mark_attempt(payload,payload)
+            with patch.object(cm,'delivery_status',return_value={'phase':'queued'}):
+                with self.assertRaises(cm.MemoryError): self.store.complete({'goal_id':goal,'disposition':'completed','evidence':'work done'})
+        self.assertEqual(self.store.find(goal)[4]['status'],'active')
+
     def test_unchanged_terminal_receipt_wait_does_not_resume(self):
         goal=self.capture()
         with patch.object(cm,'delivery_status',return_value={'phase':'blocked'}):
@@ -220,6 +229,19 @@ class MemoryTests(memory_tests.MemoryFixture):
         self.assertNotIn('possible_duplicate_of', self.store.context()['goals'][0])
         self.store.update({'goal_id': current, 'outcome': 'Find primary sources', 'evidence': 'Scope changed'})
         self.assertEqual(self.store.context()['goals'][0]['possible_duplicate_of'], old)
+
+    def test_new_wait_conditions_preserve_previous_record_schema(self):
+        goal = self.capture()
+        with patch.object(cm, 'delivery_status', return_value={'phase':'blocked'}):
+            self.store.wait({'goal_id':goal,'reason':'receipt change','receipt':'action:send'})
+        record = self.store.find(goal)[4]
+        self.assertEqual(set(record['waiting']), {'reason','since','resume_sender','receipt'})
+        self.assertNotIn('receipt_phase', record['waiting'])
+        with patch.object(cm, 'delivery_status', return_value={'phase':'blocked'}):
+            self.assertEqual(self.store.context()['waiting'][0]['receipt_phase'], 'blocked')
+        # A changed wait must not inherit a prior receipt phase or dependency.
+        changed = {**record['waiting'], 'reason':'new decision'}
+        self.assertNotIn('receipt_phase', self.store.wait_condition(goal, changed))
 
     def test_identical_note_does_not_rewrite_memory(self):
         goal=self.capture(); self.store.note({'goal_id':goal,'text':'No new evidence'})

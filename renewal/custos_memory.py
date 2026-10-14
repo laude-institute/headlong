@@ -200,7 +200,7 @@ def validate_record(record):
         gate_time(record["not_before"])
     if record.get("waiting"):
         wait = record["waiting"]
-        keys(wait, {"reason", "since", "resume_sender"}, {"check_at", "receipt", "signal_target", "receipt_phase", "dependency_goal"})
+        keys(wait, {"reason", "since", "resume_sender"}, {"check_at", "receipt", "signal_target"})
         text(wait["reason"], "waiting reason", 2000)
         text(wait["resume_sender"], "resume sender", 2048, empty=True)
         gate_time(wait["since"])
@@ -587,6 +587,20 @@ class Store:
             goal_id = self.commit(body, memory_type="goal" if deferred else "memory")
             return {"goal_id": goal_id, "request_id": origin["request_id"], "created": True}
 
+    def store_wait_condition(self, goal_id, wait):
+        from custos_dream import read_json, write_json
+        metadata = {key: wait.pop(key) for key in ('receipt_phase', 'dependency_goal') if key in wait}
+        p = self.state_dir() / 'wait-conditions.json'; rows = read_json(p, {})
+        rows[goal_id] = {'waiting_sha256': hashlib.sha256(encode(wait).encode()).hexdigest(), **metadata}
+        write_json(p, rows)
+
+    def wait_condition(self, goal_id, wait):
+        if not wait: return wait
+        from custos_dream import read_json
+        row = read_json(self.state_dir() / 'wait-conditions.json', {}).get(goal_id, {})
+        if row.get('waiting_sha256') != hashlib.sha256(encode(wait).encode()).hexdigest(): return wait
+        return {**wait, **{key: row[key] for key in ('receipt_phase', 'dependency_goal') if key in row}}
+
     def wait(self, payload):
         keys(payload, {"goal_id", "reason"}, {"resume_sender", "check_at", "expected_sha256", "receipt", "signal_target", "dependency_goal"})
         reason = text(payload["reason"], "reason", 2000)
@@ -606,7 +620,10 @@ class Store:
                     raise MemoryError('check_at must be in the future')
                 if wait.get('receipt'): wait['receipt_phase'] = delivery_status(wait['receipt']).get('phase', 'unknown')
                 if wait.get('dependency_goal'): self.find(wait['dependency_goal'])
-                return own.park(self, item, wait)
+                self.store_wait_condition(item[3]['id'], wait)
+                result = own.park(self, item, wait)
+                result['waiting'] = self.wait_condition(item[3]['id'], wait)
+                return result
             if record["status"] != "active" or not is_task(record):
                 raise MemoryError("only active deferred tasks can wait")
             if payload.get("expected_sha256") and hashlib.sha256(item[0].read_bytes()).hexdigest() != payload["expected_sha256"]:
@@ -626,10 +643,11 @@ class Store:
                 wait["check_at"] = payload["check_at"]
             if record.get("not_before"):
                 record["events"].append({"at": now(), "replaced_not_before": record.pop("not_before")})
+            self.store_wait_condition(item[3]["id"], wait)
             record["waiting"] = wait
             record["events"].append({"at": now(), "waiting": dict(wait)})
             self.save(item, record)
-            return {"goal_id": payload["goal_id"], "waiting": wait}
+            return {"goal_id": payload["goal_id"], "waiting": self.wait_condition(item[3]["id"], wait)}
 
     def _resume(self, item, evidence):
         record = item[4]
@@ -926,7 +944,7 @@ class Store:
                 if record:
                     if record["status"] != "active" or not needs_mind(record):
                         continue
-                    wait = record.get("waiting")
+                    wait = self.wait_condition(fields["id"], record.get("waiting"))
                     if wait:
                         event = next((r for r in inbound if r["origin"]["sender"] == wait["resume_sender"]
                                       and gate_time(r["received_at"]) > gate_time(wait["since"])), None)
@@ -973,7 +991,7 @@ class Store:
                     import custos_own_waits as own
                     own_item = (path, header, body, fields, record)
                     own_row = own.get(self, own_item) or {}
-                    wait = own_row.get('waiting')
+                    wait = self.wait_condition(fields['id'], own_row.get('waiting'))
                     if wait:
                         event = wait_event(wait, self)
                         inbound_event = next((r for r in inbound if r['origin']['sender'] == wait.get('resume_sender') and gate_time(r['received_at']) > gate_time(wait['since'])), None)
@@ -1895,9 +1913,7 @@ def submitted(result):
 
 
 def unresolved_deliveries(store, record, goal_id=None):
-    if not os.environ.get('TRAJ_ID'):
-        return []
-    outgoing = [r for r in trajectory(store) if r.get('type') == 'message'
+    outgoing = [r for r in (trajectory(store) if os.environ.get('TRAJ_ID') else []) if r.get('type') == 'message'
                 and r.get('from') == os.environ.get('IDENTITY_NAME', 'custos')
                 and str(r.get('to', '')).startswith('signal')
                 and ((record.get('trigger_step') and r.get('reply_to') == record['trigger_step'])
@@ -1905,6 +1921,20 @@ def unresolved_deliveries(store, record, goal_id=None):
                      or (goal_id and r.get('goal_id') == goal_id))
                 and r.get('delivery_kind', 'completion') != 'acknowledgment'
                 and not r.get('reaction')]
+    # Submission can reach the host before the client appends its trajectory
+    # record. The durable pre-write goal association closes that crash window.
+    if goal_id and os.environ.get('IDENTITY_DIR'):
+        directory = Path(os.environ['IDENTITY_DIR']) / '.state' / 'staged-signal'
+        known = {r.get('request_id') for r in outgoing if r.get('delivered_by') == 'custos-actions'}
+        for link in directory.glob('*.goal.json'):
+            if json.loads(link.read_text()).get('goal_id') != goal_id: continue
+            base = link.with_name(link.name.replace('.goal.json', '.json'))
+            if not base.with_suffix('.attempt.json').exists(): continue
+            payload = json.loads(base.read_text())
+            if payload['request_id'] in known or payload.get('delivery_kind') == 'acknowledgment': continue
+            outgoing.append({'delivered_by':'custos-actions', 'request_id':payload['request_id'],
+                             'delivery_kind':payload.get('delivery_kind','completion')})
+            known.add(payload['request_id'])
     refs = [('action:' + r['request_id']) if r.get('delivered_by') == 'custos-actions'
             else ('outbox:' + r['step_id']) for r in outgoing]
     unresolved = []
