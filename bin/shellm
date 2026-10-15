@@ -1238,6 +1238,7 @@ docker_setup() {
         -e SHELLM_APT_PACKAGES="$package_list" \
         "$_SHELLM_CONTAINER" \
         bash -c '
+        set -e
         apt-get update -qq >/dev/null 2>&1
         apt-get install -y -qq $SHELLM_APT_PACKAGES >/dev/null 2>&1
         # Create user for the mapped UID/GID so sudo works
