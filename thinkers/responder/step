@@ -568,7 +568,11 @@ Now: $(date -u +%Y-%m-%dT%H:%MZ). Output the rewritten notes."
     [[ -n "$new_body" ]] || return 0
     local now summary
     now=$(date +"%Y-%m-%d %H:%M:%S")
-    summary="Notes on $person: $(printf '%s' "$new_body" | head -1 | cut -c1-60)"
+    # Clip the notes' first line to 60 bytes on a UTF-8 character boundary:
+    # a plain `cut -c1-60` counts bytes here and split a multi-byte
+    # character, storing an invalid-UTF-8 summary in the person file's
+    # frontmatter (same family as the mem summary bug, PR 168).
+    summary="Notes on $person: $(_utf8_clip_line 60 "$new_body")"
     if [[ -n "$prev_file" ]]; then
         # Rewrite in place, keeping id/created/person_key/aliases as they are.
         local fm id created aliases_block
