@@ -475,10 +475,18 @@ run_err_tmp=$(mktemp "$state_dir/monolith_run_err.XXXXXX")
 tail -n +1 -F "$run_err_tmp" >&2 2>/dev/null &
 run_err_tail_pid=$!
 run_rc=0
+# bin/llm's default LLM_MAX_TIME ceiling is 600s, but a wake run is one long
+# generation (LLM_MAX_TOKENS=65536 licenses runs past it) and the wrapper
+# cannot retry a partial stream, so hitting the ceiling killed whole healthy
+# wakes at ~8-11 KB/s, two orders of magnitude above the 100 B/s stall floor
+# that guards real stalls. Raise it at this call site like the other long
+# callers (tools/pr-committee: 1800s, responder: RESPONDER_MAX_TIME); a
+# pre-set LLM_MAX_TIME still wins.
 SHELLM_NO_BANNER=1 \
     SHELLM_TRIGGER_STEP_ID="$trigger_step_id" \
     SHELLM_WAKE="$wake_reason" \
     SHELLM_RUN_ID_OUT="$run_id_file" \
+    LLM_MAX_TIME="${LLM_MAX_TIME:-1800}" \
     shellm --model "$run_model" --traj "$TRAJ_ID" --context-scope run \
     "${shellm_flags[@]}" \
     --prompt-file "$prompt_file_tmp" >"$run_out_tmp" 2>"$run_err_tmp" || run_rc=$?
