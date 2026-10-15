@@ -924,10 +924,49 @@ env_metadata_matches() {
 }
 
 env_metadata_mismatch_message() {
+    # Mirrors env_metadata_matches check for check, in the same order, so the
+    # first axis named is the one the predicate refused on. Without this, a
+    # refusal for the workdirs directory, broker transport, docker socket or
+    # dind privilege fell through to the access-mode sentence, which printed
+    # the same value twice and sent the reader to fix a knob that matched.
     local env_name="$1"
     local stored_access
     stored_access=$(docker_metadata_value "$env_name" docker_access)
     stored_access="${stored_access:-none}"
+    if [[ "$stored_access" != "$SHELLM_DOCKER_ACCESS" ]]; then
+        printf 'Env %s was created with docker_access=%s, but this run requested docker_access=%s. Use a different --env, destroy the env, or request the same access mode.' \
+            "$env_name" "$stored_access" "$SHELLM_DOCKER_ACCESS"
+        return
+    fi
+    case "$SHELLM_DOCKER_ACCESS" in
+        broker)
+            local stored_transport
+            stored_transport=$(docker_metadata_value "$env_name" docker_broker_transport)
+            if [[ "$stored_transport" != "$_SHELLM_DOCKER_BROKER_TRANSPORT" ]]; then
+                printf 'Env %s was created with docker broker transport %s, but this run uses %s. Use a different --env, or remove %s/%s so shellm can recreate it with this transport.' \
+                    "$env_name" "${stored_transport:-not recorded}" "$_SHELLM_DOCKER_BROKER_TRANSPORT" "$SHELLM_ENVS_DIR" "$env_name"
+                return
+            fi
+            ;;
+        socket)
+            local stored_socket
+            stored_socket=$(docker_metadata_value "$env_name" docker_socket)
+            if [[ "$stored_socket" != "$SHELLM_DOCKER_SOCKET" ]]; then
+                printf 'Env %s was created with docker socket %s, but this run uses %s. Use a different --env, or remove %s/%s so shellm can recreate it with this socket.' \
+                    "$env_name" "${stored_socket:-not recorded}" "$SHELLM_DOCKER_SOCKET" "$SHELLM_ENVS_DIR" "$env_name"
+                return
+            fi
+            ;;
+        dind)
+            local stored_privileged
+            stored_privileged=$(docker_metadata_value "$env_name" privileged)
+            if [[ "$stored_privileged" != "1" ]]; then
+                printf 'Env %s was created with privileged=%s, but a run that requests docker-in-docker needs privileged=1. Use a different --env, or remove %s/%s so shellm can recreate it privileged.' \
+                    "$env_name" "${stored_privileged:-not recorded}" "$SHELLM_ENVS_DIR" "$env_name"
+                return
+            fi
+            ;;
+    esac
     local stored_type
     stored_type=$(docker_metadata_value "$env_name" type)
     if [[ "$stored_type" == "docker" ]]; then
@@ -960,8 +999,18 @@ env_metadata_mismatch_message() {
             "$env_name" "$SHELLM_ENVS_DIR" "$env_name"
         return
     fi
-    printf 'Env %s was created with docker_access=%s, but this run requested docker_access=%s. Use a different --env, destroy the env, or request the same access mode.' \
-        "$env_name" "$stored_access" "$SHELLM_DOCKER_ACCESS"
+    local stored_workdirs_dir
+    stored_workdirs_dir=$(docker_metadata_value "$env_name" workdirs_dir)
+    if [[ "$stored_workdirs_dir" != "$SHELLM_WORKDIRS_DIR" ]]; then
+        printf 'Env %s was created with the workdirs directory mounted at %s, but this run uses %s. Use a different --env, or remove %s/%s so shellm can recreate it with the current workdirs directory.' \
+            "$env_name" "${stored_workdirs_dir:-not recorded}" "$SHELLM_WORKDIRS_DIR" "$SHELLM_ENVS_DIR" "$env_name"
+        return
+    fi
+    # env_resolve only calls here after env_metadata_matches refused. If every
+    # axis the predicate checks now reads back as matching, say that plainly
+    # rather than blaming one that does.
+    printf 'Env %s is not reusable by this run. Use a different --env, or remove %s/%s so shellm can recreate it.' \
+        "$env_name" "$SHELLM_ENVS_DIR" "$env_name"
 }
 
 # Collapse an absolute path lexically: drop empty and `.` segments, pop one
