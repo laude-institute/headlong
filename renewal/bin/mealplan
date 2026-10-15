@@ -15,10 +15,25 @@ retired. Reading, discussing or saving a draft does not authorize cart writes.
 Config: /etc/kitchen.env (KITCHEN_URL and KITCHEN_TOKEN).
 """
 import argparse, json, os, re, subprocess, sys, urllib.parse, urllib.request
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 GROUP = os.environ.get("MEALPLAN_GROUP", "Collette Haus")
+
+
+def preview(cycle):
+    result = call('GET', '/flow/' + cycle + '/preview')
+    return {**result, 'view':'cart_reconciliation_preview', 'cycle_id':cycle,
+            'read_only':True, 'cart_updated':False,
+            'next_step':'Choose products, then apply each authorized operation with reconcile --file; cart show reads the retailer cart.'}
+
+
+def retailer_cart():
+    result = call('GET', '/shopper/cart')
+    if not isinstance(result, dict) or result.get('error') or not isinstance(result.get('carts'), list):
+        raise ValueError('Retailer cart read failed; no saved groceries verified')
+    return {**result, 'view':'retailer_cart', 'read_only':True, 'cart_updated':False,
+            'observed_at':datetime.now(timezone.utc).isoformat()}
 
 
 def flow_command(a, cycle):
@@ -36,7 +51,7 @@ def flow_command(a, cycle):
     elif a.cmd == 'pantry' and not a.file:
         result = call('GET','/pantry')
     elif a.cmd == 'reconcile' and not a.file:
-        result = call('GET', path + '/preview')
+        result = preview(cycle)
     else:
         if not a.file: raise ValueError('--file request.json required')
         with open(a.file) as handle: body = json.load(handle)
@@ -150,6 +165,10 @@ def main():
         today = datetime.now(ZoneInfo('America/Denver')).date()
         monday = today + timedelta(days=(7-today.weekday()))
         year,week,_ = monday.isocalendar(); a.week = f'{year}-W{week:02d}'
+    if a.cmd == 'cart' and a.sub == 'show' and not a.read:
+        try: print(json.dumps(retailer_cart(), indent=2, ensure_ascii=False))
+        except ValueError as error: sys.exit(str(error))
+        return
     wk = a.week or (call('GET', '/flow/active')['cycle_id'] if a.cmd in {'context','change','reconcile','quantity','calendar','plan','list','cart','pantry'} else None)
     if a.cmd in {'context', 'change', 'reconcile', 'quantity', 'calendar','checkin','audit','pantry'}:
         try: return flow_command(a, wk)
@@ -157,8 +176,8 @@ def main():
     if ((a.cmd == 'plan' and a.sub != 'show') or (a.cmd == 'list' and a.sub != 'preview')
             or (a.cmd == 'cart' and a.sub in {'add','set','choose','fill','candidates'}) or a.read):
         sys.exit('Use mealplan context, change and reconcile with revision/cursor; the old --read and bulk-fill paths are retired.')
-    if a.cmd == 'list' or (a.cmd == 'cart' and a.sub == 'show'):
-        print(json.dumps(call('GET', '/flow/' + wk + '/preview'), indent=2)); return
+    if a.cmd == 'list':
+        print(json.dumps(preview(wk), indent=2)); return
     if a.cmd == "brief":
         b = call("GET", "/brief")
         if a.json:
@@ -186,6 +205,8 @@ def main():
         r = call("POST", "/recipes/import", {"url": a.arg, "note": a.note})
         print(("already in the catalog: " if r.get("existing") else "imported: ") + f"{r['title']} [{r['slug']}] {r.get('book') or ''} {r.get('yield') or ''} {r.get('total_time') or ''}\n  {r.get('url')}"
               + (f"\n  tag: {r['tagged']}" if r.get("tagged") else ""))
+        if r.get("shopping_ready") is False:
+            print("  INCOMPLETE IMPORT: " + "; ".join(r.get("import_issues", [])) + ". Repair the recipe before shopping; no ingredients were added to the cart.")
         print("  Save a requested dinner with mealplan change and an explicit date; an imported link alone is not a shopping instruction.")
     elif a.cmd == "recipe":
         r = call("GET", "/recipes/" + urllib.parse.quote(a.sub or ""))

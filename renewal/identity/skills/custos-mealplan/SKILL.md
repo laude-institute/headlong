@@ -71,6 +71,20 @@ Use package size/unit to compute shared quantities; incompatible units or unknow
 require an explicit package count, not an invented conversion. Household dietary rules
 remain in prefs/topic notes; incomplete metadata is a visible unresolved choice.
 
+## Verify the retailer cart
+
+`mealplan cart show` reads the actual retailer cart. `mealplan list preview` and
+`mealplan reconcile` without `--file` are read-only shopping previews: quantities
+there are planned requirements, not saved groceries. `mealplan change` only saves
+plan data, including product choices. Only a verified `reconcile --file` or
+`quantity --file` result proves a cart write. Read the retailer cart afterward;
+never say ingredients are in the cart based on a plan, preview or product choice.
+
+For a dated household request, pass its explicit `--week`; the active cycle may
+still be an earlier week. Use `activate` when the household moves planning cycles.
+An import marked `shopping_ready:false` needs ingredient/instruction repair before
+shopping. Do not buy scraper placeholders or add duplicate workaround extras.
+
 ## Reconcile only the requested cart work
 
 Saving/discussing a draft never authorizes a cart fill. Explicitly choosing a recipe
