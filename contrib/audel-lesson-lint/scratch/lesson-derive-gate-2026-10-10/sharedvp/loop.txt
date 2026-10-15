@@ -1,0 +1,33 @@
+  t="${t#"${t%%[![:space:]]*}"}"
+  case "$t" in
+    ''|file\ *|contains\ *|absent\ *|cmd\ *) continue ;;
+  esac
+  if printf '%s\n' "$line" | grep -qiE "$normre"; then continue; fi
+  # The line label (Lesson:/Rule:/Habit:/Norm:) names the line type and is not
+  # claim content; strip it before judging so a fronted bound phrase still
+  # reads as a bare scope marker ("Lesson: in the 6 fixtures checked, ..." must
+  # accept). Verified after the fix against a re-break corpus in edge/labelbreak.
+  body=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*(lesson|rule|habit|norm)[[:space:]]*:[[:space:]]*//I')
+  linebad=0
+  while IFS= read -r sent || [ -n "$sent" ]; do
+    [ -z "${sent//[[:space:]]/}" ] && continue
+    # Appositive trailing count (soft-spot fix 2026-10-10, counttrail corpus):
+    # a count trailing its noun is still a count of the things checked. When a
+    # count phrase (N of them, N in total, a parenthesized N) trails a plural
+    # check noun and a bare universal with a listed verb follows it, the count
+    # bounds the sentence even though it trails the noun. It bounds only that
+    # shape: a sentence carrying an adverbial quantifier of its own is judged by
+    # the clause loop below, where a trailing count sitting in its own clause
+    # does not reach the quantifier clause.
+    if printf '%s\n' "$sent" | grep -qiE "$appre" && ! printf '%s\n' "$sent" | grep -qiE "$advre"; then
+      continue
+    fi
+    clauses=$(printf '%s\n' "$sent" | sed -E 's/\bso far\b/SOFARBOUND/gI; s/\bfrom then on\b/FROMTHENONG/gI; s/\bso that\b/and/gI; s/\bso as\b/and/gI; s/[;,]/|/g; s/[[:space:]](and|but|or|nor)[[:space:]]/|/gI; s/ (so|then|while|whereas) (the|a|an|this|that|these|those|it|they|we|I|he|she|my|our|your|its|every|each|any|all|no|none|nothing|both) /|\2 /gI; s/[[:space:]](so|then|while|whereas)[[:space:]]/|/gI' | tr '|' '\n' | sed 's/SOFARBOUND/so far/g; s/FROMTHENONG/from then on/g')
+    sibbound=0
+    while IFS= read -r c || [ -n "$c" ]; do
+      [ -z "${c//[[:space:]]/}" ] && continue
+      if bound_in "$c"; then sibbound=1; fi
+    done <<CLAUSES
+$clauses
+CLAUSES
+    # Barewidening fix 2026-10-10: the bare marker's shield reaches only the

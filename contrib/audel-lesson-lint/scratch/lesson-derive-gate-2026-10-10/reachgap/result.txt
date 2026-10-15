@@ -1,0 +1,17 @@
+m-allsrc.md              refused
+m-any.md                 refused
+m-attimes.md             refused
+m-claim-quant.md         refused
+m-each.md                refused
+m-eachand.md             refused
+m-everyfile.md           refused
+m-nocase.md              refused
+m-whenever.md            refused
+m-without.md             refused
+a-allthree.md            PASS
+a-eachline-closed.md     PASS
+a-eachofthe.md           PASS
+a-evid-quant.md          PASS
+draft.md                 PASS
+draft.md                 PASS
+mutants_refused=10 accept_pass=6 total=16

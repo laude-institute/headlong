@@ -1,0 +1,114 @@
++ echo '=== state ==='
+=== state ===
++ ls -la scratch/lesson-derive-gate-2026-10-10/fold
+total 32
+drwxr-xr-x 3 shellm shellm 4096 Oct 10 15:02 .
+drwxr-xr-x 6 shellm shellm 4096 Oct 10 14:57 ..
+drwxr-xr-x 2 shellm shellm 4096 Oct 10 14:59 fix
+-rwxr-xr-x 1 shellm shellm 3495 Oct 10 14:57 gate.before.sh
+-rwxr-xr-x 1 shellm shellm  917 Oct 10 15:02 harness.sh
+-rw-r--r-- 1 shellm shellm   89 Oct 10 15:02 inspect.txt
+-rw-r--r-- 1 shellm shellm  121 Oct 10 14:59 recorded.txt
+-rw-r--r-- 1 shellm shellm 1399 Oct 10 15:02 result.txt
++ echo '=== result.txt ==='
+=== result.txt ===
++ cat scratch/lesson-derive-gate-2026-10-10/fold/result.txt
+=== reach fixtures through the single gate ===
+ok   accept-accept-evidence-skip (rc=0)
+ok   accept-accept-far (rc=0)
+ok   accept-accept-norm (rc=0)
+ok   accept-accept-plain (rc=0)
+ok   accept-accept-scoped (rc=0)
+ok   refuse-refuse-all (rc=1)
+ok   refuse-refuse-always (rc=1)
+ok   refuse-refuse-double (rc=1)
+ok   refuse-refuse-never (rc=1)
+ok   refuse-refuse-nomarker (rc=1)
+FAIL refuse-refuse-nonewline want rc=1 got rc=2
+     FAIL draft carries no evidence lines
+=== ordering: evidence refusal must win over reach ===
+ok   order-bad-both (rc=1)
+=== regression: recorded deepen verdicts ===
+ok   regress-d1 (rc=1)
+ok   regress-d2 (rc=1)
+ok   regress-d3 (rc=1)
+ok   regress-d4 (rc=1)
+ok   regress-d5 (rc=1)
+ok   regress-d6 (rc=0)
+ok   regress-d7 (rc=0)
+ok   regress-d8 (rc=1)
+ok   regress-d9 (rc=1)
+ok   regress-d10 (rc=1)
+ok   regress-d11 (rc=1)
+ok   regress-d12 (rc=1)
+ok   regress-d13 (rc=1)
+ok   regress-d14 (rc=0)
+ok   regress-d15 (rc=1)
+FAIL regress-t1 want rc=0 got rc=2
+     FAIL no draft file
+FAIL regress-t2 want rc=1 got rc=2
+     FAIL no draft file
+FAIL regress-t3 want rc=0 got rc=2
+     FAIL no draft file
+FAIL regress-t4 want rc=1 got rc=2
+     FAIL no draft file
+FAIL regress-t5 want rc=1 got rc=2
+     FAIL no draft file
+FAIL regress-t6 want rc=0 got rc=2
+     FAIL no draft file
+FAIL regress-t7 want rc=1 got rc=2
+     FAIL no draft file
+ok   regress-t8 (rc=2)
+---
+pass=27 fail=8
++ echo '=== rerun harness ==='
+=== rerun harness ===
++ bash scratch/lesson-derive-gate-2026-10-10/fold/harness.sh scratch/lesson-derive-gate-2026-10-10/fold bin/lesson-derive-gate scratch/lesson-derive-gate-2026-10-10/deepen
+=== reach fixtures through the single gate ===
+ok   accept-accept-evidence-skip (rc=0)
+ok   accept-accept-far (rc=0)
+ok   accept-accept-norm (rc=0)
+ok   accept-accept-plain (rc=0)
+ok   accept-accept-scoped (rc=0)
+ok   refuse-refuse-all (rc=1)
+ok   refuse-refuse-always (rc=1)
+ok   refuse-refuse-double (rc=1)
+ok   refuse-refuse-never (rc=1)
+ok   refuse-refuse-nomarker (rc=1)
+FAIL refuse-refuse-nonewline want rc=1 got rc=2
+     FAIL draft carries no evidence lines
+=== ordering: evidence refusal must win over reach ===
+ok   order-bad-both (rc=1)
+=== regression: recorded deepen verdicts ===
+ok   regress-d1 (rc=1)
+ok   regress-d2 (rc=1)
+ok   regress-d3 (rc=1)
+ok   regress-d4 (rc=1)
+ok   regress-d5 (rc=1)
+ok   regress-d6 (rc=0)
+ok   regress-d7 (rc=0)
+ok   regress-d8 (rc=1)
+ok   regress-d9 (rc=1)
+ok   regress-d10 (rc=1)
+ok   regress-d11 (rc=1)
+ok   regress-d12 (rc=1)
+ok   regress-d13 (rc=1)
+ok   regress-d14 (rc=0)
+ok   regress-d15 (rc=1)
+FAIL regress-t1 want rc=0 got rc=2
+     FAIL no draft file
+FAIL regress-t2 want rc=1 got rc=2
+     FAIL no draft file
+FAIL regress-t3 want rc=0 got rc=2
+     FAIL no draft file
+FAIL regress-t4 want rc=1 got rc=2
+     FAIL no draft file
+FAIL regress-t5 want rc=1 got rc=2
+     FAIL no draft file
+FAIL regress-t6 want rc=0 got rc=2
+     FAIL no draft file
+FAIL regress-t7 want rc=1 got rc=2
+     FAIL no draft file
+ok   regress-t8 (rc=2)
+---
+pass=27 fail=8

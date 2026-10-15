@@ -1,0 +1,16 @@
+34,36c34,36
+< bothedge/m-both-nomod.md 0
+< bothedge/m-both-noun.md 0
+< bothedge/m-both-of.md 0
+---
+> bothedge/m-both-nomod.md 1
+> bothedge/m-both-noun.md 1
+> bothedge/m-both-of.md 1
+139,141c139,141
+< nounlead/m-adjnoun-both.md 0
+< nounlead/m-adjnoun-runs.md 0
+< nounlead/m-adjnoun-tests.md 0
+---
+> nounlead/m-adjnoun-both.md 1
+> nounlead/m-adjnoun-runs.md 1
+> nounlead/m-adjnoun-tests.md 1

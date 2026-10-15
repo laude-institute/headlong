@@ -1,0 +1,12 @@
+356,357c356,357
+< refuse ./possher/a-her-pluirr2.md
+< refuse ./possher/a-her-plureg.md
+---
+> accept ./possher/a-her-pluirr2.md
+> accept ./possher/a-her-plureg.md
+359,360c359,360
+< refuse ./possher/a-his-plureg.md
+< refuse ./possher/a-our-plureg.md
+---
+> accept ./possher/a-his-plureg.md
+> accept ./possher/a-our-plureg.md

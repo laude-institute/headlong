@@ -1,0 +1,20 @@
+165,169c165,169
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outflew.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outrang.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outshone.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/a-pluraltail-ran.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/a-pluraltail.md
+---
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outflew.md
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outrang.md
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outshone.md
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/a-pluraltail-ran.md
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/a-pluraltail.md
+405,407c405,407
+< refuse	scratch/lesson-derive-gate-2026-10-10/verbtail/p-noteskept.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/verbtail/p-rang.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/verbtail/p-shone.md
+---
+> accept	scratch/lesson-derive-gate-2026-10-10/verbtail/p-noteskept.md
+> accept	scratch/lesson-derive-gate-2026-10-10/verbtail/p-rang.md
+> accept	scratch/lesson-derive-gate-2026-10-10/verbtail/p-shone.md

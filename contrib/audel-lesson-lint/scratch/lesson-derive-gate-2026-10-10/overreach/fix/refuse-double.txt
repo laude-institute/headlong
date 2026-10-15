@@ -1,0 +1,1 @@
+Lesson: use re-derivation, never replay, since replay is impossible on a moving machine.

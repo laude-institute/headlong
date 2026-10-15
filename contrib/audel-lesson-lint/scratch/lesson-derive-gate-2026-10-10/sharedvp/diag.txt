@@ -1,0 +1,9 @@
+=== CURRENT verdicts on key fixtures ===
+a-andverb              rc=1  line 1: unbounded universal (all) in: Lesson: the 3 fixtures I built a
+m-and-verb-always      rc=1  line 1: unbounded universal (always) in: Lesson: in the 2 cases I chec
+m-and-always           rc=1  line 1: unbounded universal (always) in: Lesson: in the 2 cases I chec
+a-coref-all6           rc=0  
+a9-barewiden           rc=0  
+a2-barewiden           rc=0  
+a-countnoun            rc=0  
+a-front-control        rc=0  

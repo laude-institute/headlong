@@ -1,0 +1,16 @@
+scratch/lesson-derive-gate-2026-10-10/edge/r-alltimes.md
+scratch/lesson-derive-gate-2026-10-10/edge/r-innocase.md
+scratch/lesson-derive-gate-2026-10-10/edge/r-nocircumstance.md
+scratch/lesson-derive-gate-2026-10-10/edge/r-nomatterwhat.md
+scratch/lesson-derive-gate-2026-10-10/edge/result-pre.txt
+scratch/lesson-derive-gate-2026-10-10/reachgap/a-evid-quant.md
+scratch/lesson-derive-gate-2026-10-10/reachgap/lesson-draft.md
+scratch/lesson-derive-gate-2026-10-10/reachgap/m-attimes.md
+scratch/lesson-derive-gate-2026-10-10/reachgap/m-claim-quant.md
+scratch/lesson-derive-gate-2026-10-10/reachgap/m-nocase.md
+scratch/lesson-derive-gate-2026-10-10/reachgap/m-without.md
+scratch/lesson-derive-gate-2026-10-10/sharedvp/code.txt
+scratch/lesson-derive-gate-2026-10-10/sharedvp/trace-a3.txt
+scratch/lesson-derive-gate-2026-10-10/sharedvp/trace.txt
+scratch/lesson-derive-gate-2026-10-10/widenedge/trace-fromnow.txt
+scratch/lesson-derive-gate-2026-10-10/widenedge/trace-shield.txt

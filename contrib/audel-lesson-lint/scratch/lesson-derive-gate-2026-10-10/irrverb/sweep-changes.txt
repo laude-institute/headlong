@@ -1,0 +1,20 @@
+176,177c176,177
+< 1 ./lexedge/c-rcfuture.md
+< 1 ./lexedge/c-rcpresent.md
+---
+> 0 ./lexedge/c-rcfuture.md
+> 0 ./lexedge/c-rcpresent.md
+253,254c253,254
+< 1 ./redpass/a-redpass-measured.md
+< 1 ./redpass/a-redpass-named.md
+---
+> 0 ./redpass/a-redpass-measured.md
+> 0 ./redpass/a-redpass-named.md
+267c267
+< 1 ./relcl/m-rebreak-future.md
+---
+> 0 ./relcl/m-rebreak-future.md
+345c345
+< 1 ./vbshape/m-future-clip.md
+---
+> 0 ./vbshape/m-future-clip.md

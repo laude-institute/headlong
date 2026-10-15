@@ -1,0 +1,12 @@
+a-governed-detpl.md      accept
+a-governed-irrobj.md     accept
+a-governed-proper.md     accept
+a-governed-sing.md       accept
+a-plain-phrasal.md       accept
+a-propergoverned.md      accept
+g-irrobj-det.md          refuse
+g-irrobj-det2.md         refuse
+g-properobj.md           refuse
+g-properobj2.md          refuse
+m-adjproper.md           refuse
+m-storeindices.md        refuse

@@ -1,0 +1,15 @@
+a-control-bound.md accept
+a-control-noso.md accept
+a-sothat-boundafter.md accept
+a-sothat-coref-all.md accept
+a-sothat-coref-none.md accept
+a-sothat-nouniversal.md accept
+lesson-draft.md accept
+m-sothat-boundwrong.md refuse
+m-sothat-coref-widen.md refuse
+m-sothat-domain.md refuse
+m-sothat-ever.md refuse
+m-sothat-general.md refuse
+m-sothat-own.md refuse
+m-sothat-widen.md refuse
+probe-domainself.md refuse

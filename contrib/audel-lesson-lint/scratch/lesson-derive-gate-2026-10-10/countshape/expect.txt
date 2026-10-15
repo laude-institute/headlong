@@ -1,0 +1,7 @@
+a-count-cohorts.md accept
+a-count-corpora.md accept
+a-count-theses.md accept
+a-count-files.md accept
+a-count-rules.md accept
+a-step3.md accept
+a-pr156.md accept

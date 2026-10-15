@@ -1,0 +1,25 @@
+--- t1-reachable-file (rc=0 want=0) PASS
+ok   file scratch/opera-read/body.txt
+PASS 1 evidence line(s) re-derived
+--- t2-missing-file (rc=1 want=1) PASS
+FAIL file scratch/nope-gone.txt (unreachable)
+REFUSED evidence not re-derivable
+--- t3-contains-control (rc=0 want=0) PASS
+ok   contains notes/daily-papers/bodies/2610.11794-read.md
+PASS 1 evidence line(s) re-derived
+--- t4-contains-absent (rc=1 want=1) PASS
+FAIL contains notes/daily-papers/bodies/2610.11794-read.md (fragment absent)
+REFUSED evidence not re-derivable
+--- t5-absent-contradicted (rc=1 want=1) PASS
+FAIL absent notes/daily-papers/bodies/2610.11794-read.md (fragment still present)
+REFUSED evidence not re-derivable
+--- t6-cmd-true (rc=0 want=0) PASS
+ok   cmd
+PASS 1 evidence line(s) re-derived
+--- t7-cmd-false (rc=1 want=1) PASS
+FAIL cmd (exit nonzero)
+REFUSED evidence not re-derivable
+--- t8-no-evidence (rc=2 want=2) PASS
+FAIL draft carries no evidence lines
+==== summary ====
+ALL PASS (8/8)

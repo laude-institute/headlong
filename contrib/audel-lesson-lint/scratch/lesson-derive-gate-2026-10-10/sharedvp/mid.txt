@@ -1,0 +1,48 @@
+# Widenedge fix 2026-10-10: the predicate after a bare universal was a hand
+# list, so an unlisted past-tense verb ("none leaked", "all vanished",
+# "nothing slipped through") read as a domain noun and the clause was judged
+# on its own, refusing bounded claims. The predicate test is now the list plus
+# a regular-past suffix (ed/en) plus a short irregular list and an anaphoric
+# "of them/these/those", so an unlisted verb corefers with the checked set and
+# an unlisted noun ("all engineers") still names its own domain and is judged
+# on its own. Residual named for the next pass: the irregular list and the
+# noun-lead rule below are still lexical, so a bare universal whose domain
+# word is not in nounplre ("all cohorts") reads as coreferential.
+predre='(failed|passed|broke|worked|held|moved|changed|stopped|stuck|landed|merged|sent|arrived|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|cleared|clean|green|red|fine|broken|fixed|open|closed|stale|new|old|slow|fast|wrong|right|late|early|quiet|loud|clear|fuzzy|stable|gone|done|come|become|taken|given|shown|known|grown|written|fallen|risen|seen|won|lost|felt|built|put|cut|set|hit|read|led|fed|of (them|these|those)|[a-z]+(ed|en))'
+corefre='^[[:space:]]*(and|but|or|nor|so|then|while|whereas)?[[:space:]]*(none|both|nothing|all)([[:space:]]+'"$predre"')([[:space:]]+[a-z]+){0,6}[[:space:]]*$'
+widere='(^|[[:space:],;])(elsewhere|else|other|others|anywhere|everywhere|globally|worldwide|throughout|in general|ever|again|alike|instead|outside|beyond|excluded|exempt|later|afterward|afterwards|thereafter|from then on|from now on|going forward|eventually|henceforth|subsequently|in future|in the future|in perpetuity)([[:space:],.;]|$)'
+coref_widen="$widere"
+coref_self='\b(every|each|any|none|nothing|all|no)[[:space:]]+[a-z]+'
+coref_ok() {
+  printf '%s\n' "$1" | grep -qiE "$corefre" || return 1
+  printf '%s\n' "$1" | grep -qiE "$coref_widen" && return 1
+  # Widenedge fix 2026-10-10: this sed was s/pat\b/I, an unterminated s
+  # command (the replacement side was missing), so it errored, grep saw an
+  # empty stream and this test never fired, making coref_ok return 0 for
+  # every candidate clause ("none failed in every new build" was skipped as
+  # coreferential even though domain_self named its domain). It is now
+  # s/pat\b//I and the test fires.
+  printf '%s\n' "$1" | sed -E "s/^[[:space:]]*(and|but|or|nor|so|then|while|whereas)?[[:space:]]*(none|both|nothing|all)\\b//I" | grep -qiE "$coref_self" && return 1
+  return 0
+}
+# Barewidening follow-on 2026-10-10: a shielded clause that names a domain of its
+# own ("every run", "all builds", "no test") is not coreferential with the scope
+# marker and is judged on its own, while a bare pronoun followed by a predicate
+# ("all failed", "none broke") still inherits the marker's scope. Widenedge
+# follow-on 2026-10-10: the domain naming is checked wherever it sits in the
+# clause, not only at its start ("none failed in every new build" is judged on
+# its own), and a noun right after the universal ("all builds stall", "all new
+# builds stall") names the domain before the predicate test can read the word
+# as a verb. Residual named for the next pass: nounplre and the predicate test
+# are both lexical, so a domain word outside them ("all cohorts") corefers.
+domain_self() {
+  # A universal names the domain it ranges over when it is the clause
+  # subject ("every run failed"); an argument-position universal sits inside
+  # the claim the checked sample scopes ("the gate refused every mutant").
+  c=$(printf '%s\n' "$1" | sed -E "s/^[[:space:]]*(and|but|or|nor|so|then|while|whereas)?[[:space:]]*//I")
+  if printf '%s\n' "$c" | grep -qiE '^(every|each|any|no)\b[[:space:]]+[a-z]+[[:space:]]+[a-z]+'; then return 0; fi
+  if printf '%s\n' "$c" | grep -qiE '^(all|none|nothing|both)\b[[:space:]]+[a-z]+'; then
+    res=$(printf '%s\n' "$c" | sed -E 's/^(all|none|nothing|both)\b[[:space:]]*//')
+    if printf '%s\n' "$res" | grep -qiE '^[[:space:]]*(new|old|fresh|later|other)?[[:space:]]*('$nounplre')\b'; then return 0; fi
+    if printf '%s\n' "$res" | grep -qiE "$coref_self"; then return 0; fi
+    printf '%s\n' "$c" | grep -qiE '^(all|none|nothing|both)\b[[:space:]]+'$predre'\b' || return 0

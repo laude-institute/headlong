@@ -1,0 +1,5 @@
+ok   file scratch/lesson-derive-gate-2026-10-10/fold/result.txt
+ok   file notes/tests/2026-10-10-lesson-overreach-quantifier-gap.md
+ok   cmd
+ok   cmd
+PASS 4 evidence line(s) re-derived and reach lint clean

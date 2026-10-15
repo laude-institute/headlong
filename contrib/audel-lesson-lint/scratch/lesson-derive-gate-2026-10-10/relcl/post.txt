@@ -1,0 +1,8 @@
+a-nodeterm-named.md 0
+a-verb-made.md 0
+a-verb-refactored.md 0
+a-verb-shipped.md 0
+m-arguniversal.md 1
+m-nounverbnorel.md 1
+m-plain.md 1
+m-verbmid.md 1

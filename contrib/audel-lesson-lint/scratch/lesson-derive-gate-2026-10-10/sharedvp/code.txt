@@ -1,0 +1,11 @@
+64:nre='\b(under no circumstances|in no case|in no instance|no matter (what|how|when|where|who)|without exception|in all cases|at all times)\b'
+66:bre='\b(in the [0-9a-zA-Z-]+ (cases|fixtures|samples|runs|steps|checks|instances|windows) (i |we )?(checked|verified|ran|saw|read)|among the|so far|in (this|these|my) (case|cases|sample|samples|window|windows|checks|reading|tests?)|on (this|that) (machine|build|day|run|branch)|as (checked|verified|observed) here|[0-9]+ of [0-9]+|each of the|[0-9]+ of the [0-9]+|proves only that|says nothing about|all (the )?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)|every (one of (the )?)?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen))\b'
+80:countre='\b'"$numre"'\b([[:space:]]+'"$modre"'){0,3}[[:space:]]+\b'"$nounplre"'\b'
+83:tailre='(all|none|nothing|both)[[:space:]]+(pass|passes|passed|succeed|succeeded|clear|cleared|hold|held|fail|failed|break|broke|work|worked|stall|stalled|move|moved|change|changed|stop|stopped|land|landed|send|sent|arrive|arrived|run|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|stayed|remained|refused|accepted|verified|checked|green|clean|fine|open|closed|stale)'
+84:appre='\b'"$nounplre"'\b[^.;!?]{0,40}\b'"$numre"'\b[[:space:]]+(of them|in total)\b[^.;!?]{0,40}\b'"$tailre"'\b|\b'"$nounplre"'\b[[:space:]]*\([[:space:]]*'"$numre"'[[:space:]]*\)[[:space:]]*\b'"$tailre"'\b'
+85:advre='\b(always|never|cannot|impossible|invariably|inevitably|without fail|at all times|universally|exclusively|everywhere|anywhere|nowhere|each and every|every|each|anyone|anything|any|without exception)\b'
+88:hits_of() {
+93:bound_in() {
+120:coref_ok() {
+142:domain_self() {
+156:bare_scope() {

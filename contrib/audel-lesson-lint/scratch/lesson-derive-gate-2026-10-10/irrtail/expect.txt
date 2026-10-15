@@ -1,0 +1,15 @@
+a-outdrove.md accept
+a-outflew.md accept
+a-outleft.md accept
+a-outrang.md accept
+a-outrangout.md accept
+a-outsetinmotion.md accept
+a-outshone.md accept
+a-listkept.md accept
+a-pluraltail.md accept
+a-pluraltail-ran.md accept
+m-presentverb-names.md refuse
+m-shape-pluraltail.md refuse
+m-toolsused.md refuse
+m-pluralword-verb.md refuse
+m-adjphrasal.md refuse
