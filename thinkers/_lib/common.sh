@@ -525,7 +525,11 @@ _responder_scan() {
 #     ("idle x22 over 2h10m", with `collapsed: 22`), so a quiet night still
 #     reads as elapsed time without eating the whole window.
 #   - `error` steps (a run that died with no durable step) are IN, collapsed
-#     the same way, so the mind can see its own failed runs.
+#     the same way, but only within one run. Idles fold across runs because a
+#     quiet stretch is elapsed time; every dead run is its own fact. Folding
+#     on type alone merged the error rows of back-to-back dead runs into one
+#     line stamped with the first run's id, and on 2026-10-16 that hid a
+#     death from the wake counting them.
 # The window is the last N lines AFTER collapsing. It used to be cut first, so
 # 20 idle wakes filled the window and collapsed into one "idle x20" line: on
 # 2026-09-18 that was the whole stream on three of the four wakes that re-sent
@@ -544,6 +548,7 @@ _RECENT_STREAM_COLLAPSE_JQ='
   def collapsible: .type == "idle" or .type == "error";
   reduce .[] as $s ([];
     if ($s | collapsible) and length > 0 and .[-1].type == $s.type
+       and ($s.type != "error" or ((.[-1].run_id // "") == ($s.run_id // "")))
     then .[:-1] + [ .[-1] | .n += 1 | .last_ts = ($s.ts // .last_ts)
                     | .step_id = ($s.step_id // .step_id) | .rc = ($s.rc // .rc) ]
     else . + [ $s + {n: 1, first_ts: ($s.ts // ""), last_ts: ($s.ts // "")} ] end)
