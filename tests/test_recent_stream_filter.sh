@@ -191,6 +191,40 @@ ids=$(stream 20 | jq -r .step_id | tr '\n' ' ')
 [[ "$ids" == "w1 ii3 wf " ]] && ok "three idle runs collapse to one idle line; their finals are dropped; a working run keeps its final" || bad "idle-run finals dropped" "got $ids"
 stream 20 | jq -e 'select(.step_id == "ii3") | .collapsed == 3' >/dev/null && ok "the collapsed idle line counts the runs" || bad "idle count" "$(stream 20 | jq -c 'select(.step_id == "ii3")')"
 
+# Errors from different runs do not fold into one line (2026-10-16). The
+# collapse keyed on type alone, so consecutive dead runs became a single
+# "run failed x2" line stamped with the first run's id, and a whole dead run
+# was invisible to any wake counting deaths from the stream. The two error
+# rows one dead run writes, the stall kill notice plus the no-durable-step
+# marker, still fold. Idles fold across runs by design; that is pinned above
+# and unchanged.
+: > "$TRAJ"
+printf '{"step_id":"hdr2","type":"trajectory","ts":"%s"}\n' "$(ts 9999)" >> "$TRAJ"
+step ea1 error "monolith run failed (rc=1) with no durable step" 31 ',"rc":1,"reason":"run-failed","run_id":"dead-a"'
+step ea2 error "shellm killed this run: the agent stalled"        30 ',"reason":"stall","run_id":"dead-a"'
+step eb1 error "monolith run failed (rc=1) with no durable step"  20 ',"rc":1,"reason":"run-failed","run_id":"dead-b"'
+err2=$(stream 30 | jq -c 'select(.type == "error")')
+n_err2=$(printf '%s\n' "$err2" | grep -c . || true)
+if [[ "$n_err2" == 2 ]]; then
+    ok "errors from two different runs stay two lines"
+else
+    bad "errors from two different runs stay two lines" "got $n_err2: $err2"
+fi
+first_err=$(printf '%s\n' "$err2" | head -1)
+if [[ "$(printf '%s' "$first_err" | jq -r '.step_id + " " + .run_id + " " + (.collapsed | tostring)')" == "ea2 dead-a 2" \
+      && "$(printf '%s' "$first_err" | jq -r .content)" == "run failed x2 over 1m (rc=1)" ]]; then
+    ok "the two error rows of one run still fold to that run's line"
+else
+    bad "the two error rows of one run still fold to that run's line" "got $first_err"
+fi
+second_err=$(printf '%s\n' "$err2" | tail -1)
+if [[ "$(printf '%s' "$second_err" | jq -r '.step_id + " " + .run_id')" == "eb1 dead-b" \
+      && "$(printf '%s' "$second_err" | jq 'has("collapsed")')" == false ]]; then
+    ok "the next run's error line carries that run's own id, not the first run's"
+else
+    bad "the next run's error line carries that run's own id" "got $second_err"
+fi
+
 echo
 echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]
