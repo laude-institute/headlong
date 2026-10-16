@@ -342,12 +342,34 @@ class Dream:
             if code != 200 or not result.get('ok'): raise ValueError('receipt lookup unavailable')
         except (OSError, ValueError, http.client.HTTPException):
             return [{'kind': 'delivery-receipts-unavailable', 'detail': 'Could not verify recent Signal delivery; no success claim is justified.'}]
+        def goal_of(row):
+            return row.get('goal_id') or goals.get(row.get('reply_to'))
+
+        # A blocked ref is not a contradiction when a later ref for the same goal
+        # carries a confirmed submission: the earlier attempt was parked by the
+        # guard and the batch that followed actually delivered. (cbc2030a)
+        delivered_at = {}
+        for ref, row in outgoing.items():
+            if not cm.submitted(result.get('results', {}).get(ref, {'phase': 'unknown'})): continue
+            gid = goal_of(row)
+            if gid is None: continue
+            try:
+                delivered_at[gid] = max(delivered_at.get(gid, 0.0), timestamp(row.get('ts')))
+            except (ValueError, TypeError):
+                continue
         issues = []
         for ref, row in outgoing.items():
             receipt = result.get('results', {}).get(ref, {'phase': 'unknown'})
             if cm.submitted(receipt): continue
+            gid = goal_of(row)
+            try:
+                blocked_at = timestamp(row.get('ts'))
+            except (ValueError, TypeError):
+                blocked_at = None
+            if gid is not None and blocked_at is not None and delivered_at.get(gid, 0.0) > blocked_at:
+                continue
             issues.append({'kind': 'delivery-receipt-contradiction', 'reference': ref, 'phase': receipt.get('phase', 'unknown'),
-                'goal_id': row.get('goal_id') or goals.get(row.get('reply_to')), 'reply_to': row.get('reply_to'),
+                'goal_id': gid, 'reply_to': row.get('reply_to'),
                 'detail': 'No confirmed submission. Keep completed task work separate from notification; inspect receipt and correct memory without automatically resending.'})
         return issues
 
@@ -396,7 +418,7 @@ class Dream:
                                     "promise": cm.promises_work(st["content"])})
                 if kind == "observation":
                     c = (st.get("content") or "")
-                    if re.search(r"\b(reply-failed|not sent|failed to send|could not deliver|delivery failed)\b", c, re.I):
+                    if re.search(r"\b(reply-failed|not sent(?! yet)|failed to send|could not deliver|delivery failed)\b", c, re.I):
                         failed_sends.append({"ts": ts, "source": st.get("source"), "text": c[:200]})
                 if kind == "shell-output":
                     o = (st.get("stdout") or "") + (st.get("stderr") or "")

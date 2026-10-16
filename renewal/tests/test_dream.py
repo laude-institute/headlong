@@ -271,3 +271,102 @@ class CriticalSelectionTests(unittest.TestCase):
                               'evidence':'Source A is associative','counterevidence':'Source B tests the mechanism and fails'}])
         review=d.read_json(self.d.session_path())['reviews']['ffffffff']
         self.assertIn('Source B',review['counterevidence'])
+
+
+class DeliverySupersededTests(MemoryFixture):
+    """cbc2030a: a blocked ref is not a contradiction when a later ref for the
+    same goal carries a confirmed submission (the batch that followed delivered)."""
+
+    def _dream(self, now):
+        env = mock.patch.dict(os.environ, {'IDENTITY_DIR': str(self.root), 'IDENTITY_NAME': 'custos'})
+        env.start(); self.addCleanup(env.stop)
+        return d.Dream(self.store, root=self.root / 'dream', clock=lambda: now)
+
+    def _traj(self, rows):
+        p = self.root / 'trajectory.jsonl'
+        p.write_text("\n".join(json.dumps(r, separators=(",", ":")) for r in rows) + "\n")
+        return p
+
+    def _batch(self, results):
+        def fake_call(payload, timeout=40):
+            return 200, {'ok': True, 'results': {r: results.get(r, {'phase': 'unknown'}) for r in payload['references']}}
+        return mock.patch('custos_actions_client.call', side_effect=fake_call)
+
+    def test_blocked_ref_superseded_by_later_submitted_same_goal(self):
+        now = dt.datetime(2026, 10, 16, 9, 45, tzinfo=dt.timezone.utc)
+        dr = self._dream(now)
+        t = '2026-10-16T'
+        rows = [
+            {"type": "message", "from": "custos", "to": "signal-hal", "step_id": "s1", "goal_id": "g1", "content": "digest part 1", "ts": t + "00:14:00Z"},
+            {"type": "message", "from": "custos", "to": "signal-hal", "step_id": "s2", "goal_id": "g1", "content": "digest tail", "ts": t + "00:16:00Z"},
+            {"type": "message", "from": "custos", "to": "signal-hal", "step_id": "s3", "goal_id": "g1", "content": "digest v2", "ts": t + "00:48:00Z"},
+            {"type": "message", "from": "custos", "to": "signal-hal", "step_id": "s4", "goal_id": "g2", "content": "orphan", "ts": t + "01:00:00Z"},
+        ]
+        traj = self._traj(rows)
+        submitted = {'phase': 'submitted', 'receipt': {'timestamp': 1792111713873, 'results': [{'type': 'SUCCESS'}], 'converted_to_reaction': False}}
+        blocked = {'phase': 'blocked', 'receipt': {'timestamp': 1792100000000, 'results': [{'type': 'BLOCKED'}], 'converted_to_reaction': False}}
+        with self._batch({'outbox:s1': blocked, 'outbox:s2': blocked, 'outbox:s3': submitted, 'outbox:s4': blocked}):
+            issues = dr.delivery_issues(hours=24, path=traj)
+        flagged = {i['reference'] for i in issues}
+        self.assertNotIn('outbox:s1', flagged)  # superseded by s3 (submitted, g1, later)
+        self.assertNotIn('outbox:s2', flagged)  # superseded by s3
+        self.assertNotIn('outbox:s3', flagged)  # submitted
+        self.assertIn('outbox:s4', flagged)     # blocked, g2, no later submitted ref
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]['goal_id'], 'g2')
+
+    def test_blocked_ref_postdating_only_submission_is_still_flagged(self):
+        # A blocked ref is only superseded by a LATER submission. If it postdates
+        # the only submission for its goal, it is still a problem.
+        now = dt.datetime(2026, 10, 16, 9, 45, tzinfo=dt.timezone.utc)
+        dr = self._dream(now)
+        t = '2026-10-16T'
+        rows = [
+            {"type": "message", "from": "custos", "to": "signal-hal", "step_id": "s1", "goal_id": "g1", "content": "digest v1", "ts": t + "00:48:00Z"},
+            {"type": "message", "from": "custos", "to": "signal-hal", "step_id": "s2", "goal_id": "g1", "content": "resend after block", "ts": t + "01:00:00Z"},
+        ]
+        traj = self._traj(rows)
+        submitted = {'phase': 'submitted', 'receipt': {'timestamp': 1792111713873, 'results': [{'type': 'SUCCESS'}], 'converted_to_reaction': False}}
+        blocked = {'phase': 'blocked', 'receipt': {'timestamp': 1792100000000, 'results': [{'type': 'BLOCKED'}], 'converted_to_reaction': False}}
+        with self._batch({'outbox:s1': submitted, 'outbox:s2': blocked}):
+            issues = dr.delivery_issues(hours=24, path=traj)
+        flagged = {i['reference'] for i in issues}
+        self.assertNotIn('outbox:s1', flagged)  # submitted
+        self.assertIn('outbox:s2', flagged)     # blocked, postdates the only submission -> not superseded
+        self.assertEqual(len(issues), 1)
+
+
+class FailedSendProseTests(MemoryFixture):
+    """cbc2030a: 'Not sent yet.' is a parked/staged message, not a failed send."""
+
+    def _dream(self, now):
+        env = mock.patch.dict(os.environ, {'IDENTITY_DIR': str(self.root), 'IDENTITY_NAME': 'custos'})
+        env.start(); self.addCleanup(env.stop)
+        return d.Dream(self.store, root=self.root / 'dream', clock=lambda: now)
+
+    def _traj(self, rows):
+        p = self.root / 'trajectory.jsonl'
+        p.write_text("\n".join(json.dumps(r, separators=(",", ":")) for r in rows) + "\n")
+        return p
+
+    def test_parked_not_sent_yet_is_not_a_failed_send(self):
+        now = dt.datetime(2026, 10, 16, 9, 45, tzinfo=dt.timezone.utc)
+        dr = self._dream(now)
+        t = '2026-10-16T'
+        rows = [
+            {"type": "observation", "source": "monolith", "content": "Staged as ainews-a19e5d39 for the 14:06:51Z batch boundary. Not sent yet.", "ts": t + "09:25:00Z"},
+        ]
+        traj = self._traj(rows)
+        out = dr.audit(hours=24, path=traj)
+        self.assertEqual([p for p in out['problems'] if p['kind'] == 'failed-send'], [])
+
+    def test_guard_refusal_is_still_a_failed_send(self):
+        now = dt.datetime(2026, 10, 16, 9, 45, tzinfo=dt.timezone.utc)
+        dr = self._dream(now)
+        t = '2026-10-16T'
+        rows = [
+            {"type": "observation", "source": "social", "content": "not sent: the guard refused a second message", "ts": t + "09:25:00Z"},
+        ]
+        traj = self._traj(rows)
+        out = dr.audit(hours=24, path=traj)
+        self.assertEqual(len([p for p in out['problems'] if p['kind'] == 'failed-send']), 1)
