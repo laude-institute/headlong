@@ -569,6 +569,13 @@ _RECENT_STREAM_COLLAPSE_JQ='
 # observations in a long run stay as milestones, and an observation whose run
 # never reached a final (killed, errored) stays as its only record. Runs
 # before the tail cut so N still means N distinct events.
+# The fold is marked, not silent (the be080b0 marker shape, 2026-10-18):
+# a final that folds its run's last observation carries a `folded` field
+# naming the dropped step's id and a traj show route, so a folded
+# observation reads as folded and stays reachable from the prompt alone;
+# the 2026-10-17 cdde1b27 arc caught a correction deleted from the next
+# wake's view with no sign it had ever existed. `details` stays the plain
+# runnable command; an observation with no step id folds unmarked.
 _RECENT_STREAM_PAIR_JQ='
   reduce .[] as $s ([];
     if $s.type == "final" and (($s.run_id // "") | tostring) != ""
@@ -576,7 +583,14 @@ _RECENT_STREAM_PAIR_JQ='
          | (to_entries
             | map(select(.value.type == "observation" and ((.value.run_id // "") | tostring) == $r))
             | last | .key) as $j
-         | if $j != null then del(.[$j]) + [$s]
+         | if $j != null
+           then (.[$j].step_id // "") as $oid
+                | del(.[$j])
+                  + [ (if (($oid | tostring) | length) > 0
+                       then (($oid | tostring) | if length > 8 then .[0:8] else . end) as $p
+                            | $s
+                            | .folded = ("observation " + $p + ": traj show " + $p)
+                       else $s end) ]
            elif (map(select(.type == "idle" and ((.run_id // "") | tostring) == $r)) | length) > 0 then .
            else . + [$s] end
     else . + [$s] end)
