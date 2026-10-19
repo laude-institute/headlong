@@ -340,6 +340,56 @@ else
     bad "structured reply still sends the message field" "$(cat "$JSON_REPLY_FILE" 2>/dev/null)"
 fi
 
+# The partial file is only a preview: a failed write (disk full) still sends.
+TEE_STEP_FILE="$WORK/step-tee.json"
+TEE_REPLY_FILE="$WORK/chat-reply-tee"
+
+cat > "$TEE_STEP_FILE" <<'JSON'
+{"type":"message","step_id":"trig-tee","from":"pwa-nick","to":"ada","content":"disk full?"}
+JSON
+
+cat >> "$TRAJ_FILE" <<'JSON'
+{"type":"message","step_id":"trig-tee","from":"pwa-nick","to":"ada","content":"disk full?"}
+JSON
+
+cat > "$WORK/shim/llm" <<'SHIM'
+#!/usr/bin/env bash
+printf 'reply despite tee'
+SHIM
+
+# Like tee on a write error: stdout stays complete, the exit status is 1.
+cat > "$WORK/shim/tee" <<'SHIM'
+#!/usr/bin/env bash
+cat
+exit 1
+SHIM
+
+cat > "$WORK/shim/chat" <<SHIM
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "reply" ]]; then
+    cat > "$TEE_REPLY_FILE"
+    exit 0
+fi
+exit 1
+SHIM
+
+chmod +x "$WORK/shim/llm" "$WORK/shim/tee" "$WORK/shim/chat"
+
+(
+    export PATH="$WORK/shim:$PATH"
+    export IDENTITY_DIR="$WORK/id" IDENTITY_NAME=ada
+    export TRAJ_DIR="$WORK/traj" TRAJ_ID=aaaaaaaa ROOT_TRAJ_ID=aaaaaaaa
+    export MEM_DIR="$WORK/id/memories" THINK_MODEL=test-model
+    "$REPO/thinkers/responder/step" < "$TEE_STEP_FILE"
+) > "$WORK/stdout-tee" 2> "$WORK/stderr-tee"
+rm -f "$WORK/shim/tee"
+
+if [[ "$(cat "$TEE_REPLY_FILE" 2>/dev/null)" == "reply despite tee" ]]; then
+    ok "failed partial write still sends the full reply"
+else
+    bad "failed partial write still sends the full reply" "$(cat "$TEE_REPLY_FILE" 2>/dev/null)"
+fi
+
 echo
 echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]

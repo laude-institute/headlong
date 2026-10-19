@@ -100,10 +100,11 @@ _reply_llm() {   # _reply_llm <llm args...>; stdout = the reply, rc = llm's rc
 }
 
 # Text replies stream into the partial file the talk UI polls (web chat.py);
-# a structured reply is a JSON object, not something to show a person.
+# a structured reply is a JSON object, not something to show a person. A
+# failed preview write (disk full) must not turn a good reply into a failure.
 _reply_stream() {
     if [[ -n "$partial_content_file" ]]; then
-        _reply_llm "$@" | tee "$partial_content_file"
+        _reply_llm "$@" | { tee "$partial_content_file" || cat; }
     else
         _reply_llm "$@"
     fi
