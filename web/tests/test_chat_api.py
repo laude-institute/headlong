@@ -260,6 +260,7 @@ def test_active_partial_replies_filters_and_uses_defaults(tmp_path: Path):
             "content": "draft",
             "reply_to": "m12",
             "filename": None,
+            "source_url": None,
             "partial": True,
         }
     ]
