@@ -279,6 +279,67 @@ else
     bad "malformed step id cleanup keeps unrelated run files"
 fi
 
+# A structured reply is a JSON object; it must not stream into the talk UI.
+JSON_STEP_FILE="$WORK/step-json.json"
+JSON_READY_FILE="$WORK/llm-json-ready"
+JSON_REPLY_FILE="$WORK/chat-reply-json"
+JSON_PARTIAL_FILE="$WORK/id/run/responder-partials/trig-json/content.txt"
+
+cat > "$JSON_STEP_FILE" <<'JSON'
+{"type":"message","step_id":"trig-json","from":"pwa-nick","to":"ada","content":"structured?"}
+JSON
+
+cat >> "$TRAJ_FILE" <<'JSON'
+{"type":"message","step_id":"trig-json","from":"pwa-nick","to":"ada","content":"structured?"}
+JSON
+
+cat > "$WORK/shim/llm" <<SHIM
+#!/usr/bin/env bash
+printf '{"action":"reply",'
+: > "$JSON_READY_FILE"
+sleep 1
+printf '"message":"structured hi"}'
+SHIM
+
+cat > "$WORK/shim/chat" <<SHIM
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "reply" ]]; then
+    cat > "$JSON_REPLY_FILE"
+    exit 0
+fi
+exit 1
+SHIM
+
+chmod +x "$WORK/shim/llm" "$WORK/shim/chat"
+
+(
+    export PATH="$WORK/shim:$PATH"
+    export IDENTITY_DIR="$WORK/id" IDENTITY_NAME=ada
+    export TRAJ_DIR="$WORK/traj" TRAJ_ID=aaaaaaaa ROOT_TRAJ_ID=aaaaaaaa
+    export MEM_DIR="$WORK/id/memories" THINK_MODEL=test-model RESPONDER_STRUCTURED=1
+    "$REPO/thinkers/responder/step" < "$JSON_STEP_FILE"
+) > "$WORK/stdout-json" 2> "$WORK/stderr-json" &
+step_pid=$!
+
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [[ -f "$JSON_READY_FILE" ]] && break
+    sleep 0.1
+done
+
+if [[ -f "$JSON_READY_FILE" && ! -s "$JSON_PARTIAL_FILE" ]]; then
+    ok "structured reply does not stream raw JSON as a partial"
+else
+    bad "structured reply does not stream raw JSON as a partial" "$(cat "$JSON_PARTIAL_FILE" 2>/dev/null)"
+fi
+
+wait "$step_pid"
+
+if [[ "$(cat "$JSON_REPLY_FILE" 2>/dev/null)" == "structured hi" ]]; then
+    ok "structured reply still sends the message field"
+else
+    bad "structured reply still sends the message field" "$(cat "$JSON_REPLY_FILE" 2>/dev/null)"
+fi
+
 echo
 echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]

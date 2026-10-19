@@ -163,6 +163,7 @@ def test_chat_includes_active_partial_reply(client: TestClient, chat_identity: P
         "content": "partial reply",
         "reply_to": "m9",
         "filename": None,
+        "source_url": None,
         "partial": True,
     }
 

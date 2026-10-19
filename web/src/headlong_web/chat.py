@@ -136,6 +136,7 @@ def active_partial_replies(
                 "content": content,
                 "reply_to": reply_to,
                 "filename": None,
+                "source_url": None,
                 "partial": True,
             }
         )
