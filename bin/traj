@@ -952,6 +952,38 @@ _process_line() {
     fi
 }
 
+# Every step of a file that passes the caller's $_filter_json, as compact
+# JSONL, in one jq pass; malformed lines are skipped. A jq per step, as
+# _process_line spawns, turns a filtered read of a large trajectory into
+# minutes of process spawning. Shared by cmd_tail and cmd_cat.
+_filtered_steps() {
+    jq -Rc --argjson filters "$_filter_json" '
+        fromjson? // empty |
+        def matches_filters($fs):
+            . as $step |
+            ($fs | length == 0) or all($fs[];
+                .key as $k | .vals as $vs |
+                ($step[$k] // null) as $fv |
+                ($vs | any(. as $v | $v == ($fv | tostring)))
+            );
+        select(matches_filters($filters))
+    ' "$1" 2>/dev/null || true
+}
+
+# The last $n (cmd_tail's) steps of a file. A filter applies before the count,
+# as it does under -r: `-n 5 --filter type=message` is the five newest
+# messages, not whichever of the file's last five lines are messages, and the
+# `traj tail -n 400 --filter run_id=<id>` that _recent_stream hands the mind
+# prints that run's steps however far back it ended. Unfiltered, tail(1)
+# reads only the end of the file.
+_tail_steps() {
+    if [[ "$_filter_json" == "[]" ]]; then
+        tail -n "$n" "$1"
+    else
+        _filtered_steps "$1" | tail -n "$n"
+    fi
+}
+
 # Format a single JSON line. Shared by cmd_tail and cmd_cat; reads the
 # caller's locals (color palette, all_fields, _filter_json) via bash
 # dynamic scoping.
@@ -1148,7 +1180,7 @@ Usage:
 
 Options:
   [ID]               Trajectory ID (positional)
-  -n N               Last N steps (default: 10)
+  -n N               Last N steps that pass --filter (default: 10)
   -f                 Follow new steps as they arrive
   -a, --all          Show all fields per step (not just type + content)
   -r, --recursive    Include steps from all sub-trajectories, interleaved
@@ -1229,7 +1261,7 @@ TAILHELP
     elif [[ "$follow" -eq 1 ]]; then
         # Replay then follow (single file)
         if [[ -f "$traj_file" ]] && [[ "$n" -gt 0 ]]; then
-            tail -n "$n" "$traj_file" | while IFS= read -r line; do
+            _tail_steps "$traj_file" | while IFS= read -r line; do
                 _process_line "$line"
             done
         fi
@@ -1242,7 +1274,7 @@ TAILHELP
         done
     else
         [[ -f "$traj_file" ]] || die "tail: trajectory file not found: $traj_file"
-        tail -n "$n" "$traj_file" | while IFS= read -r line; do
+        _tail_steps "$traj_file" | while IFS= read -r line; do
             _process_line "$line"
         done
     fi
@@ -1921,24 +1953,11 @@ CATHELP
                 cat
               fi
     elif [[ "$format" -eq 0 ]]; then
-        # Raw mode: one pass over the whole file. The per-line _process_line
-        # spawns a jq per step when filters are set, which on a large
-        # trajectory (tens of thousands of steps) turns every filtered
-        # cat into minutes of process spawning.
+        # Raw mode: one pass over the whole file, not a jq per step.
         if [[ "$_filter_json" == "[]" ]]; then
             cat "$traj_file"
         else
-            jq -Rc --argjson filters "$_filter_json" '
-                fromjson? // empty |
-                def matches_filters($fs):
-                    . as $step |
-                    ($fs | length == 0) or all($fs[];
-                        .key as $k | .vals as $vs |
-                        ($step[$k] // null) as $fv |
-                        ($vs | any(. as $v | $v == ($fv | tostring)))
-                    );
-                select(matches_filters($filters))
-            ' "$traj_file" 2>/dev/null || true
+            _filtered_steps "$traj_file"
         fi
     else
         while IFS= read -r line; do
