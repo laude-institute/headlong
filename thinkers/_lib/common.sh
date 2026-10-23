@@ -123,7 +123,13 @@ _runtime_line() {
         sha=""
     done
     [[ -n "$sha" ]] || return 0
-    subject=$(git -C "$root" log -1 --format=%s 2>/dev/null | cut -c1-60) || subject=""
+    subject=$(git -C "$root" log -1 --format=%s 2>/dev/null) || subject=""
+    # The subject gloss is bounded and any cut is marked (2026-10-17 sweep:
+    # this was one of three unmarked cuts in the prompt's assembly path), so
+    # the reader can see the take is not the whole subject and reach the rest.
+    if [[ ${#subject} -gt 60 ]]; then
+        subject="${subject:0:60} (+$(( ${#subject} - 60 )) more: git log -1)"
+    fi
     head_t=$(_mtime_utc "$root/.git/HEAD")
     sync_t=""
     if [[ -d "${IDENTITY_DIR:-}/thinkers" ]]; then
@@ -251,7 +257,13 @@ _schedule_signals() {
         [[ -n "$f" ]] || continue
         sched=$(_fm "$f" schedule); until=$(_fm "$f" until)
         if [[ -z "$sched" || ( -n "$until" && "$until" < "$(date -u +%Y-%m-%d)" ) ]]; then continue; fi
-        gtz=$(_fm "$f" tz); gtz="${gtz:-$tz}"; id=$(_fm "$f" id); title=$(_fm "$f" summary | cut -c1-60)
+        gtz=$(_fm "$f" tz); gtz="${gtz:-$tz}"; id=$(_fm "$f" id)
+        title=$(_fm "$f" summary)
+        # Bounded and marked when cut (2026-10-17 sweep), same shape as the
+        # goal-body marker (be080b0): the count of what dropped plus the route.
+        if [[ ${#title} -gt 60 ]]; then
+            title="${title:0:60} (+$(( ${#title} - 60 )) more: mem show $id)"
+        fi
         day=$(TZ="$gtz" date +%Y-%m-%d); now=$(TZ="$gtz" date +%H:%M); zone=$(TZ="$gtz" date +%Z)
         now_m=$(( 10#${now%:*} * 60 + 10#${now#*:} )); due=""; next=""; said=""
         for t in $sched; do
@@ -378,7 +390,12 @@ _related_memories() {  # _related_memories <query> [prev-names, one per line] [n
         case "$age" in *h) continue ;; esac
         if [[ "$fresh" -gt 86400 && "$age" == *d ]]; then (( ${age%d} * 86400 < fresh )) && continue; fi
         ftype=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^type:/{sub(/^type:[[:space:]]*/, ""); print}' "$f")
-        body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" | sed '/./,$!d' | head -1 | sed 's/^# *//' | cut -c1-140)
+        body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" | sed '/./,$!d' | head -1 | sed 's/^# *//')
+        # Bounded and marked when cut (2026-10-17 sweep), the marker shape of
+        # be080b0: the dropped count plus the mem show name of this memory.
+        if [[ ${#body} -gt 140 ]]; then
+            body="${body:0:140} (+$(( ${#body} - 140 )) more: mem show $name)"
+        fi
         [[ -n "$body" ]] || continue
         printf -- '- %s [%s%s]: %s\n' "$name" "${ftype:-memory}" "${age:+, $age}" "$body"
         shown=$((shown + 1))
