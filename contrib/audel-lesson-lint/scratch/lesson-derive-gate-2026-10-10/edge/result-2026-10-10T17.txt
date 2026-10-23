@@ -1,0 +1,5 @@
+=== edge corpus (mechanism edges, exp.txt 27) ===
+ok   p-crlf             want=0 got=0
+---
+pass=27 gaps=0 fp=0 total=27
+=== reachgap corpus (word-list boundary, 16) ===

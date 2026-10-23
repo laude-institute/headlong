@@ -1,0 +1,14 @@
+a1.md      rc=1 :: line 1: unbounded universal (all) in: Lesson: the 3 fixtures I built and re-ran all pass.
+a2.md      rc=1 :: line 1: unbounded universal (all) in: Lesson: the 35 fixtures I built and checked all pass.
+a3.md      rc=0 :: grep: Unmatched ( or \(
+a4.md      rc=1 :: line 1: unbounded universal (all) in: Lesson: the 2 runs I watched and logged all held.
+a5.md      rc=0 :: 
+m1.md      rc=1 :: line 1: unbounded universal (always) in: Lesson: in the 2 cases I checked the gate refused and remai
+m2.md      rc=1 :: line 1: unbounded universal (always) in: Lesson: in the 3 builds I checked the lint ran clean and co
+m3.md      rc=1 :: line 1: unbounded universal (everywhere) in: Lesson: in the 3 cases I checked the gate refused and f
+m4.md      rc=1 :: line 1: unbounded universal (every) in: Lesson: in the 3 cases I checked the gate refused and stalls
+m5.md      rc=1 :: line 1: unbounded universal ( no exception) in: Lesson: in the 2 cases I checked the gate refused an
+m6.md      rc=1 :: line 1: unbounded universal (never) in: Lesson: the 3 fixtures I built and re-ran never pass.
+r1.md      rc=0 :: 
+r2.md      rc=1 :: line 1: unbounded universal (all) in: Lesson: the 3 fixtures I built and re-ran all pass and none br
+r3.md      rc=1 :: line 1: unbounded universal (all) in: Lesson: the logs the fix wrote and the runs it cleared all pas

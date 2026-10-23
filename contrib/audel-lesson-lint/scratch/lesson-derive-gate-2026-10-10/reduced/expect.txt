@@ -1,0 +1,4 @@
+rp-builds-checked-passed.md	refuse
+rp-checks-recorded-failed.md	refuse
+rp-fixtures-named-broke.md	accept
+rp-tests-ran-failed.md	refuse

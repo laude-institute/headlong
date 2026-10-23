@@ -1,0 +1,9 @@
+a-gateheld.md          accept
+a-oxen.md              refuse
+g1-cutloose-obj.md     refuse
+g2-sprangaside-obj.md  refuse
+g3-kept-sheep.md       accept
+g4-kept-those.md       accept
+p1-cutloose.md         refuse
+p2-sprangaside.md      refuse
+p3-toreloose.md        refuse

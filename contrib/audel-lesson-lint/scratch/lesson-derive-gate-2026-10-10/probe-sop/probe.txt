@@ -1,0 +1,7 @@
+p1.md  rc=1 :: line 1: unbounded universal (always) in: Lesson: in the 2 cases I checked the gate refused then always holds.
+p2.md  rc=1 :: line 1: unbounded universal (never) in: Lesson: in the 2 cases I checked the gate refused so never misfires.
+p3.md  rc=1 :: line 1: unbounded universal (always) in: Lesson: in the 4 runs I watched the scheduler stayed quiet while always ready.
+p4.md  rc=1 :: line 1: unbounded universal (always) in: Lesson: in the 3 fixtures I built the lint refused whereas always correct.
+p5.md  rc=0 :: 
+p6.md  rc=1 :: line 1: unbounded universal (always) in: Lesson: in the 3 cases I checked about the gate, all refused and always holds.
+p7.md  rc=0 :: 

@@ -1,0 +1,461 @@
+#!/usr/bin/env bash
+# lesson-overreach-lint DRAFT
+# Reach check for lesson drafts. lesson-derive-gate verifies that every
+# evidence line re-derives right now (the link from rule to interactions).
+# This checks the other half: the lesson text must not carry an unbounded
+# universal claim. Empirical claims must be bounded to what was checked;
+# norms must be declared as norms. Evidence lines are not lesson text.
+#
+# Deepened twice on 2026-10-10 (word-list boundary, then mechanism edges).
+# Scope is judged per clause, not per line or per sentence:
+#   - a bound only counts when it sits in the clause that carries the
+#     quantifier, so a bounded clause cannot shield a second clause beside it
+#     on the same line ("in the 3 cases i checked the gate refused, and the
+#     fix always holds" is refused);
+#   - one exception, a bare scope clause whose only content is the bound
+#     phrase itself bounds the sentence ("in the 2 windows i checked, nothing
+#     moved" is accepted), because that is a fronted scope marker, not an
+#     assertion being borrowed;
+#   - negated universals count (under no circumstances, in no case, no matter
+#     what, and bare "no NOUN" as in "no lesson may skip");
+#   - intensifier adverbs count (invariably, without fail, at all times);
+#   - a count of the things a quantifier ranges over bounds it ("the 35
+#     fixtures ... all pass"), same as "3 of the 3" always did.
+# Deepened a third time on 2026-10-10 (soft-spot pass): a count only bounds
+# when it counts the things checked (see countre below), and the clause split
+# also breaks at a coordinating conjunction when what follows starts with a
+# subject, so "in the 2 cases I checked the gate refused and the fix always
+# holds" is judged as two clauses. Residual soft spots (note for 2026-10-10):
+# the bare-scope test is a filler-word strip rather than a parse, the clause
+# split is punctuation and subject-start only so a conjunction joining two
+# verb phrases with an unlisted subject is still judged as one clause, and a
+# count trailing its noun is not read as a count.
+# Deepened a fourth time on 2026-10-10 (seam pass): the clause split now
+# breaks at the verb-phrase coordinators and, but, or and nor whatever follows
+# them, so two verb phrases sharing a subject no longer share one clause and
+# one bound (in the 2 cases I checked the gate refused and always holds is now
+# refused). so, then, while and whereas still split only before a subject,
+# because so far is itself a bound phrase. Remaining soft spots: the
+# filler-strip bare-scope test and that second group of coordinators joining two
+# verb phrases into one clause. Deepened a fifth time on 2026-10-10 (counttrail
+# corpus): a count trailing its noun is now read as a count of the things
+# checked, when a count phrase (N of them, N in total, a parenthesized N) trails
+# a plural check noun and a bare universal with a listed verb follows it in the
+# same sentence (the fixtures, 35 of them, all pass). The sentence must carry no
+# adverbial quantifier of its own or the clause loop below judges it, and a bare
+# universal with its own domain noun (all engineers) or an unlisted verb is not
+# treated as coreferential. Residual named for the next pass: a trailing count
+# does not reach a coordinated adverbial clause (all pass and never fail).
+# Deepened a sixth time on 2026-10-10 (coord corpus): so, then, while and
+# whereas now split the clause whatever follows them, not only before a
+# listed subject, so a coordinator joining two verb phrases with no subject
+# after it no longer keeps both phrases in one clause. "so far" is swapped out
+# before the split and restored after, because it is itself a bound phrase and
+# a split there would strand its bound. Residuals named for the next pass: the
+# bare-scope test is still a filler-word strip rather than a parse, a trailing
+# count does not reach a coordinated adverbial clause, and the split treats
+# "so that" and "so as" as splits, which can strand a bound sitting after
+# them.
+set -u
+f=${1:-}
+if [ -z "$f" ]; then echo "usage: lesson-overreach-lint DRAFT" >&2; exit 2; fi
+if [ ! -f "$f" ]; then echo "no such draft: $f" >&2; exit 2; fi
+qre='\b(never|always|forever|permanently|none|nothing|no one|every|everyone|everything|everywhere|all|any|anyone|anything|anywhere|each|whenever|wherever|without exception|universally|exclusively|cannot|impossible|nowhere|invariably|inevitably|without fail|at all times|across the board|in every respect|each and every)\b'
+nre='\b(under no circumstances|in no case|in no instance|no matter (what|how|when|where|who)|without exception|in all cases|at all times)\b'
+bare_nore='(^|[[:space:]])no[[:space:]]+[a-z]+'
+nounplre='(cases|fixtures|samples|runs|steps|checks|instances|windows|builds|machines|branches|tests|readings|days|attempts|examples|records|sessions|files|notes|papers|mutants|drafts|lines|claims|items|entries|rounds|fixes|games|tasks|rows|sends|probes|evidence|verdicts|sentences|sections|findings|loops|rules|lessons|skills|messages|commits|pulls|requests|windows)'
+# Both (nounlead pass 2026-10-10): "both" was in corefre and coref_self but
+# missing from the detection list qre, so a clause carrying it never reached
+# judgment at all (hits_of saw no universal and skipped it). Adding it to qre
+# made it visible but refused real lesson prose where "both" is anaphoric to a
+# set already named: "needs both taught", "runs both halves now: A and B",
+# "Both soft spots the lint named broke through". "both" is dual and usually
+# resolves to two things already in context; only a fresh domain noun phrase
+# after it ("both green machines failed") claims a domain of its own. So
+# detection is keyed to that shape here, not to the bare word. Residual named
+# for the next pass: the nounplre boundary again, "both cohorts" over a domain
+# word outside the list stays invisible, and a restrictive relative clause
+# ("both fixtures the lint named") is not read as a bound.
+# Lexlead pass (2026-10-10): the noun-lead rule and bothre keyed on nounplre,
+# a lexical noun list, so a domain word outside it ("all cohorts", "both
+# green cohorts", "both teams") named no domain and the clause coreferred.
+# Domain naming is now keyed on shape: any plural noun (s/es ending or a
+# short irregular list), with any run of adjective-shaped modifiers before
+# it, so a modifier word the predicate list also carries (clean, green) or
+# an unlisted one (fresh) cannot hide the noun. "both" is detected only in
+# clause-subject position, because mid-clause "both" is object anaphora
+# ("runs both halves now", "needs both taught") and the bothedge accepts
+# stay accepted on that distinction rather than on a noun list.
+plnoun='([a-z]+(s|es)|people|children|men|women|corpora|curricula|criteria|phenomena|analyses|theses|indices|matrices)'
+bothre='^[[:space:]]*(and|but|or|nor|so|then|while|whereas)?[[:space:]]*both\b([[:space:]]+of[[:space:]]+(the|these|those)\b)?[[:space:]]+([a-z]+[[:space:]]+){0,6}('"$plnoun"')\b'
+bre='\b(in the [0-9a-zA-Z-]+ (cases|fixtures|samples|runs|steps|checks|instances|windows) (i |we )?(checked|verified|ran|saw|read)|among the|so far|in (this|these|my) (case|cases|sample|samples|window|windows|checks|reading|tests?)|on (this|that) (machine|build|day|run|branch)|as (checked|verified|observed) here|[0-9]+ of [0-9]+|each of the|[0-9]+ of the [0-9]+|proves only that|says nothing about|all (the )?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)|every (one of (the )?)?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen))\b'
+# Count bound (soft-spot fix 2026-10-10): a number only bounds a quantifier
+# when it counts the things checked. "PR 156", "step 3", "2026-10-03", "in
+# 2026" and the "one" inside "no one" are not counts of checked things and no
+# longer bound anything, while "the 35 fixtures all pass" and "the ten
+# fixtures I built all pass" still do. The count comes first and a plural
+# check noun must follow it within at most three short modifier words, and the
+# noun must be plural, because "step 3" names a location and not a count of
+# steps checked. Residual shapes this misses, named in the note for
+# 2026-10-10: a count trailing its noun ("the fixtures, 35 of them, all
+# pass"), and a count-noun pair with an unlisted modifier between them.
+numre='([0-9]{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)'
+modre='(of|in|from|among|the|a|an|my|our|these|those|new|fresh|total|green|checked|verified|ran|saw|read|built|recorded|named|listed|individual|separate|distinct|full|whole|evidence|deepen|folded|real|extra)'
+countre='\b'"$numre"'\b([[:space:]]+'"$modre"'){0,3}[[:space:]]+\b'"$nounplre"'\b'
+
+filler='runs?|cases?|checks?|windows?|fixtures?|samples?|steps?|instances?|days?|builds?|machines?|branches?|tests?|readings?|checked|verified|ran|saw|read|the|a|an|of|in|on|at|to|and|or|but|so|then|i|we|my|our|among'
+tailre='(all|none|nothing|both)[[:space:]]+(pass|passes|passed|succeed|succeeded|clear|cleared|hold|held|fail|failed|break|broke|work|worked|stall|stalled|move|moved|change|changed|stop|stopped|land|landed|send|sent|arrive|arrived|run|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|stayed|remained|refused|accepted|verified|checked|green|clean|fine|open|closed|stale)'
+appre='\b'"$nounplre"'\b[^.;!?]{0,40}\b'"$numre"'\b[[:space:]]+(of them|in total)\b[^.;!?]{0,40}\b'"$tailre"'\b|\b'"$nounplre"'\b[[:space:]]*\([[:space:]]*'"$numre"'[[:space:]]*\)[[:space:]]*\b'"$tailre"'\b'
+advre='\b(always|never|cannot|impossible|invariably|inevitably|without fail|at all times|universally|exclusively|everywhere|anywhere|nowhere|each and every|every|each|anyone|anything|any|without exception)\b'
+normre='^[[:space:]]*(rule|habit|norm)[[:space:]]*:'
+# Restrictive relative clause bound (lexlead pass 2026-10-10): "both fixtures
+# the lint named" restricts its noun to the ones already named, so the
+# relative clause reads as a bound on the universal. Widened detection would
+# otherwise refuse the bothedge accept "both soft spots the reach lint named
+# broke through". Residual named for the next pass: the verb list is lexical,
+# and the pattern needs a determiner before the relative subject.
+rcbre='\b(the|that|these|those)[[:space:]]+([a-z]+[[:space:]]+){0,4}(named|listed|recorded|reported|tracked|checked|verified|observed|tested|built|ran|saw|read)([[:space:]]|$)'
+
+# Relcl pass (2026-10-11): the pattern above needs a determiner before the
+# relative subject and reads only its own verb list, so both residuals the
+# lexlead comment named were real gaps: "fixtures lint named" carries no
+# determiner, and a verb outside the list ("we shipped", "the pass
+# refactored") reads as the clause predicate, so the universal went
+# unbounded. The bound below is a shape instead: a plural check noun with at
+# least one non-auxiliary word and then a past verb after it is a subject and
+# a verb following the noun, i.e. a relative clause restricting the noun to
+# the ones named. A past verb straight after the noun ("all runs verified
+# the output") is the clause predicate and bounds nothing. Residual named
+# for the next pass: the verb list is still lexical (a past verb outside it,
+# "the sweep clipped", stays unbounded) and a reduced passive relative
+# ("fixtures named", no subject word) is still not read as a bound.
+relclause_ok() {
+  # Relcl follow-on 2026-10-11: a bound cannot come from the quantifier
+  # phrase's own words. "at all times a lesson written without evidence" read
+  # the plural "times" inside the quantifier as a domain noun and fired a
+  # false bound (reachgap/m-attimes flipped accept). The quantifier phrase is
+  # blanked before the shape test, so its nouns can never head a bound.
+  # Vbshape follow-on 2026-10-11: the relative verb is a shape, not a list.
+  # The list read "the sweep clipped" as no verb and refused a bounded
+  # lesson. Two carve-outs keep the shallow lookalikes out: the relative verb
+  # takes the head noun as its object, so no plural noun may sit between the
+  # head and the next predicate ("all builds the sweep flagged logs failed"
+  # stays refused), and a modifier chain is not a relative clause, so the
+  # first word after the head may not be a preposition ("all tests in the
+  # shaded region failed" stays refused).
+  printf '%s\n' "$1" | sed -E "s/$nre/ /gI" | awk '
+  BEGIN {
+    vb="named|listed|recorded|reported|tracked|checked|verified|observed|tested|built|made|shipped|fixed|wrote|written|sent|ran|saw|seen|read|kept|found|landed|merged|refactored|patched|stored|added|dropped|compiled|measured|counted|covered|excluded|included|marked|signed|sealed|grew|grown|held|took|taken|broke|broken|went|gone|came|come|fell|fallen|rose|risen|drew|drawn|knew|known|gave|given|told|sold|brought|caught|taught|thought|began|begun|stood|understood|meant|met|led|fed|slept|dealt|felt|lost|won"
+    stop="^(was|were|are|is|be|been|being|have|has|had|did|does|do|will|would|could|should|must|might|this|that|these|those|its|his|her|our|my|your|as|always|analysis|thesis|us)$"
+    noun="(people|children|men|women|corpora|data|criteria|phenomena|analyses|bases|theses|series|species|[a-z]+(s|es))"
+    det="the|a|an|that|this|these|those|its|his|her|our|my|your|their"
+    pron="we|they|he|she|it|i|you"
+    prep="in|of|from|among|at|on|with|by|for|through|during|across|within"
+    plural="(corpora|data|criteria|phenomena|analyses|bases|theses|series|species|[a-z]+(s|es))"
+    vshape="ed$"
+    # Irregular-tail pass 2026-10-11 (irrtail): a phrasal past (the fix rang
+    # through, the run shone on, the fix flew past) is not in the verb list and
+    # not ed-final, so the search skipped it and read the past MAIN predicate as
+    # the bound (or capped the chain). A verb in the clean relative slot followed
+    # by a particle is a relative verb by shape, not by list. nonverb keeps
+    # function words out of that slot.
+    particle="(in|of|from|among|at|on|with|by|for|through|during|across|within|past|away|back|over|around|along|throughout|out|up|down|off|round|about|open|shut|root|online|ahead|apart)$"
+    nonverb="^(the|a|an|that|this|these|those|its|his|her|our|my|your|their|in|of|from|among|at|on|with|by|for|through|during|across|within|will|would|shall|should|can|could|may|might|must|and|but|or|nor|so|then|while|whereas|as|not|no|none|nothing|all|both|each|every|any|some|we|they|he|she|it|i|you|there|been|was|were|are|is|be|have|has|had|do|does|did)$"
+    modal="will|would|shall|should|can|could|may|might|must"
+  }
+  # Adjudication 2026-10-11 (adjrel a-relcl-produced): the plural test was any
+  # word ending in s or es, so an s-final singular in the relative subject ("the
+  # harness produced") read as a plural object and the bound was dropped. A
+  # plural is s-final but not ss/us/is/ics-final.
+  function isp(x) { return (x ~ "^(" plural ")$" && x !~ /(ss|us|is|ics)$/) }
+  {
+    n=0
+    for (i=1;i<=NF;i++) { t=tolower($i); gsub(/[^a-z]/,"",t); if (t!="") w[++n]=t }
+    # Adjudication 2026-10-11 (adjrel m-objrel): the search started at every
+    # noun, so a verb inside a later noun owning the relative clause ("all runs
+    # failed the checks the log read") bound the wrong head and the universal
+    # over the first noun went unbounded. A relative bound attaches to the
+    # universal domain noun, the clause first noun, so only that noun heads
+    # a search.
+    fi=0
+    for (q=1;q<=n;q++) { if (w[q] ~ stop) continue; if (w[q] ~ "^(" noun ")$") { fi=q; break } }
+    for (i=1;i<=n;i++) {
+      if (i != fi) continue
+      if (w[i] ~ stop) continue
+      if (w[i] !~ "^(" noun ")$") continue
+      for (j=i+2;j<=n && j<=i+7;j++) {
+        if (w[j] ~ stop) continue
+        isverb=0
+        if (w[j] ~ "^(" vb ")$") isverb=1
+        else if (w[j] ~ vshape) isverb=2
+        else if (w[j] !~ "(s|es)$" && w[j] !~ nonverb && j+1<=n && w[j+1] ~ "^(" particle ")$") isverb=3
+        if (!isverb) continue
+        if (j+1<=n && isp(w[j+1])) continue
+        first=""; nf=0; npl=0; nonpast=0; lastw=""; prelast=""
+        for (k=i+1;k<j;k++) {
+          if (w[k] ~ "^(" modal ")$") { nonpast=1; continue }
+          if (w[k] ~ stop && w[k] !~ "^(" det ")$") continue
+          nf++
+          if (nf==1) first=w[k]
+          if (isp(w[k])) npl=1
+          prelast=lastw; lastw=w[k]
+        }
+        # Irregular past pass 2026-10-11 (sweep-catch): widening the verb class let
+        # the search skip a non-past relative verb and read the past MAIN
+        # predicate as the bound ("all fixtures the lint will name broke
+        # through"). A relative bound is an observation, so a modal before it or
+        # a present-tense verb ending the subject chain means no past bound.
+        if (nonpast) continue
+        # Irregular-tail follow-on 2026-10-11 (irrtail residual 2): the s-suffix
+        # present guard keyed on any s-final chain word, so a plural object noun
+        # ending the relative subject ("the reviewer notes kept", "the team tests
+        # ran") dropped a real bound. The guard is for the case where the search
+        # skipped a present relative verb and grabbed the MAIN predicate; that is
+        # exactly when no other verb follows the one found. When a verb does
+        # follow, the found word is the relative verb and the s-final chain word
+        # is a plural noun, so the bound stands.
+        hasmain=0
+        # Particle pass 2026-10-11 (particle residual): the verb shapes here
+        # were the vb list and an ed suffix only, so an irregular phrasal main
+        # predicate ("kept rang out") left hasmain at 0 and the s-suffix guard
+        # dropped a real bound. A main predicate can also be a phrasal verb, so
+        # the same shape the search uses (verb slot word plus particle) counts
+        # here too. Residual named for the next pass: the particle list is
+        # still lexical (a multiword particle like "set in motion" is read
+        # through its first word only) and irregular-past phrasal verbs
+        # outside it stay unread.
+        for (m=j+1;m<=n;m++) { if (w[m] ~ "^(" vb ")$" || w[m] ~ vshape || (w[m] !~ "(s|es)$" && w[m] !~ nonverb && m+1<=n && w[m+1] ~ "^(" particle ")$")) { hasmain=1; break } }
+        if (lastw ~ "(s|es)$" && lastw !~ "(ss|us|is|ics)$" && prelast !~ "^(" det "|[0-9]{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)$" && !hasmain) continue
+        if (nf==0) continue
+        # A lone determiner is not a relative subject: the reduced passive
+        # shape ("all builds checked passed") keeps its refuse.
+        if (first ~ "^(" det ")$" && nf==1) continue
+        # Adjudication 2026-10-11 (adjrel m-objrel): the chain-length cap
+        # applied only to shape verbs, so a listed verb five words deep bound the
+        # head. The cap is general now.
+        if (nf>3) continue
+        if (isverb>=2) {
+          if (first ~ "^(" prep ")$") continue
+          if (npl) continue
+          if (first !~ "^(" det "|" pron "|" noun ")$") continue
+        }
+        print "yes"; exit
+      }
+    }
+    exit
+  }' | grep -q yes
+}
+
+hits_of() {
+  { printf '%s\n' "$1" | grep -ioE "$qre"
+    printf '%s\n' "$1" | grep -ioE "$nre"
+    printf '%s\n' "$1" | grep -ioE "$bare_nore"
+    if printf '%s\n' "$1" | grep -qiE "$bothre"; then printf 'both\n'; fi; } | sort -u | tr '\n' ' '
+}
+bound_in() {
+  printf '%s\n' "$1" | grep -qiE "$bre" && return 0
+  printf '%s\n' "$1" | grep -qiE "$countre" && return 0
+  # Adjudication 2026-10-11 (adjrel m-objrel): the raw rcbre pattern matched a
+  # relative verb at any noun ("all runs failed the checks the log read"), so a
+  # bound landed on the wrong head. relclause_ok is the shape test and keeps the
+  # head restriction, so the raw pattern no longer bounds on its own.
+  relclause_ok "$1" && return 0
+  return 1
+}
+# Coreference (soft-spot fix 2026-10-10, follow-on): a coordinated clause
+# whose only universal is a bare pronoun and that names no domain of its own
+# ranges over the domain of its sibling clause, so it inherits that clause's
+# bound ("all three sources were checked and none failed" is bounded over the
+# three sources). Anything that widens the domain ("else", "ever", "anywhere",
+# "everywhere", "again") or names its own domain ("every later build") is not
+# coreferential and is judged on its own.
+# Widenedge fix 2026-10-10: the predicate after a bare universal was a hand
+# list, so an unlisted past-tense verb ("none leaked", "all vanished",
+# "nothing slipped through") read as a domain noun and the clause was judged
+# on its own, refusing bounded claims. The predicate test is now the list plus
+# a regular-past suffix (ed/en) plus a short irregular list and an anaphoric
+# "of them/these/those", so an unlisted verb corefers with the checked set and
+# an unlisted noun ("all engineers") still names its own domain and is judged
+# on its own. Residual named for the next pass: the irregular list and the
+# noun-lead rule below are still lexical, so a bare universal whose domain
+# word is not in nounplre ("all cohorts") reads as coreferential.
+predre='(failed|passed|pass|broke|worked|held|moved|changed|stopped|stuck|landed|merged|sent|arrived|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|cleared|clean|green|red|fine|broken|fixed|open|closed|stale|new|old|slow|fast|wrong|right|late|early|quiet|loud|clear|fuzzy|stable|gone|done|come|become|taken|given|shown|known|grown|written|fallen|risen|seen|won|lost|felt|built|put|cut|set|hit|read|led|fed|of (them|these|those)|[a-z]+(ed|en))'
+# Lexlead pass (2026-10-10): adjective-shaped noun modifiers, so the
+# noun-lead chain can tell a modifier from a verb or a preposition. Any
+# regular participle plus a short adjective list; residual named for the next
+# pass: an adjective outside this list before a plural noun ("all keen
+# cohorts") is not read as a modifier.
+modshape='([a-z]+(ed|en)|new|old|fresh|later|other|more|most|few|fewer|many|separate|additional|extra|distinct|individual|clean|dirty|full|partial|remaining|overall|total|whole|real|last|first|previous|prior|final|initial|early|late|green|red|fine|broken|fixed|open|closed|stale|slow|fast|wrong|right|late|early|quiet|loud|clear|fuzzy|stable|gone|done|long|short|big|small|hard|easy|keen|stale)'
+corefre='^[[:space:]]*(and|but|or|nor|so|then|while|whereas)?[[:space:]]*(none|both|nothing|all)([[:space:]]+'"$predre"')([[:space:]]+[a-z]+){0,6}[[:space:]]*$'
+widere='(^|[[:space:],;])(elsewhere|else|other|others|anywhere|everywhere|globally|worldwide|throughout|in general|ever|again|alike|instead|outside|beyond|excluded|exempt|later|afterward|afterwards|thereafter|from then on|from now on|going forward|eventually|henceforth|subsequently|in future|in the future|in perpetuity|forever|permanently)([[:space:],.;]|$)'
+coref_widen="$widere"
+coref_self='\b(every|each|any|none|nothing|all|no)[[:space:]]+[a-z]+'
+# noun-lead modifiers (nounlead fix 2026-10-10): any one or two words before a
+# check noun are a modifier of that noun, so the noun names the domain even
+# when the modifier is also a predicate-list word (clean, green): a predicate
+# word read as an adjective is still a modifier. Whitelisting the modifiers
+# missed exactly that overlap and m-adjnoun-both stayed accepted.
+# universal names its domain even with a modifier in front, and the modifier
+# may be an adjective the predicate list also carries (clean, full) or a
+# participle (broken, re-run). At most two, then the noun.
+dm2='(new|old|fresh|later|other|more|most|few|fewer|many|separate|additional|extra|distinct|individual|clean|dirty|full|partial|remaining|overall|total|[a-z]+(-[a-z]+)?(ed|en))'
+coref_ok() {
+  printf '%s\n' "$1" | grep -qiE "$corefre" || return 1
+  printf '%s\n' "$1" | grep -qiE "$coref_widen" && return 1
+  # Widenedge fix 2026-10-10: this sed was s/pat\b/I, an unterminated s
+  # command (the replacement side was missing), so it errored, grep saw an
+  # empty stream and this test never fired, making coref_ok return 0 for
+  # every candidate clause ("none failed in every new build" was skipped as
+  # coreferential even though domain_self named its domain). It is now
+  # s/pat\b//I and the test fires.
+  printf '%s\n' "$1" | sed -E "s/^[[:space:]]*(and|but|or|nor|so|then|while|whereas)?[[:space:]]*(none|both|nothing|all)\\b//I" | grep -qiE "$coref_self" && return 1
+  # Broken 2026-10-10 (nounlead corpus): the residue test above looks only for
+  # a second universal, so a clause naming its domain as a noun phrase after
+  # the universal and a modifier ("all new tests failed", "all clean runs
+  # failed") read as coreferential and its universal went unjudged. domain_self
+  # reads that noun-lead shape, so consult it here too. Residual named for the
+  # next pass: both sides stay lexical, so a domain word outside nounplre ("all
+  # cohorts") or an irregular participle outside dm2 still corefers.
+  domain_self "$1" && return 1
+  return 0
+}
+# Barewidening follow-on 2026-10-10: a shielded clause that names a domain of its
+# own ("every run", "all builds", "no test") is not coreferential with the scope
+# marker and is judged on its own, while a bare pronoun followed by a predicate
+# ("all failed", "none broke") still inherits the marker's scope. Widenedge
+# follow-on 2026-10-10: the domain naming is checked wherever it sits in the
+# clause, not only at its start ("none failed in every new build" is judged on
+# its own), and a noun right after the universal ("all builds stall", "all new
+# builds stall") names the domain before the predicate test can read the word
+# as a verb. Residual named for the next pass: nounplre and the predicate test
+# are both lexical, so a domain word outside them ("all cohorts") corefers.
+domain_self() {
+  # A universal names the domain it ranges over when it is the clause
+  # subject ("every run failed"); an argument-position universal sits inside
+  # the claim the checked sample scopes ("the gate refused every mutant").
+  c=$(printf '%s\n' "$1" | sed -E "s/^[[:space:]]*(and|but|or|nor|so|then|while|whereas)?[[:space:]]*//I")
+  if printf '%s\n' "$c" | grep -qiE '^(every|each|any|no)\b[[:space:]]+[a-z]+[[:space:]]+[a-z]+'; then return 0; fi
+  if printf '%s\n' "$c" | grep -qiE '^(all|none|nothing|both)\b[[:space:]]+[a-z]+'; then
+    res=$(printf '%s\n' "$c" | sed -E 's/^(all|none|nothing|both)\b[[:space:]]*//')
+    # Lexlead pass (2026-10-10): the chain was {0,2} any words before a
+    # nounplre word, so both edges were real: a three-word noun phrase fell
+    # back to the coreference path (all clean new fresh runs failed), and the
+    # noun had to be in the nounplre lexicon (all green cohorts failed). The
+    # chain is now unbounded in length but shape-bound: every word before the
+    # noun must be adjective-shaped (participle or a listed adjective), so a
+    # verb or preposition ("all failed in the runs I checked") still does not
+    # read as a noun modifier, and the noun is any plural noun.
+    if printf '%s\n' "$res" | grep -qiE "^[[:space:]]*($modshape[[:space:]]+)*($plnoun)\b"; then return 0; fi
+    if printf '%s\n' "$res" | grep -qiE "$coref_self"; then return 0; fi
+    # Adjudication 2026-10-11 (adjrel m-adjkept/known/made/set, lexedge
+    # m-{built,read,sent,shown}-* and m-known-rules): a predicate-list word used
+    # as a noun modifier ("all kept records failed") matched the bare-predicate
+    # test below, so the clause skipped as coreferential and the universal went
+    # unjudged. When the word is followed by a plural noun it is the modifier
+    # reading: the noun names the domain and the clause is judged on its own.
+    # Flip adjudication 2026-10-11 (lexedge a-ran-tests): the first cut read
+    # verb plus object (all ran tests) as a modifier and named a domain the
+    # checked sample does not range over. The modifier reading needs a main
+    # predicate trailing the noun (all kept records failed); without one the
+    # bare subject inherits the checked set like all failed does.
+    if printf '%s\n' "$res" | grep -qiE "^(${predre})[[:space:]]+(${plnoun})[[:space:]]+(${predre})\b"; then return 0; fi
+    printf '%s\n' "$c" | grep -qiE "^(all|none|nothing|both)\b[[:space:]]+${predre}\b" || return 0
+  fi
+  return 1
+}
+bare_scope() {
+  bound_in "$1" || return 1
+  rem=$(printf '%s\n' "$1" | sed -E "s/$bre//gI; s/$countre//gI; s/\\b($filler)\\b//gI; s/[[:space:]]+//g")
+  [ -z "$rem" ]
+}
+
+bad=0
+n=0
+while IFS= read -r line || [ -n "$line" ]; do
+  n=$((n+1))
+  t="${line#evidence:}"
+  t="${t#evidence }"
+  t="${t#"${t%%[![:space:]]*}"}"
+  case "$t" in
+    ''|file\ *|contains\ *|absent\ *|cmd\ *) continue ;;
+  esac
+  if printf '%s\n' "$line" | grep -qiE "$normre"; then continue; fi
+  # The line label (Lesson:/Rule:/Habit:/Norm:) names the line type and is not
+  # claim content; strip it before judging so a fronted bound phrase still
+  # reads as a bare scope marker ("Lesson: in the 6 fixtures checked, ..." must
+  # accept). Verified after the fix against a re-break corpus in edge/labelbreak.
+  body=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*(lesson|rule|habit|norm)[[:space:]]*:[[:space:]]*//I')
+  linebad=0
+  while IFS= read -r sent || [ -n "$sent" ]; do
+    [ -z "${sent//[[:space:]]/}" ] && continue
+    # Appositive trailing count (soft-spot fix 2026-10-10, counttrail corpus):
+    # a count trailing its noun is still a count of the things checked. When a
+    # count phrase (N of them, N in total, a parenthesized N) trails a plural
+    # check noun and a bare universal with a listed verb follows it, the count
+    # bounds the sentence even though it trails the noun. It bounds only that
+    # shape: a sentence carrying an adverbial quantifier of its own is judged by
+    # the clause loop below, where a trailing count sitting in its own clause
+    # does not reach the quantifier clause.
+    if printf '%s\n' "$sent" | grep -qiE "$appre" && ! printf '%s\n' "$sent" | grep -qiE "$advre"; then
+      continue
+    fi
+    clauses=$(printf '%s\n' "$sent" | sed -E 's/\bso far\b/SOFARBOUND/gI; s/\bfrom then on\b/FROMTHENONG/gI; s/\bso that\b/and/gI; s/\bso as\b/and/gI; s/[;,]/|/g; s/[[:space:]](and|but|or|nor)[[:space:]]/|/gI; s/ (so|then|while|whereas) (the|a|an|this|that|these|those|it|they|we|I|he|she|my|our|your|its|every|each|any|all|no|none|nothing|both) /|\2 /gI; s/[[:space:]](so|then|while|whereas)[[:space:]]/|/gI' | tr '|' '\n' | sed 's/SOFARBOUND/so far/g; s/FROMTHENONG/from then on/g')
+    sibbound=0
+    while IFS= read -r c || [ -n "$c" ]; do
+      [ -z "${c//[[:space:]]/}" ] && continue
+      if bound_in "$c"; then sibbound=1; fi
+    done <<CLAUSES
+$clauses
+CLAUSES
+    # Barewidening fix 2026-10-10: the bare marker's shield reaches only the
+    # clauses at or after it, and a shielded clause that widens past the checked
+    # set (elsewhere, everywhere, anywhere, ever, again, ...) is judged on its
+    # own, so "in the 3 cases checked, the gate refused and every run failed
+    # elsewhere" is refused while "in the 3 cases checked, the gate always
+    # refused" still accepts. The residual this comment named ("a shielded
+    # clause that names its own domain still inherits the marker's scope") is
+    # stale: domain_self refuses that shape today (probe-domainself.md refuses).
+    # The residual the sothat corpus forced is subordination: "so that" and
+    # "so as" split but leave a stray "that"/"as" word at the front of the
+    # purpose clause, and the coreference rule reads no bare pronoun there, so
+    # two bounded accepts were refused. They are now rewritten to "and" before
+    # the split, so the purpose clause is judged like any coordinated clause and
+    # a bound sitting after it still bounds that clause (sothat/).
+    bare_idx=-1
+    bi=0
+    while IFS= read -r c || [ -n "$c" ]; do
+      [ -z "${c//[[:space:]]/}" ] && continue
+      bi=$((bi+1))
+      if [ "$bare_idx" -lt 0 ] && bare_scope "$c"; then bare_idx=$bi; fi
+    done <<CLAUSES
+$clauses
+CLAUSES
+    ci=0
+    while IFS= read -r c || [ -n "$c" ]; do
+      [ -z "${c//[[:space:]]/}" ] && continue
+      ci=$((ci+1))
+      hits=$(hits_of "$c")
+      [ -z "$hits" ] && continue
+      bound_in "$c" && continue
+      if [ "$bare_idx" -ge 1 ] && [ "$ci" -ge "$bare_idx" ] && ! printf '%s\n' "$c" | grep -qiE "$widere" && ! domain_self "$c"; then continue; fi
+      if [ "$sibbound" -eq 1 ] && coref_ok "$c"; then continue; fi
+      # Adjudication 2026-10-11 (sharedvp a1/a2/a4, softspot a-andverb): a
+      # continuation clause made by the seam split keeps its subject from the
+      # sibling ("the 3 fixtures I built and re-ran all pass"), so a bare
+      # universal with a listed predicate ending that clause ranges over the
+      # sibling's checked set and is not a fresh claim. A widening quantifier
+      # ("and re-ran never pass") is not this shape and stays judged.
+      if [ "$sibbound" -eq 1 ] && printf '%s\n' "$c" | grep -qiE "[[:space:]](none|both|nothing|all)[[:space:]]+($predre)[[:space:]]*$"; then continue; fi
+      printf 'line %s: unbounded universal (%s) in: %s\n' "$n" "$(printf '%s' "$hits" | sed 's/ $//')" "$line"
+      printf 'bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).\n'
+      linebad=1
+    done <<CLAUSES
+$clauses
+CLAUSES
+  done <<SENTS
+$(printf '%s\n' "$body" | tr '.!?' '\n')
+SENTS
+  if [ "$linebad" -ne 0 ]; then bad=1; fi
+done < "$f"
+if [ "$bad" -ne 0 ]; then exit 1; fi
+exit 0

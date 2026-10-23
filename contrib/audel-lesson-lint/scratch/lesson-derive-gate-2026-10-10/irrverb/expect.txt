@@ -1,0 +1,15 @@
+a-irr-held.md accept
+a-irr-grew.md accept
+a-irr-shown.md accept
+a-irr-taken.md accept
+a-irr-written.md accept
+m-irr-objbroke.md refuse
+m-irr-objtook.md refuse
+ctl-grew.md accept
+ctl-read.md accept
+ctl-built.md accept
+a-redpass-measured.md accept
+a-redpass-named.md accept
+m-objpred.md refuse
+m-objpred2.md refuse
+m-plain.md refuse

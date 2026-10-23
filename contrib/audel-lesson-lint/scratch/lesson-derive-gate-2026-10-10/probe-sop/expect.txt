@@ -1,0 +1,7 @@
+p1.md	refuse
+p2.md	refuse
+p3.md	refuse
+p4.md	refuse
+p5.md	accept
+p6.md	refuse
+p7.md	accept

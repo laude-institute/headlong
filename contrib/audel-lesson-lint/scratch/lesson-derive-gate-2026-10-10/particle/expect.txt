@@ -1,0 +1,12 @@
+a-broughtonline.md accept
+a-flungbare.md accept
+a-flungopen.md accept
+a-keepphrasal-main.md accept
+a-outdrove2.md accept
+a-setinmotion.md accept
+a-tookroot.md accept
+m-adjopen.md refuse
+m-presentverb-nomain.md refuse
+m-shapenopast.md refuse
+m-tookroot-present.md refuse
+m-toolsnoun.md refuse

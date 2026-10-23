@@ -1,0 +1,2 @@
+Lesson: the fixture suite stayed green after the patch.
+evidence cmd bash -n bin/lesson-overreach-lint|always

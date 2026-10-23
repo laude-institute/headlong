@@ -1,0 +1,14 @@
+a-flungopen.md accept
+a-pp-det.md accept
+a-pp-plural.md accept
+a-setatbay.md accept
+a-setinmotion.md accept
+a-tookroot.md accept
+g-hiddenobj-aftermw.md accept
+g-hiddenobj-afterpart.md accept
+g-hiddenobj-bareplural.md accept
+g-hiddenobj-plain.md accept
+m-adjopen.md refuse
+m-flungmetal.md refuse
+m-realobj-before.md refuse
+m-shapenopast.md refuse

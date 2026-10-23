@@ -1,0 +1,31 @@
+ok   r-never-ever       want=1 got=1
+ok   r-always-fact      want=1 got=1
+ok   r-upper            want=1 got=1
+GAP  r-nocircumstance   want=refuse got=accept: under no circumstances should a lesson skip the gate
+GAP  r-innocase         want=refuse got=accept: in no case did the fix fail
+GAP  r-nomatterwhat     want=refuse got=accept: the gate holds no matter what the draft contains
+ok   r-alltimes         want=1 got=1
+GAP  r-invariably       want=refuse got=accept: the re-derivation gate is invariably right
+GAP  r-withoutfail      want=refuse got=accept: the harness passes without fail
+GAP  r-nolesson         want=refuse got=accept: no lesson may skip the gate
+ok   r-eachandevery     want=1 got=1
+ok   r-everyrespect     want=1 got=1
+GAP  r-acrossboard      want=refuse got=accept: the fix holds across the board
+GAP  r-twosent          want=refuse got=accept: in the 3 cases i checked the gate refused, and the fix always holds
+ok   r-normshield       want=1 got=1
+ok   r-nonewline        want=1 got=1
+FP   p-count-all        want=accept got=refuse rc=1
+       line 1: unbounded universal (all) in: the 35 fixtures in the fold suite all pass
+       bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+ok   p-count-all-pre    want=0 got=0
+ok   p-count-all-post   want=0 got=0
+ok   p-install          want=0 got=0
+ok   p-recall           want=0 got=0
+ok   p-balloon          want=0 got=0
+ok   p-bounded          want=0 got=0
+ok   p-norm             want=0 got=0
+ok   p-calls            want=0 got=0
+ok   p-evid-quant       want=0 got=0
+ok   p-crlf             want=0 got=0
+---
+pass=18 gaps=8 fp=1 total=27

@@ -1,0 +1,29 @@
+ok   file scratch/lesson-derive-gate-2026-10-10/relcl/pre.txt
+ok   file scratch/lesson-derive-gate-2026-10-10/relcl/post.txt
+ok   contains scratch/lesson-derive-gate-2026-10-10/relcl/runall.txt
+ok   contains bin/lesson-overreach-lint
+ok   cmd
+ok   cmd
+line 19: unbounded universal (all) in: noun ("all runs verified the output") is the clause predicate and bounds
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 20: unbounded universal (nothing) in: nothing. Three re-break probes confirm the boundary (relcl/m-rebreak-*:
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 21: unbounded universal (all) in: unlisted past verb, reduced passive relative, and a future modal all stay
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 26: unbounded universal (nothing) in: the helper silently matched nothing and every fixture looked unchanged on the
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 26: unbounded universal (every) in: the helper silently matched nothing and every fixture looked unchanged on the
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 28: unbounded universal (at all times) in: quantifier phrase "at all times" as a domain noun and fired a false bound,
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 30: unbounded universal (cannot) in: now blanked before the shape test (a bound cannot come from the words of the
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 33: unbounded universal (all) in: Suite scratch/lesson-derive-gate-2026-10-10/run-all.sh covers the relcl
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 34: unbounded universal (both) in: corpus now (12 corpora), pass=200 fail=2, both reds pre-existing and refused
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 40: unbounded universal ( no relative) in: lexical, so a past verb outside it ("the sweep clipped") reads as no relative
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 41: unbounded universal (all) in: verb, and a relative clause whose subject is itself a quantifier ("all
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+REFUSED reach: unbounded claim in lesson text

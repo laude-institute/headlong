@@ -1,0 +1,211 @@
++ set -u
++ f=/opt/shellm/app/.identities/audel/workdir/scratch/lesson-derive-gate-2026-10-10/sharedvp/a3.md
++ '[' -z /opt/shellm/app/.identities/audel/workdir/scratch/lesson-derive-gate-2026-10-10/sharedvp/a3.md ']'
++ '[' '!' -f /opt/shellm/app/.identities/audel/workdir/scratch/lesson-derive-gate-2026-10-10/sharedvp/a3.md ']'
++ qre='\b(never|always|none|nothing|no one|every|everyone|everything|everywhere|all|any|anyone|anything|anywhere|each|whenever|wherever|without exception|universally|exclusively|cannot|impossible|nowhere|invariably|inevitably|without fail|at all times|across the board|in every respect|each and every)\b'
++ nre='\b(under no circumstances|in no case|in no instance|no matter (what|how|when|where|who)|without exception|in all cases|at all times)\b'
++ bare_nore='(^|[[:space:]])no[[:space:]]+[a-z]+'
++ bre='\b(in the [0-9a-zA-Z-]+ (cases|fixtures|samples|runs|steps|checks|instances|windows) (i |we )?(checked|verified|ran|saw|read)|among the|so far|in (this|these|my) (case|cases|sample|samples|window|windows|checks|reading|tests?)|on (this|that) (machine|build|day|run|branch)|as (checked|verified|observed) here|[0-9]+ of [0-9]+|each of the|[0-9]+ of the [0-9]+|proves only that|says nothing about|all (the )?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)|every (one of (the )?)?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen))\b'
++ numre='([0-9]{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)'
++ nounplre='(cases|fixtures|samples|runs|steps|checks|instances|windows|builds|machines|branches|tests|readings|days|attempts|examples|records|sessions|files|notes|papers|mutants|drafts|lines|claims|items|entries|rounds|fixes|games|tasks|rows|sends|probes|evidence|verdicts|sentences|sections|findings|loops|rules|lessons|skills|messages|commits|pulls|requests|windows)'
++ modre='(of|in|from|among|the|a|an|my|our|these|those|new|fresh|total|green|checked|verified|ran|saw|read|built|recorded|named|listed|individual|separate|distinct|full|whole|evidence|deepen|folded|real|extra)'
++ countre='\b([0-9]{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)\b([[:space:]]+(of|in|from|among|the|a|an|my|our|these|those|new|fresh|total|green|checked|verified|ran|saw|read|built|recorded|named|listed|individual|separate|distinct|full|whole|evidence|deepen|folded|real|extra)){0,3}[[:space:]]+\b(cases|fixtures|samples|runs|steps|checks|instances|windows|builds|machines|branches|tests|readings|days|attempts|examples|records|sessions|files|notes|papers|mutants|drafts|lines|claims|items|entries|rounds|fixes|games|tasks|rows|sends|probes|evidence|verdicts|sentences|sections|findings|loops|rules|lessons|skills|messages|commits|pulls|requests|windows)\b'
++ filler='runs?|cases?|checks?|windows?|fixtures?|samples?|steps?|instances?|days?|builds?|machines?|branches?|tests?|readings?|checked|verified|ran|saw|read|the|a|an|of|in|on|at|to|and|or|but|so|then|i|we|my|our|among'
++ tailre='(all|none|nothing|both)[[:space:]]+(pass|passes|passed|succeed|succeeded|clear|cleared|hold|held|fail|failed|break|broke|work|worked|stall|stalled|move|moved|change|changed|stop|stopped|land|landed|send|sent|arrive|arrived|run|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|stayed|remained|refused|accepted|verified|checked|green|clean|fine|open|closed|stale)'
++ appre='\b(cases|fixtures|samples|runs|steps|checks|instances|windows|builds|machines|branches|tests|readings|days|attempts|examples|records|sessions|files|notes|papers|mutants|drafts|lines|claims|items|entries|rounds|fixes|games|tasks|rows|sends|probes|evidence|verdicts|sentences|sections|findings|loops|rules|lessons|skills|messages|commits|pulls|requests|windows)\b[^.;!?]{0,40}\b([0-9]{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)\b[[:space:]]+(of them|in total)\b[^.;!?]{0,40}\b(all|none|nothing|both)[[:space:]]+(pass|passes|passed|succeed|succeeded|clear|cleared|hold|held|fail|failed|break|broke|work|worked|stall|stalled|move|moved|change|changed|stop|stopped|land|landed|send|sent|arrive|arrived|run|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|stayed|remained|refused|accepted|verified|checked|green|clean|fine|open|closed|stale)\b|\b(cases|fixtures|samples|runs|steps|checks|instances|windows|builds|machines|branches|tests|readings|days|attempts|examples|records|sessions|files|notes|papers|mutants|drafts|lines|claims|items|entries|rounds|fixes|games|tasks|rows|sends|probes|evidence|verdicts|sentences|sections|findings|loops|rules|lessons|skills|messages|commits|pulls|requests|windows)\b[[:space:]]*\([[:space:]]*([0-9]{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)[[:space:]]*\)[[:space:]]*\b(all|none|nothing|both)[[:space:]]+(pass|passes|passed|succeed|succeeded|clear|cleared|hold|held|fail|failed|break|broke|work|worked|stall|stalled|move|moved|change|changed|stop|stopped|land|landed|send|sent|arrive|arrived|run|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|stayed|remained|refused|accepted|verified|checked|green|clean|fine|open|closed|stale)\b'
++ advre='\b(always|never|cannot|impossible|invariably|inevitably|without fail|at all times|universally|exclusively|everywhere|anywhere|nowhere|each and every|every|each|anyone|anything|any|without exception)\b'
++ normre='^[[:space:]]*(rule|habit|norm)[[:space:]]*:'
++ predre='(failed|passed|broke|worked|held|moved|changed|stopped|stuck|landed|merged|sent|arrived|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|cleared|clean|green|red|fine|broken|fixed|open|closed|stale|new|old|slow|fast|wrong|right|late|early|quiet|loud|clear|fuzzy|stable|gone|done|come|become|taken|given|shown|known|grown|written|fallen|risen|seen|won|lost|felt|built|put|cut|set|hit|read|led|fed|of (them|these|those)|[a-z]+(ed|en))'
++ corefre='^[[:space:]]*(and|but|or|nor|so|then|while|whereas)?[[:space:]]*(none|both|nothing|all)([[:space:]]+(failed|passed|broke|worked|held|moved|changed|stopped|stuck|landed|merged|sent|arrived|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|cleared|clean|green|red|fine|broken|fixed|open|closed|stale|new|old|slow|fast|wrong|right|late|early|quiet|loud|clear|fuzzy|stable|gone|done|come|become|taken|given|shown|known|grown|written|fallen|risen|seen|won|lost|felt|built|put|cut|set|hit|read|led|fed|of (them|these|those)|[a-z]+(ed|en)))([[:space:]]+[a-z]+){0,6}[[:space:]]*$'
++ widere='(^|[[:space:],;])(elsewhere|else|other|others|anywhere|everywhere|globally|worldwide|throughout|in general|ever|again|alike|instead|outside|beyond|excluded|exempt|later|afterward|afterwards|thereafter|from then on|from now on|going forward|eventually|henceforth|subsequently|in future|in the future|in perpetuity)([[:space:],.;]|$)'
++ coref_widen='(^|[[:space:],;])(elsewhere|else|other|others|anywhere|everywhere|globally|worldwide|throughout|in general|ever|again|alike|instead|outside|beyond|excluded|exempt|later|afterward|afterwards|thereafter|from then on|from now on|going forward|eventually|henceforth|subsequently|in future|in the future|in perpetuity)([[:space:],.;]|$)'
++ coref_self='\b(every|each|any|none|nothing|all|no)[[:space:]]+[a-z]+'
++ bad=0
++ n=0
++ IFS=
++ read -r line
++ n=1
++ t='Lesson: in the 6 fixtures checked, the lint refused and all held.'
++ t='Lesson: in the 6 fixtures checked, the lint refused and all held.'
++ t='Lesson: in the 6 fixtures checked, the lint refused and all held.'
++ case "$t" in
++ printf '%s\n' 'Lesson: in the 6 fixtures checked, the lint refused and all held.'
++ grep -qiE '^[[:space:]]*(rule|habit|norm)[[:space:]]*:'
+++ printf '%s\n' 'Lesson: in the 6 fixtures checked, the lint refused and all held.'
+++ sed -E 's/^[[:space:]]*(lesson|rule|habit|norm)[[:space:]]*:[[:space:]]*//I'
++ body='in the 6 fixtures checked, the lint refused and all held.'
++ linebad=0
+++ printf '%s\n' 'in the 6 fixtures checked, the lint refused and all held.'
+++ tr '.!?' '\n'
++ IFS=
++ read -r sent
++ '[' -z inthe6fixtureschecked,thelintrefusedandallheld ']'
++ printf '%s\n' 'in the 6 fixtures checked, the lint refused and all held'
++ grep -qiE '\b(cases|fixtures|samples|runs|steps|checks|instances|windows|builds|machines|branches|tests|readings|days|attempts|examples|records|sessions|files|notes|papers|mutants|drafts|lines|claims|items|entries|rounds|fixes|games|tasks|rows|sends|probes|evidence|verdicts|sentences|sections|findings|loops|rules|lessons|skills|messages|commits|pulls|requests|windows)\b[^.;!?]{0,40}\b([0-9]{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)\b[[:space:]]+(of them|in total)\b[^.;!?]{0,40}\b(all|none|nothing|both)[[:space:]]+(pass|passes|passed|succeed|succeeded|clear|cleared|hold|held|fail|failed|break|broke|work|worked|stall|stalled|move|moved|change|changed|stop|stopped|land|landed|send|sent|arrive|arrived|run|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|stayed|remained|refused|accepted|verified|checked|green|clean|fine|open|closed|stale)\b|\b(cases|fixtures|samples|runs|steps|checks|instances|windows|builds|machines|branches|tests|readings|days|attempts|examples|records|sessions|files|notes|papers|mutants|drafts|lines|claims|items|entries|rounds|fixes|games|tasks|rows|sends|probes|evidence|verdicts|sentences|sections|findings|loops|rules|lessons|skills|messages|commits|pulls|requests|windows)\b[[:space:]]*\([[:space:]]*([0-9]{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)[[:space:]]*\)[[:space:]]*\b(all|none|nothing|both)[[:space:]]+(pass|passes|passed|succeed|succeeded|clear|cleared|hold|held|fail|failed|break|broke|work|worked|stall|stalled|move|moved|change|changed|stop|stopped|land|landed|send|sent|arrive|arrived|run|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|stayed|remained|refused|accepted|verified|checked|green|clean|fine|open|closed|stale)\b'
+++ printf '%s\n' 'in the 6 fixtures checked, the lint refused and all held'
+++ sed -E 's/\bso far\b/SOFARBOUND/gI; s/\bfrom then on\b/FROMTHENONG/gI; s/\bso that\b/and/gI; s/\bso as\b/and/gI; s/[;,]/|/g; s/[[:space:]](and|but|or|nor)[[:space:]]/|/gI; s/ (so|then|while|whereas) (the|a|an|this|that|these|those|it|they|we|I|he|she|my|our|your|its|every|each|any|all|no|none|nothing|both) /|\2 /gI; s/[[:space:]](so|then|while|whereas)[[:space:]]/|/gI'
+++ tr '|' '\n'
+++ sed 's/SOFARBOUND/so far/g; s/FROMTHENONG/from then on/g'
++ clauses='in the 6 fixtures checked
+ the lint refused
+all held'
++ sibbound=0
++ IFS=
++ read -r c
++ '[' -z inthe6fixtureschecked ']'
++ bound_in 'in the 6 fixtures checked'
++ printf '%s\n' 'in the 6 fixtures checked'
++ grep -qiE '\b(in the [0-9a-zA-Z-]+ (cases|fixtures|samples|runs|steps|checks|instances|windows) (i |we )?(checked|verified|ran|saw|read)|among the|so far|in (this|these|my) (case|cases|sample|samples|window|windows|checks|reading|tests?)|on (this|that) (machine|build|day|run|branch)|as (checked|verified|observed) here|[0-9]+ of [0-9]+|each of the|[0-9]+ of the [0-9]+|proves only that|says nothing about|all (the )?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)|every (one of (the )?)?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen))\b'
++ return 0
++ sibbound=1
++ IFS=
++ read -r c
++ '[' -z thelintrefused ']'
++ bound_in ' the lint refused'
++ printf '%s\n' ' the lint refused'
++ grep -qiE '\b(in the [0-9a-zA-Z-]+ (cases|fixtures|samples|runs|steps|checks|instances|windows) (i |we )?(checked|verified|ran|saw|read)|among the|so far|in (this|these|my) (case|cases|sample|samples|window|windows|checks|reading|tests?)|on (this|that) (machine|build|day|run|branch)|as (checked|verified|observed) here|[0-9]+ of [0-9]+|each of the|[0-9]+ of the [0-9]+|proves only that|says nothing about|all (the )?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)|every (one of (the )?)?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen))\b'
++ printf '%s\n' ' the lint refused'
++ grep -qiE '\b([0-9]{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)\b([[:space:]]+(of|in|from|among|the|a|an|my|our|these|those|new|fresh|total|green|checked|verified|ran|saw|read|built|recorded|named|listed|individual|separate|distinct|full|whole|evidence|deepen|folded|real|extra)){0,3}[[:space:]]+\b(cases|fixtures|samples|runs|steps|checks|instances|windows|builds|machines|branches|tests|readings|days|attempts|examples|records|sessions|files|notes|papers|mutants|drafts|lines|claims|items|entries|rounds|fixes|games|tasks|rows|sends|probes|evidence|verdicts|sentences|sections|findings|loops|rules|lessons|skills|messages|commits|pulls|requests|windows)\b'
++ return 1
++ IFS=
++ read -r c
++ '[' -z allheld ']'
++ bound_in 'all held'
++ printf '%s\n' 'all held'
++ grep -qiE '\b(in the [0-9a-zA-Z-]+ (cases|fixtures|samples|runs|steps|checks|instances|windows) (i |we )?(checked|verified|ran|saw|read)|among the|so far|in (this|these|my) (case|cases|sample|samples|window|windows|checks|reading|tests?)|on (this|that) (machine|build|day|run|branch)|as (checked|verified|observed) here|[0-9]+ of [0-9]+|each of the|[0-9]+ of the [0-9]+|proves only that|says nothing about|all (the )?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)|every (one of (the )?)?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen))\b'
++ printf '%s\n' 'all held'
++ grep -qiE '\b([0-9]{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)\b([[:space:]]+(of|in|from|among|the|a|an|my|our|these|those|new|fresh|total|green|checked|verified|ran|saw|read|built|recorded|named|listed|individual|separate|distinct|full|whole|evidence|deepen|folded|real|extra)){0,3}[[:space:]]+\b(cases|fixtures|samples|runs|steps|checks|instances|windows|builds|machines|branches|tests|readings|days|attempts|examples|records|sessions|files|notes|papers|mutants|drafts|lines|claims|items|entries|rounds|fixes|games|tasks|rows|sends|probes|evidence|verdicts|sentences|sections|findings|loops|rules|lessons|skills|messages|commits|pulls|requests|windows)\b'
++ return 1
++ IFS=
++ read -r c
++ '[' -n '' ']'
++ bare_idx=-1
++ bi=0
++ IFS=
++ read -r c
++ '[' -z inthe6fixtureschecked ']'
++ bi=1
++ '[' -1 -lt 0 ']'
++ bare_scope 'in the 6 fixtures checked'
++ bound_in 'in the 6 fixtures checked'
++ printf '%s\n' 'in the 6 fixtures checked'
++ grep -qiE '\b(in the [0-9a-zA-Z-]+ (cases|fixtures|samples|runs|steps|checks|instances|windows) (i |we )?(checked|verified|ran|saw|read)|among the|so far|in (this|these|my) (case|cases|sample|samples|window|windows|checks|reading|tests?)|on (this|that) (machine|build|day|run|branch)|as (checked|verified|observed) here|[0-9]+ of [0-9]+|each of the|[0-9]+ of the [0-9]+|proves only that|says nothing about|all (the )?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)|every (one of (the )?)?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen))\b'
++ return 0
+++ printf '%s\n' 'in the 6 fixtures checked'
+++ sed -E 's/\b(in the [0-9a-zA-Z-]+ (cases|fixtures|samples|runs|steps|checks|instances|windows) (i |we )?(checked|verified|ran|saw|read)|among the|so far|in (this|these|my) (case|cases|sample|samples|window|windows|checks|reading|tests?)|on (this|that) (machine|build|day|run|branch)|as (checked|verified|observed) here|[0-9]+ of [0-9]+|each of the|[0-9]+ of the [0-9]+|proves only that|says nothing about|all (the )?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)|every (one of (the )?)?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen))\b//gI; s/\b([0-9]{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)\b([[:space:]]+(of|in|from|among|the|a|an|my|our|these|those|new|fresh|total|green|checked|verified|ran|saw|read|built|recorded|named|listed|individual|separate|distinct|full|whole|evidence|deepen|folded|real|extra)){0,3}[[:space:]]+\b(cases|fixtures|samples|runs|steps|checks|instances|windows|builds|machines|branches|tests|readings|days|attempts|examples|records|sessions|files|notes|papers|mutants|drafts|lines|claims|items|entries|rounds|fixes|games|tasks|rows|sends|probes|evidence|verdicts|sentences|sections|findings|loops|rules|lessons|skills|messages|commits|pulls|requests|windows)\b//gI; s/\b(runs?|cases?|checks?|windows?|fixtures?|samples?|steps?|instances?|days?|builds?|machines?|branches?|tests?|readings?|checked|verified|ran|saw|read|the|a|an|of|in|on|at|to|and|or|but|so|then|i|we|my|our|among)\b//gI; s/[[:space:]]+//g'
++ rem=
++ '[' -z '' ']'
++ bare_idx=1
++ IFS=
++ read -r c
++ '[' -z thelintrefused ']'
++ bi=2
++ '[' 1 -lt 0 ']'
++ IFS=
++ read -r c
++ '[' -z allheld ']'
++ bi=3
++ '[' 1 -lt 0 ']'
++ IFS=
++ read -r c
++ '[' -n '' ']'
++ ci=0
++ IFS=
++ read -r c
++ '[' -z inthe6fixtureschecked ']'
++ ci=1
+++ hits_of 'in the 6 fixtures checked'
+++ sort -u
+++ printf '%s\n' 'in the 6 fixtures checked'
+++ grep -ioE '\b(never|always|none|nothing|no one|every|everyone|everything|everywhere|all|any|anyone|anything|anywhere|each|whenever|wherever|without exception|universally|exclusively|cannot|impossible|nowhere|invariably|inevitably|without fail|at all times|across the board|in every respect|each and every)\b'
+++ tr '\n' ' '
+++ printf '%s\n' 'in the 6 fixtures checked'
+++ grep -ioE '\b(under no circumstances|in no case|in no instance|no matter (what|how|when|where|who)|without exception|in all cases|at all times)\b'
+++ printf '%s\n' 'in the 6 fixtures checked'
+++ grep -ioE '(^|[[:space:]])no[[:space:]]+[a-z]+'
++ hits=
++ '[' -z '' ']'
++ continue
++ IFS=
++ read -r c
++ '[' -z thelintrefused ']'
++ ci=2
+++ hits_of ' the lint refused'
+++ sort -u
+++ printf '%s\n' ' the lint refused'
+++ grep -ioE '\b(never|always|none|nothing|no one|every|everyone|everything|everywhere|all|any|anyone|anything|anywhere|each|whenever|wherever|without exception|universally|exclusively|cannot|impossible|nowhere|invariably|inevitably|without fail|at all times|across the board|in every respect|each and every)\b'
+++ tr '\n' ' '
+++ printf '%s\n' ' the lint refused'
+++ grep -ioE '\b(under no circumstances|in no case|in no instance|no matter (what|how|when|where|who)|without exception|in all cases|at all times)\b'
+++ printf '%s\n' ' the lint refused'
+++ grep -ioE '(^|[[:space:]])no[[:space:]]+[a-z]+'
++ hits=
++ '[' -z '' ']'
++ continue
++ IFS=
++ read -r c
++ '[' -z allheld ']'
++ ci=3
+++ hits_of 'all held'
+++ sort -u
+++ printf '%s\n' 'all held'
+++ grep -ioE '\b(never|always|none|nothing|no one|every|everyone|everything|everywhere|all|any|anyone|anything|anywhere|each|whenever|wherever|without exception|universally|exclusively|cannot|impossible|nowhere|invariably|inevitably|without fail|at all times|across the board|in every respect|each and every)\b'
+++ tr '\n' ' '
+++ printf '%s\n' 'all held'
+++ grep -ioE '\b(under no circumstances|in no case|in no instance|no matter (what|how|when|where|who)|without exception|in all cases|at all times)\b'
+++ printf '%s\n' 'all held'
+++ grep -ioE '(^|[[:space:]])no[[:space:]]+[a-z]+'
++ hits='all '
++ '[' -z 'all ' ']'
++ bound_in 'all held'
++ printf '%s\n' 'all held'
++ grep -qiE '\b(in the [0-9a-zA-Z-]+ (cases|fixtures|samples|runs|steps|checks|instances|windows) (i |we )?(checked|verified|ran|saw|read)|among the|so far|in (this|these|my) (case|cases|sample|samples|window|windows|checks|reading|tests?)|on (this|that) (machine|build|day|run|branch)|as (checked|verified|observed) here|[0-9]+ of [0-9]+|each of the|[0-9]+ of the [0-9]+|proves only that|says nothing about|all (the )?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)|every (one of (the )?)?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen))\b'
++ printf '%s\n' 'all held'
++ grep -qiE '\b([0-9]{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)\b([[:space:]]+(of|in|from|among|the|a|an|my|our|these|those|new|fresh|total|green|checked|verified|ran|saw|read|built|recorded|named|listed|individual|separate|distinct|full|whole|evidence|deepen|folded|real|extra)){0,3}[[:space:]]+\b(cases|fixtures|samples|runs|steps|checks|instances|windows|builds|machines|branches|tests|readings|days|attempts|examples|records|sessions|files|notes|papers|mutants|drafts|lines|claims|items|entries|rounds|fixes|games|tasks|rows|sends|probes|evidence|verdicts|sentences|sections|findings|loops|rules|lessons|skills|messages|commits|pulls|requests|windows)\b'
++ return 1
++ '[' 1 -ge 1 ']'
++ '[' 3 -ge 1 ']'
++ printf '%s\n' 'all held'
++ grep -qiE '(^|[[:space:],;])(elsewhere|else|other|others|anywhere|everywhere|globally|worldwide|throughout|in general|ever|again|alike|instead|outside|beyond|excluded|exempt|later|afterward|afterwards|thereafter|from then on|from now on|going forward|eventually|henceforth|subsequently|in future|in the future|in perpetuity)([[:space:],.;]|$)'
++ domain_self 'all held'
+++ printf '%s\n' 'all held'
+++ sed -E 's/^[[:space:]]*(and|but|or|nor|so|then|while|whereas)?[[:space:]]*//I'
++ c='all held'
++ printf '%s\n' 'all held'
++ grep -qiE '^(every|each|any|no)\b[[:space:]]+[a-z]+[[:space:]]+[a-z]+'
++ printf '%s\n' 'all held'
++ grep -qiE '^(all|none|nothing|both)\b[[:space:]]+[a-z]+'
+++ printf '%s\n' 'all held'
+++ sed -E 's/^(all|none|nothing|both)\b[[:space:]]*//'
++ res=held
++ printf '%s\n' held
++ grep -qiE '^[[:space:]]*(new|old|fresh|later|other)?[[:space:]]*((cases|fixtures|samples|runs|steps|checks|instances|windows|builds|machines|branches|tests|readings|days|attempts|examples|records|sessions|files|notes|papers|mutants|drafts|lines|claims|items|entries|rounds|fixes|games|tasks|rows|sends|probes|evidence|verdicts|sentences|sections|findings|loops|rules|lessons|skills|messages|commits|pulls|requests|windows))\b'
++ printf '%s\n' held
++ grep -qiE '\b(every|each|any|none|nothing|all|no)[[:space:]]+[a-z]+'
++ printf '%s\n' 'all held'
++ grep -qiE '^(all|none|nothing|both)\b[[:space:]]+(failed|passed|broke|worked|held|moved|changed|stopped|stuck|landed|merged|sent|arrived|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|cleared|clean|green|red|fine|broken|fixed|open|closed|stale|new|old|slow|fast|wrong|right|late|early|quiet|loud|clear|fuzzy|stable|gone|done|come|become|taken|given|shown|known|grown|written|fallen|risen|seen|won|lost|felt|built|put|cut|set|hit|read|led|fed|of' '(them|these|those)|[a-z]+(ed|en))\b'
+grep: Unmatched ( or \(
++ return 0
++ '[' 1 -eq 1 ']'
++ coref_ok 'all held'
++ printf '%s\n' 'all held'
++ grep -qiE '^[[:space:]]*(and|but|or|nor|so|then|while|whereas)?[[:space:]]*(none|both|nothing|all)([[:space:]]+(failed|passed|broke|worked|held|moved|changed|stopped|stuck|landed|merged|sent|arrived|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|cleared|clean|green|red|fine|broken|fixed|open|closed|stale|new|old|slow|fast|wrong|right|late|early|quiet|loud|clear|fuzzy|stable|gone|done|come|become|taken|given|shown|known|grown|written|fallen|risen|seen|won|lost|felt|built|put|cut|set|hit|read|led|fed|of (them|these|those)|[a-z]+(ed|en)))([[:space:]]+[a-z]+){0,6}[[:space:]]*$'
++ printf '%s\n' 'all held'
++ grep -qiE '(^|[[:space:],;])(elsewhere|else|other|others|anywhere|everywhere|globally|worldwide|throughout|in general|ever|again|alike|instead|outside|beyond|excluded|exempt|later|afterward|afterwards|thereafter|from then on|from now on|going forward|eventually|henceforth|subsequently|in future|in the future|in perpetuity)([[:space:],.;]|$)'
++ printf '%s\n' 'all held'
++ sed -E 's/^[[:space:]]*(and|but|or|nor|so|then|while|whereas)?[[:space:]]*(none|both|nothing|all)\b//I'
++ grep -qiE '\b(every|each|any|none|nothing|all|no)[[:space:]]+[a-z]+'
++ return 0
++ continue
++ IFS=
++ read -r c
++ '[' -n '' ']'
++ IFS=
++ read -r sent
++ '[' -n '' ']'
++ '[' 0 -ne 0 ']'
++ IFS=
++ read -r line
++ '[' -n '' ']'
++ '[' 0 -ne 0 ']'
++ exit 0

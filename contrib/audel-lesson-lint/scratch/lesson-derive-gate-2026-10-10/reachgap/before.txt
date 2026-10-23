@@ -1,0 +1,9 @@
+PASS m-any.md
+refused m-attimes.md
+PASS m-each.md
+refused m-eachand.md
+refused m-nocase.md
+PASS m-whenever.md
+PASS m-without.md
+PASS a-eachline-closed.md
+PASS a-eachofthe.md
