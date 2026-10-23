@@ -23,7 +23,8 @@ out=$(IDENTITY_DIR="$W/id" run '_runtime_line')
 grep -q 'your thinkers synced 20[0-9][0-9]-' <<<"$out" && ok "sync time from the newest identity thinker file" || bad "sync time" "$out"
 
 # No git checkout behind the shellm on PATH: prints nothing, exits 0.
-mkdir -p "$W/fake/bin"; printf '#!/bin/sh\n' > "$W/fake/bin/shellm"; chmod +x "$W/fake/bin/shellm"
+mkdir -p "$W/fake/bin"
+for t in shellm traj mem; do printf '#!/bin/sh\n' > "$W/fake/bin/$t"; chmod +x "$W/fake/bin/$t"; done
 out=$(bash -c "set -euo pipefail; export PATH=\"$W/fake/bin:\$PATH\"; source \"$REPO/thinkers/_lib/common.sh\"; _runtime_line; echo RC=\$?" 2>&1)
 [[ "$out" == "RC=0" ]] && ok "no git checkout: empty line, rc 0" || bad "no git checkout" "$out"
 
