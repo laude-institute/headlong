@@ -44,16 +44,12 @@ die() { echo "mem: error: $*" >&2; exit 1; }
 
 # Stdin intentionally accepts dash-leading text. Warn without rejecting it.
 warn_flag_summary() {
-    local word
-    # Drain the body so a large piped add cannot break the pipe, and clip to
-    # the summary's own 80 characters before any pattern expansion: only the
-    # first word of the first non-blank line decides, the shell's word
-    # extraction stalls on megabyte lines, and what warns is what stores.
-    word=$(printf '%s' "$1" | sed '/^[[:space:]]*$/d' | sed -n '1p' | cut -c1-80)
+    # The caller passes the stored summary, already clipped to 80 characters.
+    local word="$1"
     word="${word#"${word%%[![:space:]]*}"}"
     word=${word%%[[:space:]]*}
     case "$word" in
-        --*|-[A-Za-z]*)
+        --[A-Za-z]*|-[A-Za-z]*)
             printf 'mem: warning: the first line looks like a command flag (%s); storing the text anyway\n' "$word" >&2 ;;
     esac
 }
@@ -155,9 +151,9 @@ action_add() {
     hex=$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')
     slug=$(slugify "$text")
     filename="${timestamp}_${hex}_${slug}"
-    warn_flag_summary "$text"
     # Drain the body so upstream writers cannot fail with SIGPIPE.
     summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p' | cut -c1-80)
+    warn_flag_summary "$summary"
     created=$(date +"%Y-%m-%d %H:%M:%S")
 
     cat > "$MEM_DIR/${filename}.md" << EOF
@@ -517,9 +513,9 @@ action_edit() {
     # edit: a todo shortlist that is appended to during the day must still
     # expire that night. So do `schedule:` and `tz:` (design/scheduled_goals.md).
     local summary type created id until _k _v
-    warn_flag_summary "$text"
     # Drain the body so upstream writers cannot fail with SIGPIPE.
     summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p' | cut -c1-80)
+    warn_flag_summary "$summary"
     type=$(frontmatter_field "$file" "type")
     created=$(frontmatter_field "$file" "created")
     id=$(frontmatter_field "$file" "id")

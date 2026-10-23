@@ -77,17 +77,24 @@ id5=$(sed -n 's/^id: //p' "$F")
 printf '\t--slug leftover\nIndented edit\n' | mem edit "$id5" >"$WORK/out6" 2>"$WORK/err6"
 grep -q "looks like a command flag (--slug)" "$WORK/err6" \
     && ok "tab-indented edit warns" || bad "tab-indented edit missed"
-# A normal Markdown list item is not a command flag.
-printf -- '- a list item\n' | mem add --type note >/dev/null 2>"$WORK/err7"
-if grep -q "looks like a command flag" "$WORK/err7"; then
-    bad "ordinary list item warns"
-else
-    ok "ordinary list item stays silent"
-fi
+# Ordinary dash punctuation must stay silent on both write paths.
+for opener in '- a list item' '---' '-- note to self' '--> arrow'; do
+    printf '%s\n' "$opener" | mem add --type note >"$WORK/out7" 2>"$WORK/err7"
+    rc=$?
+    F="$MEM_DIR/$(cat "$WORK/out7").md"
+    id7=$(sed -n 's/^id: //p' "$F")
+    printf '%s\nEdited body\n' "$opener" | mem edit "$id7" >/dev/null 2>>"$WORK/err7"
+    edit_rc=$?
+    if [[ $rc -ne 0 || $edit_rc -ne 0 ]] || grep -q "looks like a command flag" "$WORK/err7"; then
+        bad "ordinary opener stores without warning: $opener"
+    else
+        ok "ordinary opener stores without warning: $opener"
+    fi
+done
 
 
 # --- a big piped body survives the warning helper, bounded ---
-# The helper reads the whole body through a pipe: an early-quitting reader
+# Summary derivation reads the whole body through a pipe: an early-quitting reader
 # broke flag-leading bodies larger than the pipe buffer (born red 2026-10-13
 # against merged main), and an unbounded word scan stalled on a megabyte
 # first line. A deadline makes either regression fail fast.
@@ -115,13 +122,13 @@ try:
     # silent on success; the shell below counts the case
 except (subprocess.SubprocessError, AssertionError, ValueError, OSError) as exc:
     detail = f" (exit {exc.returncode})" if isinstance(exc, subprocess.CalledProcessError) else ""
-    print(f"FAIL flag-leading 2MB piped add: {type(exc).__name__}{detail}")
+    print(f"FAIL flag-leading 1 MiB piped add: {type(exc).__name__}{detail}")
     sys.exit(1)
 PYTEST
 then
-    ok "the 2MB flag-leading piped body case"
+    ok "the 1 MiB flag-leading piped body case"
 else
-    bad "the 2MB flag-leading piped body case"
+    bad "the 1 MiB flag-leading piped body case"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
