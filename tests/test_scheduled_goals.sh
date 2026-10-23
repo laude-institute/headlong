@@ -141,6 +141,36 @@ out=$(signals "$DAY 07:30" | grep -F "Second duty")
 has   "two open windows: the later is due"   "$out" "-0700"
 hasnt "two open windows: the earlier is not" "$out" "-0600"
 
+# a window closed without a post (SCHEDULE_CLOSED_KEYS manifest) is done
+mem add --type goal --schedule "12:00" "Closed duty" >/dev/null 2>&1
+cf=$(grep -l '^summary: Closed duty$' "$MEM_DIR"/*.md | head -1)
+CID=$(awk '/^id:/{print $2; exit}' "$cf")
+[[ -n "$CID" && "$CID" != "$GID" ]] || { echo "FAIL could not pin Closed duty's own id"; exit 1; }
+out=$(signals "$DAY 12:30" | grep -F "Closed duty")
+has "closed-keys: an unlisted key is still due" "$out" "DUE NOW"
+printf '%s/%s-1200\n' "$CID" "$DAY" > "$WORK/closed.keys"
+out=$(SCHEDULE_CLOSED_KEYS="$WORK/closed.keys" signals "$DAY 12:30" | grep -F "Closed duty")
+hasnt "closed-keys: a listed key is not due" "$out" "DUE NOW"
+has   "closed-keys: says closed, not sent"   "$out" "the 12:00 window was closed without a post"
+hasnt "closed-keys: never claims a send"     "$out" "was sent at"
+out=$(SCHEDULE_CLOSED_KEYS="$WORK/no-such-file.keys" signals "$DAY 12:30" | grep -F "Closed duty")
+has  "closed-keys: a missing manifest is harmless" "$out" "DUE NOW"
+# the manifest may be ledger prose (closed-keys.md bullets) or a .skip receipt
+cat > "$WORK/closed.prose" <<XPROSE
+# Closed window keys
+
+A window key whose ledger entry is a .skip record is closed for good.
+- $CID/$DAY-1200
+XPROSE
+out=$(SCHEDULE_CLOSED_KEYS="$WORK/closed.prose" signals "$DAY 12:30" | grep -F "Closed duty")
+hasnt "closed-keys: a prose bullet is not due" "$out" "DUE NOW"
+has   "closed-keys: a prose bullet says closed" "$out" "closed without a post"
+printf 'key=%s/%s-1200\nskipped=2026-10-04T19:40:42Z\nreason=deliberate no-send\n' "$CID" "$DAY" > "$WORK/closed.skip"
+out=$(SCHEDULE_CLOSED_KEYS="$WORK/closed.skip" signals "$DAY 12:30" | grep -F "Closed duty")
+hasnt "closed-keys: a skip receipt is not due" "$out" "DUE NOW"
+has   "closed-keys: a skip receipt says closed" "$out" "closed without a post"
+
+
 # an expired goal is skipped
 mem add --type goal --until 2020-01-01 --schedule "10:00" "Expired duty" >/dev/null 2>&1
 hasnt "expired goal is skipped" "$(signals "$DAY 10:30")" "Expired duty"
