@@ -582,7 +582,20 @@ while [[ "$lo" -le "$hi" ]]; do
 done
 
 if [[ "$best_bytes" -gt "$CTX_MAX_BYTES" ]]; then
-    printf '%s' "$best_result" | head -c "$CTX_MAX_BYTES"
+    # head -c stops reading at the cap, so a result bigger than the pipe
+    # buffer SIGPIPEs the printf producer after the truncated bytes were
+    # already delivered, and pipefail kills the script rc 1 before the
+    # note below. awk drains the whole pipe and prints only the first
+    # CTX_MAX_BYTES bytes, so no producer ever writes into a closed
+    # pipe; LC_ALL=C keeps length() and substr() byte-exact against the
+    # head -c cut this replaces.
+    printf '%s' "$best_result" \
+        | LC_ALL=C awk -v n="$CTX_MAX_BYTES" '
+            { if (done) next
+              b = length($0) + 1
+              if (b <= n) { print $0; n -= b }
+              else { printf "%s", substr($0, 1, n); done = 1 }
+            }'
     printf '[budget exceeded: trajectory too dense]' >&2
 else
     printf '%s' "$best_result"
