@@ -387,6 +387,49 @@ action_search() {
     return "$rc"
 }
 
+# Gate a model ranker reply against the store directory before it prints.
+# The search's second stage is a model, and a model can synthesize a
+# filename the store never held: on 2026-10-15 one minted a
+# house-convention name with a fresh hex id and a timestamp a day in the
+# future, absent from disk, refused by mem show, gone on four of five
+# byte-identical re-runs, and it reached the caller's stdout unchecked
+# beside real files. A reply line is a claim about the store, never a
+# read of it. A line naming a *.md prints only if that file exists in
+# the store; dropped lines are named on stderr with a count. A line
+# naming no file claims nothing about the store and passes through as
+# spoken, and a reply whose every named file was a phantom answers
+# No matches found. like an empty match.
+_filter_model_reply() {
+    local reply_file="$1"
+    local name_re='[A-Za-z0-9._-]+\.md'
+    local dropped=0 printed=0 name line
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        name=""
+        if [[ "$line" =~ $name_re ]]; then
+            name="${BASH_REMATCH[0]}"
+        fi
+        if [[ -z "$name" || -f "$MEM_DIR/$name" ]]; then
+            printf '%s\n' "$line"
+            printed=$((printed+1))
+        else
+            dropped=$((dropped+1))
+            printf 'mem search: model named a file not in the store: %s\n' "$name" >&2
+        fi
+    done < "$reply_file"
+    if [[ "$dropped" -gt 0 ]]; then
+        if [[ "$dropped" -eq 1 ]]; then
+            printf 'mem search: dropped 1 model-named entry not in the store.\n' >&2
+        else
+            printf 'mem search: dropped %s model-named entries not in the store.\n' "$dropped" >&2
+        fi
+    fi
+    if [[ "$printed" -eq 0 && "$dropped" -gt 0 ]]; then
+        printf 'No matches found.\n'
+    fi
+    return 0
+}
+
 _search_worker() (
     local query="$1"
 
@@ -429,7 +472,8 @@ $(cat "$f")
     # cancellation. The heartbeat must never own the search result pipe: a
     # failed or signalled llm used to leave it alive forever, keeping
     # `mem search | head` open (issue #119).
-    trap 'if [[ -n "$_hb_pid" ]]; then kill "$_hb_pid" 2>/dev/null || true; wait "$_hb_pid" 2>/dev/null || true; fi' EXIT
+    local reply_file=""
+    trap 'if [[ -n "$_hb_pid" ]]; then kill "$_hb_pid" 2>/dev/null || true; wait "$_hb_pid" 2>/dev/null || true; fi; [[ -n "$reply_file" ]] && rm -f "$reply_file" || true' EXIT
     trap 'exit 143' TERM
     trap 'exit 130' INT
     if [[ "$hb" != 0 ]]; then
@@ -451,10 +495,21 @@ $(cat "$f")
     # leaves the adapter alive holding our caller's output pipes.
     # This also applies with the search deadline disabled: public TERM/INT
     # must still cancel the whole tree. llm retains its own shorter bound.
-    # shellcheck disable=SC2086
-    printf 'Search these memories for: %s\n\n%s' "$query" "$memories" | \
-        _LLM_SHARED_PROCESS_GROUP=1 llm ${SHELLM_FAST_MODEL:+-m "$SHELLM_FAST_MODEL"} -t "${MEM_SEARCH_MAX_TOKENS:-16000}" \
-            -s "You are a semantic search engine for memory files. Each memory has a filename header (=== filename ===), YAML frontmatter (summary, type), and a body. Return ONLY the filenames and summaries of semantically matching memories, one per line. If nothing matches, say 'No matches found.'" || rc=$?
+    # The reply never prints straight from the model: the ranker can
+    # synthesize a filename the store never held (2026-10-15), so every
+    # line is gated by _filter_model_reply against the directory first.
+    # A failed llm call no longer leaks its partial reply.
+    reply_file=$(mktemp "${TMPDIR:-/tmp}/memsearch-reply.XXXXXX") || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+        # shellcheck disable=SC2086
+        printf 'Search these memories for: %s\n\n%s' "$query" "$memories" | \
+            _LLM_SHARED_PROCESS_GROUP=1 llm ${SHELLM_FAST_MODEL:+-m "$SHELLM_FAST_MODEL"} -t "${MEM_SEARCH_MAX_TOKENS:-16000}" \
+                -s "You are a semantic search engine for memory files. Each memory has a filename header (=== filename ===), YAML frontmatter (summary, type), and a body. Return ONLY the filenames and summaries of semantically matching memories, one per line. If nothing matches, say 'No matches found.'" > "$reply_file" || rc=$?
+    fi
+    if [[ "$rc" -eq 0 ]]; then
+        _filter_model_reply "$reply_file" || rc=$?
+    fi
+    rm -f "$reply_file"
     # The EXIT trap owns heartbeat cleanup; a second wait here would print
     # "not a child" once the trap has already reaped it.
     return "$rc"
