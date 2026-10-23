@@ -10,6 +10,12 @@
 # summary at all. These tests pin the new behavior: a refusal seals a
 # placeholder and the build moves on, any other failure stops the build but
 # still prints what exists, and one call seals a bounded number of blocks.
+# A sealed placeholder is not permanent either: refusals drift in time
+# (2026-10-15: re-sending the same bytes stopped the refusal on 2 of 3
+# windows days after they refused, though both replies came back
+# malformed), so a later build retries it, re-seals the
+# placeholder if it refuses again, and keeps it untouched when the retry
+# reply is malformed, without ever re-damming the build.
 #
 # The `llm` CLI is stubbed (canned rollup JSON, calls logged): no network.
 
@@ -42,13 +48,22 @@ if [[ "$input" == *FLAKY* && -e "$FLAKY_ON" ]]; then
     echo "llm: error: empty response: stream ended without emitting anything" >&2
     exit 1
 fi
+if [[ "$input" == *REFUSE-ONCE* && -e "$REFUSE_ONCE_ON" ]]; then
+    echo "llm: error: refused: the provider content filter blocked this request (finish_reason content_filter)" >&2
+    exit 1
+fi
+if [[ "$input" == *GARBAGE* && -e "$GARBAGE_ON" ]]; then
+    printf 'this is not json, just words\n'
+    exit 0
+fi
 n=$(printf '%s' "$input" | wc -l | tr -d ' ')
 printf '{"summary":"rollup of %s lines","themes":["testing"],"step_ids":["st000001"]}' "$n"
 EOF
 chmod +x "$WORK/bin/llm"
 export PATH="$WORK/bin:$REPO/bin:$PATH"
 export LLM_LOG="$WORK/llm.log" FLAKY_ON="$WORK/flaky_on"
-unset TRAJ_DIR TRAJ_ID RECAP_MODEL SHELLM_FAST_MODEL SHELLM_MODEL ROLLUP_MAX_SEALS 2>/dev/null || true
+export REFUSE_ONCE_ON="$WORK/refuse_once_on" GARBAGE_ON="$WORK/garbage_on"
+unset TRAJ_DIR TRAJ_ID RECAP_MODEL SHELLM_FAST_MODEL SHELLM_MODEL ROLLUP_MAX_SEALS ROLLUP_REFUSED_RETRY_HOURS 2>/dev/null || true
 
 TRAJ_ROOT="$WORK/trajectories"
 
@@ -133,6 +148,136 @@ ROLLUP_MAX_SEALS=4 ctx dddd4444 --backfill >/dev/null
 check "cap: --backfill seals everything"     test "$(sealed dddd4444-root)" = "9"
 ROLLUP_MAX_SEALS=x ctx dddd4444 >/dev/null
 check "cap: a bad value is refused"          grep -q 'ROLLUP_MAX_SEALS must be a number' "$WORK/stderr"
+
+# ---------------------------------------------------------------------------
+# 4. Retry: once ROLLUP_REFUSED_RETRY_HOURS has passed, the placeholder is
+#    re-asked. A refusal is not decided by the window's text (2026-10-15:
+#    re-sending identical bytes summarized 2 of 3 windows that had refused
+#    for days), so a later build can recover the block, and every higher
+#    tier that summarized the placeholder is rebuilt from it.
+# ---------------------------------------------------------------------------
+: > "$LLM_LOG"
+mk_traj eeee5555-root 155 13 REFUSE-ONCE
+touch "$REFUSE_ONCE_ON"
+ctx eeee5555 >/dev/null
+check "retry: placeholder sealed"            test "$(jq -r .refused "$(blockfile eeee5555-root 1 10 20)")" = "true"
+check "retry: t2 sealed over the placeholder" test -f "$(blockfile eeee5555-root 2 0 100)"
+rm -f "$REFUSE_ONCE_ON"
+ctx eeee5555 >/dev/null
+check "retry: fresh placeholder not retried"  test "$(calls_with REFUSE-ONCE)" = "1"
+touch -t 202001010000 "$(blockfile eeee5555-root 1 10 20)"
+touch "$WORK/before_recovery"
+out=$(ctx eeee5555)
+rc=$?
+check "retry: exits 0"                       test "$rc" -eq 0
+check "retry: re-asked once"                 test "$(calls_with REFUSE-ONCE)" = "2"
+check "retry: block recovered"               test -z "$(jq -r '.refused // empty' "$(blockfile eeee5555-root 1 10 20)")"
+check "retry: real summary sealed"           grep -q 'rollup of' "$(blockfile eeee5555-root 1 10 20)"
+check "retry: placeholder rewritten"        test -n "$(find "$(blockfile eeee5555-root 1 10 20)" -newer "$WORK/before_recovery")"
+check "retry: t2 rebuilt over it"            test -n "$(find "$(blockfile eeee5555-root 2 0 100)" -newer "$WORK/before_recovery")"
+check "retry: untouched block left alone"    test -z "$(find "$(blockfile eeee5555-root 1 20 30)" -newer "$WORK/before_recovery")"
+check "retry: staircase printed"             grep -q 'YOUR LIFE SO FAR' <<<"$out"
+
+# ---------------------------------------------------------------------------
+# 5. Repeat refusal: the retry asks again, the model refuses again, and the
+#    placeholder is re-sealed with a fresh mtime so the next retry waits
+#    another floor instead of firing on every call.
+# ---------------------------------------------------------------------------
+: > "$LLM_LOG"
+mk_traj ffff6666-root 55 13 REFUSE-ME
+ctx ffff6666 >/dev/null
+check "re-refusal: placeholder sealed"        test "$(jq -r .refused "$(blockfile ffff6666-root 1 10 20)")" = "true"
+touch -t 202001010000 "$(blockfile ffff6666-root 1 10 20)"
+ctx ffff6666 >/dev/null
+check "re-refusal: re-asked once"             test "$(calls_with REFUSE-ME)" = "2"
+check "re-refusal: placeholder kept"          test "$(jq -r .refused "$(blockfile ffff6666-root 1 10 20)")" = "true"
+check "re-refusal: text kept"                 grep -q 'Not summarized' "$(blockfile ffff6666-root 1 10 20)"
+check "re-refusal: mtime restamped"           test -z "$(find "$(blockfile ffff6666-root 1 10 20)" -maxdepth 0 -mmin +60 2>/dev/null)"
+ctx ffff6666 >/dev/null
+check "re-refusal: next call waits"           test "$(calls_with REFUSE-ME)" = "2"
+ROLLUP_REFUSED_RETRY_HOURS=0 ctx ffff6666 >/dev/null
+check "re-refusal: zero floor retries now"    test "$(calls_with REFUSE-ME)" = "3"
+
+# ---------------------------------------------------------------------------
+# 6. Malformed retry: the re-ask returns non-JSON (the 2026-10-15 retest saw
+#    two such replies). The placeholder stays, the build keeps going past
+#    it, and the retry waits another floor.
+# ---------------------------------------------------------------------------
+: > "$LLM_LOG"
+mk_traj gggg7777-root 55 13 "REFUSE-ONCE GARBAGE"
+touch "$REFUSE_ONCE_ON"
+ctx gggg7777 >/dev/null
+check "garbage retry: placeholder sealed"     test "$(jq -r .refused "$(blockfile gggg7777-root 1 10 20)")" = "true"
+rm -f "$REFUSE_ONCE_ON"
+touch "$GARBAGE_ON"
+touch -t 202001010000 "$(blockfile gggg7777-root 1 10 20)"
+out=$(ctx gggg7777)
+rc=$?
+check "garbage retry: exits 0"               test "$rc" -eq 0
+check "garbage retry: two retry attempts"    test "$(calls_with GARBAGE)" = "3"
+check "garbage retry: placeholder kept"      test "$(jq -r .refused "$(blockfile gggg7777-root 1 10 20)")" = "true"
+check "garbage retry: build not stopped"     grep -q 'steps 40–50' <<<"$out"
+check "garbage retry: retry kept it"         grep -q 'keeping the placeholder' "$WORK/stderr"
+rm -f "$GARBAGE_ON"
+: > "$LLM_LOG"
+ctx gggg7777 >/dev/null
+check "garbage retry: next call waits"        test "$(calls_with GARBAGE)" = "0"
+
+# ---------------------------------------------------------------------------
+# 7. Cap: a retry is a seal, so it counts against ROLLUP_MAX_SEALS and the
+#    rest of the build waits when the retry uses the last slot.
+# ---------------------------------------------------------------------------
+: > "$LLM_LOG"
+mk_traj hhhh8888-root 95 13 REFUSE-ONCE
+touch "$REFUSE_ONCE_ON"
+ROLLUP_MAX_SEALS=3 ctx hhhh8888 >/dev/null
+rm -f "$REFUSE_ONCE_ON"
+check "cap: placeholder sealed"               test "$(jq -r .refused "$(blockfile hhhh8888-root 1 10 20)")" = "true"
+touch -t 202001010000 "$(blockfile hhhh8888-root 1 10 20)"
+: > "$LLM_LOG"
+ROLLUP_MAX_SEALS=1 ctx hhhh8888 >/dev/null
+check "cap: retry used the slot"              test "$(calls_with REFUSE-ONCE)" = "1"
+check "cap: block recovered"                  test -z "$(jq -r '.refused // empty' "$(blockfile hhhh8888-root 1 10 20)")"
+check_not "cap: nothing else sealed"          test -f "$(blockfile hhhh8888-root 1 30 40)"
+check "cap: cap noted on stderr"              grep -q 'the cap for one call' "$WORK/stderr"
+
+# ---------------------------------------------------------------------------
+# 8. Validation: the floor is a number of hours, 0 meaning every call.
+# ---------------------------------------------------------------------------
+ROLLUP_REFUSED_RETRY_HOURS=x ctx hhhh8888 >/dev/null
+check "floor: a bad value is refused"         grep -q 'ROLLUP_REFUSED_RETRY_HOURS must be a number' "$WORK/stderr"
+ROLLUP_REFUSED_RETRY_HOURS=-1 ctx hhhh8888 >/dev/null
+check "floor: a negative value is refused"    grep -q 'ROLLUP_REFUSED_RETRY_HOURS must be a number' "$WORK/stderr"
+
+# ---------------------------------------------------------------------------
+# 9. Crash mid-retry: a retry moves the placeholder aside before re-asking;
+#    a crash between that move and the re-seal leaves only the aside, and
+#    the next build restores it, never losing the window. A crash after a
+#    successful re-seal leaves a live block plus the aside; the next build
+#    keeps the block and discards the aside.
+# ---------------------------------------------------------------------------
+: > "$LLM_LOG"
+mk_traj jjjj9999-root 155 13 REFUSE-ONCE
+touch "$REFUSE_ONCE_ON"
+ctx jjjj9999 >/dev/null
+check "crash: placeholder sealed"            test -f "$(blockfile jjjj9999-root 1 10 20)"
+rm -f "$REFUSE_ONCE_ON"
+mv "$(blockfile jjjj9999-root 1 10 20)" "$(blockfile jjjj9999-root 1 10 20).retry.tmp"
+touch -t 202001010000 "$(blockfile jjjj9999-root 1 10 20).retry.tmp"
+: > "$LLM_LOG"
+ctx jjjj9999 >/dev/null
+check "crash: aside restored and re-asked"   test "$(calls_with REFUSE-ONCE)" -ge 1
+check "crash: window recovered"              grep -q 'rollup of' "$(blockfile jjjj9999-root 1 10 20)"
+check "crash: aside consumed"                test ! -e "$(blockfile jjjj9999-root 1 10 20).retry.tmp"
+check "crash: tiers above rebuilt"           grep -q 'pruned t2' "$WORK/stderr"
+cp "$(blockfile jjjj9999-root 1 10 20)" "$(blockfile jjjj9999-root 1 10 20).retry.tmp"
+touch -t 202001010000 "$(blockfile jjjj9999-root 1 10 20).retry.tmp"
+before=$(jq -r .summary "$(blockfile jjjj9999-root 1 10 20)")
+: > "$LLM_LOG"
+ctx jjjj9999 >/dev/null
+check "crash: stale aside discarded"         test ! -e "$(blockfile jjjj9999-root 1 10 20).retry.tmp"
+check "crash: live block kept"               test "$(jq -r .summary "$(blockfile jjjj9999-root 1 10 20)")" = "$before"
+check "crash: live block not re-asked"       test "$(calls_with REFUSE-ONCE)" = "0"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
