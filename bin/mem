@@ -42,6 +42,18 @@ fi
 
 die() { echo "mem: error: $*" >&2; exit 1; }
 
+# Stdin intentionally accepts dash-leading text. Warn without rejecting it.
+warn_flag_summary() {
+    # The caller passes the stored summary, already clipped to 80 characters.
+    local word="$1"
+    word="${word#"${word%%[![:space:]]*}"}"
+    word=${word%%[[:space:]]*}
+    case "$word" in
+        --[A-Za-z]*|-[A-Za-z]*)
+            printf 'mem: warning: the first line looks like a command flag (%s); storing the text anyway\n' "$word" >&2 ;;
+    esac
+}
+
 debug() {
     if [[ "$VERBOSE" -eq 1 ]]; then
         printf '[mem debug] %s\n' "$*" >&2
@@ -237,6 +249,7 @@ action_add() {
     filename="${timestamp}_${hex}_${slug}"
     # Drain the body so upstream writers cannot fail with SIGPIPE.
     summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p' | cut -c1-80)
+    warn_flag_summary "$summary"
     created=$(date +"%Y-%m-%d %H:%M:%S")
 
     cat > "$MEM_DIR/${filename}.md" << EOF
@@ -604,6 +617,7 @@ action_edit() {
     local summary type created id until _k _v
     # Drain the body so upstream writers cannot fail with SIGPIPE.
     summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p' | cut -c1-80)
+    warn_flag_summary "$summary"
     type=$(frontmatter_field "$file" "type")
     created=$(frontmatter_field "$file" "created")
     id=$(frontmatter_field "$file" "id")
