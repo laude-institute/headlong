@@ -604,6 +604,14 @@ def create_app(
         return usage.summary(traj_dir, identity.id, identity.name,
                              ledger=usage.ledger_path(identity.path))
 
+    @app.get("/api/identities/{identity_id}/spend")
+    def identity_spend(identity_id: str) -> dict:
+        """The identity's spend limit (LLM_SPEND_LIMIT_USD): spent, limit,
+        remaining and window, from `llm --spend`. Live, unlike the usage
+        cache: it is what the next model call will be checked against."""
+        identity = _identity_or_404(root, identity_id)
+        return control.llm_spend(root, identity)
+
     @app.post("/api/identities/{identity_id}/usage/refresh", status_code=202)
     def identity_usage_refresh(identity_id: str, body: UsageRefreshBody) -> dict:
         _require_controls()

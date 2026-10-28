@@ -126,6 +126,9 @@ check "over the limit: exit 3" '[[ $rc -eq 3 ]]' "rc=$rc"
 check "over the limit: no request was sent" '[[ "$(requests)" -eq 0 ]]' "requests=$(requests)"
 check "over the limit: stderr says what was spent of what" 'grep -q "spend limit reached: \$1.5 of \$1 in total" "$WORK/err"' "$(cat "$WORK/err")"
 check "over the limit: health marker is ok:false, kind budget" '[[ "$(health "[.ok, .kind] | @tsv")" == "false	budget" ]]' "$(health .)"
+check "over the limit: the marker leaves identity out when none is known" '[[ "$(health "has(\"identity\")")" == false ]]' "$(health .)"
+IDENTITY_NAME=usr LLM_SPEND_LIMIT_USD=1 "$LLM" -m vendor/model "hi" >/dev/null 2>&1
+check "over the limit: the marker names the identity whose limit it is" '[[ "$(health .identity)" == usr ]]' "$(health .)"
 check "over the limit: the ledger gains no line" '[[ "$(grep -c . "$LLM_USAGE_LEDGER")" -eq 1 ]]'
 
 reset

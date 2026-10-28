@@ -216,10 +216,11 @@ die() { echo "llm: error: $*" >&2; exit 1; }
 # Last-call health marker: one small JSON in the state home, rewritten after
 # every call, so `ada status`, status.sh and the dash can say "your key ran
 # out of credit" out loud instead of the mind just going quiet.
-#   {"ok":true,"ts":...,"provider":...,"model":...}
+#   {"ok":true,"ts":...,"provider":...,"model":...,"identity":...}
 #   {"ok":false,"ts":...,"kind":"credit|auth|rate|budget|other","http_code":402,"message":...,...}
 # kind "budget" is our own spend limit (LLM_SPEND_LIMIT_USD), passed in by
-# the caller rather than guessed from the message.
+# the caller rather than guessed from the message. identity (when known)
+# says whose call it was: the marker is shared by the state home, the limit is not.
 _llm_health_file="$_llm_home/run/llm_health.json"
 _llm_note() {   # _llm_note ok|error [http_code] [message] [kind]
     local st="$1" code="${2:-}" msg="${3:-}" kind="${4:-}" m tmp
@@ -244,8 +245,9 @@ _llm_note() {   # _llm_note ok|error [http_code] [message] [kind]
     tmp="$_llm_health_file.$$"
     if jq -n --arg ok "$st" --arg code "$code" --arg msg "$msg" --arg kind "$kind" \
           --arg provider "${LLM_PROVIDER:-}" --arg model "${LLM_MODEL:-}" \
-          --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg identity "$_llm_identity" \
           '{ok: ($ok == "ok"), ts: $ts, provider: $provider, model: $model}
+           + (if $identity == "" then {} else {identity: $identity} end)
            + (if $ok == "ok" then {} else
                 {kind: $kind, http_code: (if $code == "" then null else ($code | tonumber? // $code) end), message: $msg}
               end)' > "$tmp" 2>/dev/null; then

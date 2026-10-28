@@ -94,7 +94,7 @@ usage ledger (`usage/llm.jsonl`). At the limit, `llm` sends nothing and exits
 3. `ada status` says "spend limit reached", and the mind's trajectory records
 why it stopped. When the `contrib/opencode` package is installed, its
 delegations count against the same limit. `llm --spend` prints spent, limit
-and remaining. The running total is cached next to the ledger
+and remaining, and the dash's Usage page shows them with cost per day. The running total is cached next to the ledger
 (`usage/llm.jsonl.spend.json`) so each check reads only new lines; deleting the
 cache is safe.
 

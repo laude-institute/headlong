@@ -24,8 +24,8 @@ import {
   TableHeader,
   TableRow,
 } from "~/components/ui/table";
-import { fetchIdentityStatus, fetchUsage, refreshUsage } from "~/lib/api";
-import type { UsageDay } from "~/lib/types";
+import { fetchIdentityStatus, fetchSpend, fetchUsage, refreshUsage } from "~/lib/api";
+import type { SpendStatus, UsageDay } from "~/lib/types";
 
 export function meta() {
   return [{ title: "Headlong · usage" }];
@@ -38,6 +38,15 @@ function fmtNum(n: number): string {
   if (n >= 1e6) return `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M`;
   if (n >= 1e3) return `${(n / 1e3).toFixed(1).replace(/\.0$/, "")}k`;
   return String(Math.round(n));
+}
+
+/** Dollars: cents from $0.10 up, two significant digits below that (one
+ * call can cost $0.00003). Never exponent notation. */
+function fmtUsd(n: number): string {
+  if (n <= 0) return "$0";
+  return n >= 0.1
+    ? `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : `$${n.toLocaleString("en-US", { maximumSignificantDigits: 2 })}`;
 }
 
 function fmtBytes(n: number): string {
@@ -84,25 +93,27 @@ const ML = 46;
 const MR = 8;
 const MT = 10;
 const MB = 24;
-const PW = W - ML - MR;
 const PH = H - MT - MB;
+const GRID = [0.25, 0.5, 0.75, 1];
 
 /** Per-day bars (stacked or grouped) with a hover tooltip that lists every
- * series for the day plus an optional total. Plain SVG; no chart library. */
+ * series for the day plus an optional total. Plain SVG; no chart library.
+ * `fmt` formats axis and tooltip values (default: counts). */
 function BarChart({
   days,
   series,
   stacked,
   totalLabel,
+  fmt,
 }: {
   days: [string, UsageDay][];
   series: Series[];
   stacked: boolean;
   totalLabel?: string;
+  fmt?: (n: number) => string;
 }) {
   const [hover, setHover] = useState<{ i: number; x: number; y: number } | null>(null);
   const n = Math.max(1, days.length);
-  const slot = PW / n;
   const ymax = useMemo(() => {
     let m = 0;
     for (const [, v] of days) {
@@ -111,6 +122,11 @@ function BarChart({
     }
     return niceMax(m);
   }, [days, series, stacked]);
+  const axisLabels = GRID.map((f) => (fmt ?? fmtNum)(ymax * f));
+  const tipValue = (v: number) => (fmt ? fmt(v) : v.toLocaleString());
+  // Wide enough for the longest y label (~6.5 units a character at 11px).
+  const ml = Math.max(ML, 10 + Math.ceil(6.5 * Math.max(...axisLabels.map((l) => l.length))));
+  const slot = (W - ml - MR) / n;
   const labelEvery = Math.max(1, Math.ceil(n / 8));
 
   // hover.x is in viewBox units (the tooltip's left is a percentage of the
@@ -120,8 +136,8 @@ function BarChart({
     const rect = ev.currentTarget.getBoundingClientRect();
     const wrapRect = (ev.currentTarget.parentElement ?? ev.currentTarget).getBoundingClientRect();
     const x = ((ev.clientX - rect.left) / rect.width) * W;
-    const i = Math.floor((x - ML) / slot);
-    if (x < ML || i < 0 || i >= days.length) {
+    const i = Math.floor((x - ml) / slot);
+    if (x < ml || i < 0 || i >= days.length) {
       setHover(null);
       return;
     }
@@ -130,7 +146,7 @@ function BarChart({
 
   const bars: React.ReactNode[] = [];
   days.forEach(([day, v], i) => {
-    const x0 = ML + i * slot;
+    const x0 = ml + i * slot;
     if (stacked) {
       let acc = 0;
       const bw = Math.max(1, slot * 0.7);
@@ -194,31 +210,31 @@ function BarChart({
         onMouseLeave={() => setHover(null)}
         role="img"
       >
-        {[0.25, 0.5, 0.75, 1].map((f) => {
+        {GRID.map((f, k) => {
           const y = MT + (1 - f) * PH;
           return (
             <g key={f}>
-              <line x1={ML} y1={y} x2={W - MR} y2={y} className="stroke-border" strokeWidth={1} />
+              <line x1={ml} y1={y} x2={W - MR} y2={y} className="stroke-border" strokeWidth={1} />
               <text
-                x={ML - 6}
+                x={ml - 6}
                 y={y + 4}
                 textAnchor="end"
                 className="fill-muted-foreground"
                 fontSize={11}
               >
-                {fmtNum(ymax * f)}
+                {axisLabels[k]}
               </text>
             </g>
           );
         })}
-        <line x1={ML} y1={H - MB} x2={W - MR} y2={H - MB} className="stroke-border" />
+        <line x1={ml} y1={H - MB} x2={W - MR} y2={H - MB} className="stroke-border" />
         {days.map(([day], i) =>
           // Regular ticks every labelEvery days; the last day gets one too
           // unless it would sit right next to a regular tick.
           i % labelEvery === 0 || (i === days.length - 1 && i % labelEvery >= 2) ? (
             <text
               key={day}
-              x={ML + i * slot + slot / 2}
+              x={ml + i * slot + slot / 2}
               y={H - MB + 15}
               textAnchor="middle"
               className="fill-muted-foreground"
@@ -230,7 +246,7 @@ function BarChart({
         )}
         {hover && (
           <rect
-            x={ML + hover.i * slot}
+            x={ml + hover.i * slot}
             y={MT}
             width={slot}
             height={PH}
@@ -252,14 +268,14 @@ function BarChart({
           {series.map((s) => (
             <div key={s.key} className="flex justify-between gap-4">
               <span className="text-muted-foreground">{s.label}</span>
-              <span className="tabular-nums">{(hovered[1][s.key] ?? 0).toLocaleString()}</span>
+              <span className="tabular-nums">{tipValue(hovered[1][s.key] ?? 0)}</span>
             </div>
           ))}
           {totalLabel && (
             <div className="mt-0.5 flex justify-between gap-4 border-t pt-0.5">
               <span className="text-muted-foreground">{totalLabel}</span>
               <span className="tabular-nums font-medium">
-                {series.reduce((a, s) => a + (hovered[1][s.key] ?? 0), 0).toLocaleString()}
+                {tipValue(series.reduce((a, s) => a + (hovered[1][s.key] ?? 0), 0))}
               </span>
             </div>
           )}
@@ -339,6 +355,72 @@ function RefreshButtons({
   );
 }
 
+const WINDOW_LABEL: Record<string, string> = {
+  total: "in total",
+  day: "today (UTC)",
+  month: "this month (UTC)",
+};
+
+/** The identity's spend limit (LLM_SPEND_LIMIT_USD), live from `llm --spend`.
+ * Nothing when no limit is set. */
+function SpendLimit({ spend, className = "" }: { spend: SpendStatus | undefined; className?: string }) {
+  if (!spend) return null;
+  if (!spend.ok) {
+    return (
+      <div className={`rounded-lg border border-red-600/40 bg-red-600/10 px-4 py-3 ${className}`}>
+        <div className="text-sm font-medium">Spend limit settings rejected</div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {spend.error}. While LLM_SPEND_LIMIT_USD is set, llm refuses this identity's model calls
+          until that is fixed in its .env.
+        </p>
+      </div>
+    );
+  }
+  if (spend.limit === null) return null;
+  const reached = (spend.remaining ?? 0) <= 0;
+  const pct = spend.limit > 0 ? Math.min(100, (spend.spent / spend.limit) * 100) : 100;
+  const rollover =
+    spend.window === "day" ? " or the UTC day ends" : spend.window === "month" ? " or the UTC month ends" : "";
+  return (
+    <div
+      className={`rounded-lg border px-4 py-3 ${reached ? "border-red-600/40 bg-red-600/10" : "bg-card"} ${className}`}
+    >
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="text-sm font-medium">
+          {reached ? "Spend limit reached" : "Spend limit"}
+        </span>
+        <span className="text-sm tabular-nums">
+          {fmtUsd(spend.spent)} of {fmtUsd(spend.limit)} {WINDOW_LABEL[spend.window]}
+        </span>
+        {!reached && (
+          <span className="text-xs tabular-nums text-muted-foreground">
+            {fmtUsd(spend.remaining ?? 0)} left
+          </span>
+        )}
+      </div>
+      <div
+        className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"
+        role="progressbar"
+        aria-label="spent of the spend limit"
+        aria-valuemin={0}
+        aria-valuemax={spend.limit}
+        aria-valuenow={Math.min(spend.spent, spend.limit)}
+      >
+        <div
+          className={`h-full ${reached ? "bg-red-600" : pct >= 80 ? "bg-amber-500" : ""}`}
+          style={{ width: `${pct}%`, ...(reached || pct >= 80 ? {} : { background: INPUT }) }}
+        />
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        {reached
+          ? `No model calls are sent for this identity until LLM_SPEND_LIMIT_USD is raised in its .env${rollover}. `
+          : "llm checks it before each call, against what OpenRouter reported each call cost, OpenCode delegations included. "}
+        It can overshoot slightly: a call already in flight finishes.
+      </p>
+    </div>
+  );
+}
+
 export default function UsagePage() {
   const { identityId = "" } = useParams();
   const controlsEnabled = useControlsEnabled();
@@ -354,6 +436,12 @@ export default function UsagePage() {
     queryFn: () => fetchUsage(identityId),
     // Cheap (serves a cached file); poll faster while a refresh runs.
     refetchInterval: (query) => (query.state.data?.refreshing ? 1500 : 30000),
+  });
+
+  const { data: spend } = useQuery({
+    queryKey: ["spend", identityId],
+    queryFn: () => fetchSpend(identityId),
+    refetchInterval: 30000,
   });
 
   if (isLoading || !usage) {
@@ -377,6 +465,7 @@ export default function UsagePage() {
     return (
       <div className="mx-auto w-full max-w-7xl px-4">
         {header}
+        <SpendLimit spend={spend} className="mb-4" />
         <Empty>
           <EmptyHeader>
             <EmptyTitle>No usage numbers yet</EmptyTitle>
@@ -411,6 +500,9 @@ export default function UsagePage() {
   const tok7 = last7.reduce((a, v) => a + v.in + v.out + v.think, 0) / n7;
   const msg7 = last7.reduce((a, v) => a + v.in_msg + v.out_msg, 0) / n7;
   const calls7 = last7.reduce((a, v) => a + v.calls, 0) / n7;
+  const cost7 = last7.reduce((a, v) => a + v.cost_llm + v.cost_opencode, 0) / n7;
+  const ledgerCalls = usage.ledger?.calls ?? 0;
+  const priced = usage.ledger?.priced ?? 0;
   const models = Object.entries(usage.by_model ?? {}).sort((a, b) => b[1].in - a[1].in);
   const ledgerSince = usage.ledger?.since ?? null;
   const firstDay = days[0]?.[0];
@@ -437,7 +529,15 @@ export default function UsagePage() {
           )}
         </div>
 
+        <SpendLimit spend={spend} />
+
         <div className="flex flex-wrap gap-3">
+          {priced > 0 && (
+            <>
+              <Tile value={fmtUsd(totals.cost_llm + totals.cost_opencode)} label="cost, all time" />
+              <Tile value={fmtUsd(cost7)} label="cost / day, last 7d" />
+            </>
+          )}
           <Tile value={fmtNum(totals.in + totals.out + totals.think)} label="tokens, all time" />
           <Tile value={fmtNum(tok7)} label="tokens / day, last 7d" />
           <Tile value={msg7.toFixed(0)} label="messages / day, last 7d" />
@@ -468,6 +568,36 @@ export default function UsagePage() {
                   { key: "think", label: "thinking", color: THIRD },
                 ]}
               />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Cost per day</CardTitle>
+              <CardDescription>
+                What OpenRouter reported each call cost, from the usage ledger: the numbers the
+                spend limit counts. OpenCode delegation steps are OpenCode's own estimate.
+                {priced > 0 && priced < ledgerCalls &&
+                  ` ${(ledgerCalls - priced).toLocaleString()} of ${ledgerCalls.toLocaleString()} ledger calls carry no cost (another provider, or recorded before llm kept cost) and are missing here.`}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {priced === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No call has a cost yet. OpenRouter reports one on every call; other providers
+                  don't.
+                </p>
+              ) : (
+                <BarChart
+                  days={days}
+                  stacked
+                  totalLabel="total cost"
+                  fmt={fmtUsd}
+                  series={[
+                    { key: "cost_llm", label: "model calls", color: INPUT },
+                    { key: "cost_opencode", label: "OpenCode delegations", color: OUTPUT },
+                  ]}
+                />
+              )}
             </CardContent>
           </Card>
           <Card>
@@ -510,12 +640,13 @@ export default function UsagePage() {
               />
             </CardContent>
           </Card>
-          <Card>
+          <Card className="lg:col-span-2">
             <CardHeader>
               <CardTitle className="text-sm">Tokens per model</CardTitle>
               <CardDescription>
                 Same coverage as the tokens chart. Ledger days carry the model on each call; on
                 mind-log days it comes from the run's shellm-run row ("?" = steps with no run id).
+                Cost is the ledger's, as in the cost chart.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -530,6 +661,7 @@ export default function UsagePage() {
                       <TableHead className="text-right">input</TableHead>
                       <TableHead className="text-right">output</TableHead>
                       <TableHead className="text-right">thinking</TableHead>
+                      <TableHead className="text-right">cost</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -547,6 +679,9 @@ export default function UsagePage() {
                         </TableCell>
                         <TableCell className="text-right tabular-nums">
                           {v.think.toLocaleString()}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {v.cost > 0 ? fmtUsd(v.cost) : "—"}
                         </TableCell>
                       </TableRow>
                     ))}
