@@ -105,6 +105,7 @@ if [[ -f "$hf" ]] && [[ "$(jq -r '.ok' "$hf" 2>/dev/null)" == "false" ]]; then
         credit) LLM_ALERT="OUT OF CREDIT — the API key has no money left" ;;
         auth)   LLM_ALERT="KEY REJECTED — the API key is invalid or revoked" ;;
         rate)   LLM_ALERT="RATE LIMITED" ;;
+        budget) LLM_ALERT="SPEND LIMIT REACHED — ${lm:-LLM_SPEND_LIMIT_USD stopped the calls}"; lm="" ;;
         *)      LLM_ALERT="last call failed" ;;
     esac
     head_ "LLM"
@@ -113,6 +114,7 @@ if [[ -f "$hf" ]] && [[ "$(jq -r '.ok' "$hf" 2>/dev/null)" == "false" ]]; then
     case "$lk" in
         credit) say "     Fix: top up the key (or put a new one in $HEADLONG_HOME/.env), then start the agent again." ;;
         auth)   say "     Fix: put a working key in $HEADLONG_HOME/.env, then start the agent again." ;;
+        budget) say "     Fix: raise LLM_SPEND_LIMIT_USD (or wait for its window to roll over); \`llm --spend\` shows the numbers." ;;
     esac
 elif [[ -f "$hf" ]]; then
     head_ "LLM"

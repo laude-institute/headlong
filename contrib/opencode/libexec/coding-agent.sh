@@ -122,22 +122,102 @@ PY_STATE
 
 # Settle ordinary descendants after every phase, including successful exit.
 # Reserve 124 for a deadline; preserve real exit codes, including 125.
+# 122 is the spend limit. With $run_spend set (a JSON watch spec; the executor
+# only), the supervisor also reads OpenCode's --format json stream as it is
+# written. Each step_finish event's cost and tokens go to the identity's usage
+# ledger, so the mind's own limit check sees delegation spend as it happens,
+# and the run is stopped like a deadline once its cost reaches what the limit
+# had left. OpenCode reports cost after each model step, so a run can
+# overshoot by up to one step; under a limit, a step with tokens but no cost
+# stops the run too, since the limit could not count it.
+run_spend=""
 run_bounded() {
     local input_file="$1"
     shift
-    python3 - "$timeout_seconds" "$input_file" "$@" <<'PY_DEADLINE'
-import os, signal, subprocess, sys, time
+    python3 - "$timeout_seconds" "$input_file" "$run_spend" "$@" <<'PY_DEADLINE'
+import json, os, signal, subprocess, sys, time
+deadline = time.monotonic() + int(sys.argv[1])
+watch = json.loads(sys.argv[3]) if sys.argv[3] else None
 try:
-    child = subprocess.Popen(sys.argv[3:], start_new_session=True,
+    child = subprocess.Popen(sys.argv[4:], start_new_session=True,
                              stdin=open(sys.argv[2], "rb") if sys.argv[2] else subprocess.DEVNULL)
 except OSError as e:
     print("coding-agent: " + str(e), file=sys.stderr)
     sys.exit(127)
+spend = {"cost": 0.0, "steps": 0, "stopped": None, "offset": 0, "pending": b""}
+
+def count(d, key):
+    return d.get(key) if isinstance(d.get(key), int) and not isinstance(d.get(key), bool) else 0
+
+def read_steps():
+    """Record step_finish events written since the last read; return a stop reason."""
+    try:
+        with open(watch["stdout"], "rb") as stream:
+            stream.seek(spend["offset"])
+            data = stream.read()
+    except OSError:
+        return None
+    spend["offset"] += len(data)
+    lines = (spend["pending"] + data).split(b"\n")
+    spend["pending"] = lines.pop()
+    reason = None
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "step_finish":
+            continue
+        part = event.get("part") if isinstance(event.get("part"), dict) else {}
+        tokens = part.get("tokens") if isinstance(part.get("tokens"), dict) else {}
+        cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+        # OpenCode prices steps from its own table; a model missing from it
+        # (or a free one) reports 0, which a limit cannot tell from unknown.
+        cost = part.get("cost")
+        cost = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0 else None
+        used = count(tokens, "input") + count(tokens, "output") + count(tokens, "reasoning")
+        spend["steps"] += 1
+        spend["cost"] += cost or 0.0
+        # Ledger fields as bin/llm writes them: in_tok includes cached input,
+        # out_tok includes reasoning.
+        record = dict(watch["record"], ts=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                      in_tok=count(tokens, "input") + count(cache, "read") + count(cache, "write"),
+                      out_tok=count(tokens, "output") + count(tokens, "reasoning"),
+                      think_tok=count(tokens, "reasoning"), cache_tok=count(cache, "read"))
+        if cost is not None:
+            record["cost"] = cost
+        try:
+            os.makedirs(os.path.dirname(watch["ledger"]) or ".", exist_ok=True)
+            with open(watch["ledger"], "a") as ledger:
+                ledger.write(json.dumps(record) + "\n")
+        except OSError:
+            pass
+        if watch.get("remaining") is not None:
+            if cost is None and used > 0:
+                reason = reason or "a step reported tokens but no cost"
+            elif spend["cost"] >= watch["remaining"]:
+                reason = reason or "spend limit reached"
+    return reason
+
+code = None
 try:
-    code = child.wait(timeout=int(sys.argv[1]))
-except subprocess.TimeoutExpired:
-    print("coding-agent: deadline exceeded after " + sys.argv[1] + " seconds", file=sys.stderr)
-    code = 124
+    while True:
+        left = deadline - time.monotonic()
+        try:
+            code = child.wait(timeout=max(0.0, min(left, 0.5) if watch else left))
+            break
+        except subprocess.TimeoutExpired:
+            pass
+        if watch:
+            spend["stopped"] = read_steps()
+            if spend["stopped"]:
+                print("coding-agent: stopped OpenCode at the spend limit (" + spend["stopped"] + ")", file=sys.stderr)
+                code = 122
+                break
+        if time.monotonic() >= deadline:
+            print("coding-agent: deadline exceeded after " + sys.argv[1] + " seconds", file=sys.stderr)
+            code = 124
+            break
 finally:
     for sig in (signal.SIGTERM, signal.SIGKILL):
         # Darwin rejects killpg on a zombie-only group with EPERM. Reap an
@@ -150,6 +230,11 @@ finally:
         if sig == signal.SIGTERM:
             time.sleep(1)
     child.wait()
+if watch:
+    read_steps()   # steps written just before the run ended
+    with open(watch["state"], "w") as state:
+        json.dump({"cost": round(spend["cost"], 6), "steps": spend["steps"],
+                   "stopped": spend["stopped"]}, state)
 sys.exit(code if code >= 0 else 128 - code)
 PY_DEADLINE
 }
@@ -202,6 +287,27 @@ command -v python3 >/dev/null 2>&1 || die "python3 is required"
 command -v perl >/dev/null 2>&1 || die "perl is required"
 traj_bin=$(command -v traj 2>/dev/null || true)
 [[ -n "$traj_bin" ]] || die "traj is required"
+
+# Spend limit (bin/llm's LLM_SPEND_LIMIT_USD): a delegation counts against the
+# identity's limit like the mind's own calls. bin/llm owns the arithmetic, the
+# ledger path and the identity, so ask it rather than reading its settings.
+# Without bin/llm on PATH (this package outside Headlong) nothing is counted.
+spend_ledger="" spend_identity="" spend_remaining=null
+if command -v llm >/dev/null 2>&1; then
+    spend_json=$(llm --spend) || die "could not read the spend limit (llm --spend failed)"
+    spend_ledger=$(printf '%s' "$spend_json" | jq -r '.ledger // empty')
+    spend_identity=$(printf '%s' "$spend_json" | jq -r '.identity // empty')
+    spend_remaining=$(printf '%s' "$spend_json" | jq -c '.remaining')
+    if [[ "$spend_remaining" != null ]]; then
+        [[ "$model" == openrouter/* ]] \
+            || die "the spend limit (LLM_SPEND_LIMIT_USD) counts OpenRouter only: delegate with --model openrouter/<vendor>/<model>"
+        if [[ "$(printf '%s' "$spend_json" | jq -r '.remaining <= 0')" == true ]]; then
+            printf 'coding-agent: %s; not starting the delegation\n' \
+                "$(printf '%s' "$spend_json" | jq -r '"spend limit reached: $\(.spent * 100 | round / 100) of $\(.limit)"')" >&2
+            exit 3
+        fi
+    fi
+fi
 
 # Preserve the caller's inline configuration, including broad permission rules.
 # Reject invalid JSON without printing its contents (which may contain keys).
@@ -377,6 +483,18 @@ if [[ "$worktree_rc" -eq 0 ]]; then
         } > "$out/executor.prompt"
         model_args=()
         [[ -n "$model" ]] && model_args=(--model "$model")
+        if [[ -n "$spend_ledger" ]]; then
+            run_spend=$(jq -nc --arg stdout "$executor_stdout" --arg ledger "$spend_ledger" \
+                --arg state "$out/spend.json" --argjson remaining "$spend_remaining" \
+                --arg model "$model" --arg identity "$spend_identity" --arg delegation "$child_traj" \
+                --arg run_id "${LLM_RUN_ID:-${SHELLM_RUN_STEP_ID:-}}" '
+                {stdout: $stdout, ledger: $ledger, state: $state, remaining: $remaining,
+                 record: ({source: "opencode", delegation: $delegation}
+                   + (if ($model | contains("/")) then {provider: ($model | split("/")[0]),
+                        model: ($model | sub("^[^/]+/"; ""))} else {} end)
+                   + (if $identity == "" then {} else {identity: $identity} end)
+                   + (if $run_id == "" then {} else {run_id: $run_id} end))}')
+        fi
         executor_rc=0
         (
             cd "$worktree" || exit 125
@@ -386,6 +504,7 @@ if [[ "$worktree_rc" -eq 0 ]]; then
                 run_bounded "$out/executor.prompt" "$resolved_backend" --pure run --format json \
                 "${model_args[@]+"${model_args[@]}"}"
         ) >"$executor_stdout" 2>"$executor_stderr" || executor_rc=$?
+        run_spend=""
     fi
     # Observe and capture executable bits even when the source disables fileMode.
     if [[ -n "$(git -C "$worktree" -c core.fileMode=true status --porcelain 2>/dev/null)" ]]; then
@@ -460,6 +579,11 @@ source_after=$(checkout_fingerprint "$repo") || integrity_rc=$?
 source_unchanged=false
 [[ "$integrity_rc" -eq 0 && "$source_before" == "$source_after" ]] && source_unchanged=true
 
+# What the executor cost, from the supervisor's spend watch (absent outside Headlong).
+spend_record=null
+[[ -s "$out/spend.json" ]] && spend_record=$(jq -c . "$out/spend.json" 2>/dev/null || echo null)
+spend_stopped=$(printf '%s' "$spend_record" | jq -r '.stopped // empty' 2>/dev/null) || spend_stopped=""
+
 if [[ "$sanitization_rc" -ne 0 ]]; then
     status="sanitization_failed"
 elif [[ "$worktree_rc" -ne 0 ]]; then
@@ -468,6 +592,8 @@ elif [[ "$integrity_rc" -ne 0 ]]; then
     status="integrity_check_failed"
 elif [[ "$source_unchanged" != true ]]; then
     status="source_changed"
+elif [[ -n "$spend_stopped" ]]; then
+    status="budget_exhausted"
 elif [[ "$executor_rc" -ne 0 ]]; then
     status="executor_failed"
 elif [[ "$commit_rc" -ne 0 ]]; then
@@ -500,6 +626,7 @@ result=$(jq -nc \
     --argjson verification_unchanged "$verification_unchanged" \
     --argjson integrity_exit "$integrity_rc" --argjson timeout "$timeout_seconds" \
     --argjson sanitization_exit "$sanitization_rc" --argjson summaries "$transcript_summaries" \
+    --argjson spend "$spend_record" \
     --arg source_before "$source_before" --arg source_after "$source_after" \
     --arg verification_before "$verification_before" --arg verification_after "$verification_after" \
     '{type:"delegation-result", status:$status, candidate:$candidate, accepted:$accepted,
@@ -518,7 +645,8 @@ result=$(jq -nc \
       source_fingerprint_before:$source_before, source_fingerprint_after:$source_after,
       verification_fingerprint_before:$verification_before, verification_fingerprint_after:$verification_after,
       parent_traj:$parent, child_traj:$child, child_traj_ref:$child_ref}
-     + $summaries + (if $model == "" then {} else {model:$model} end)')
+     + $summaries + (if $model == "" then {} else {model:$model} end)
+     + (if $spend == null then {} else {spend:$spend} end)')
 result_step=$(printf '%s' "$result" | TRAJ_DIR="$traj_dir" TRAJ_ID="$child_traj" "$traj_bin" append) \
     || die "could not append delegation result"
 
@@ -535,6 +663,7 @@ printf '%s' "$result" | jq -c --arg result_step "$result_step" --arg merge_step 
 
 case "$status" in
     candidate) exit 0 ;;
+    budget_exhausted) exit 3 ;;
     executor_failed) [[ "$executor_rc" -gt 0 && "$executor_rc" -lt 126 ]] && exit "$executor_rc"; exit 1 ;;
     *) exit 1 ;;
 esac
