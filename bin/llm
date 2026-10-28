@@ -87,6 +87,105 @@ _llm_or_env="$LLM_OR_ONLY$LLM_OR_DATA_COLLECTION$LLM_OR_ZDR"
 # caller. Best-effort: fields the provider doesn't report are omitted, and no
 # failure here can break the call.
 LLM_USAGE_FILE="${LLM_USAGE_FILE:-}"
+# Usage ledger: one JSON line per successful call, appended to
+#   $IDENTITY_DIR/usage/llm.jsonl   when running for an identity (thinkers,
+#                                   shellm runs, the responder all have it)
+#   $_llm_home/usage/llm.jsonl      otherwise (hand calls)
+# LLM_USAGE_LEDGER overrides the path (/dev/null disables).
+#   {"ts":...,"provider":...,"model":...,"in_tok":N,"out_tok":N,"think_tok":N,
+#    "cache_tok":N,"cost":USD,"served_by":...,"truncated":true,"identity":...,
+#    "run_id":...}
+# identity/run_id are present only when known; cache_tok only when the
+# provider reported cached input tokens; cost only when the provider reported
+# what the call cost (OpenRouter's usage.cost); served_by only on OpenRouter (the
+# upstream host); truncated only when the output hit max_tokens. The dash usage page and
+# deploy/scripts/audel-metrics count this file, so every llm call counts
+# toward spend, not only the ones bin/shellm stamps on reasoning steps.
+_llm_ledger="${LLM_USAGE_LEDGER:-}"
+if [[ -z "$_llm_ledger" ]]; then
+    if [[ -n "${IDENTITY_DIR:-}" ]]; then
+        _llm_ledger="$IDENTITY_DIR/usage/llm.jsonl"
+    else
+        _llm_ledger="$_llm_home/usage/llm.jsonl"
+    fi
+fi
+_llm_identity="${IDENTITY_NAME:-}"
+[[ -z "$_llm_identity" && -n "${IDENTITY_DIR:-}" ]] && _llm_identity=$(basename "$IDENTITY_DIR")
+# Spend limit, off unless set: LLM_SPEND_LIMIT_USD caps what the calls in
+# this ledger (so, per identity) may cost over LLM_SPEND_WINDOW: total, or the
+# current UTC day or month. Cost is what OpenRouter reports on each call, so
+# with a limit set every other provider is refused. At or over the limit llm
+# sends nothing and exits 3, with kind "budget" in the health marker. The
+# check runs before each call and cannot stop one already in flight, so each
+# concurrent caller can overshoot by up to one call: keep a provider-side cap
+# on the key as the backstop. `llm --spend` prints the numbers for other
+# components (contrib/opencode counts its delegations against the same limit).
+LLM_SPEND_LIMIT_USD="${LLM_SPEND_LIMIT_USD:-}"
+LLM_SPEND_WINDOW="${LLM_SPEND_WINDOW:-total}"
+# Summing the whole ledger before every call would slow down as it grows, so
+# the sum is kept incrementally, like the dash's usage cache: <ledger>.spend.json
+# holds {since, offset, mark, spent} for the whole lines read so far, written
+# atomically, and a check reads only what was appended since. A line still
+# being appended is left for the next check. mark (the bytes just before the
+# offset) catches a ledger that was replaced; a new window start, a mismatch
+# or a shorter ledger means summing from the start again.
+_llm_ledger_mark() {   # the (up to) 32 ledger bytes ending at offset $1, newlines dropped
+    local off="$1" k=32
+    (( off < k )) && k=$off
+    (( k > 0 )) || return 0
+    tail -c "+$((off - k + 1))" "$_llm_ledger" 2>/dev/null | head -c "$k" | tr -d '\n'
+}
+_llm_spend_sum() {   # _llm_spend_sum SINCE: prints what the ledger has spent since SINCE
+    local since="$1" cache="$_llm_ledger.spend.json" off=0 spent=0 mark="" size chunk n
+    if [[ ! -f "$_llm_ledger" ]]; then rm -f "$cache" 2>/dev/null; printf '0'; return 0; fi
+    size=$(wc -c < "$_llm_ledger"); size="${size//[[:space:]]/}"
+    if [[ -s "$cache" ]]; then
+        { IFS= read -r off; IFS= read -r spent; IFS= read -r mark; } < <(jq -r --arg s "$since" \
+            'select(.since == $s) | .offset, .spent, .mark' "$cache" 2>/dev/null) || true
+        if ! [[ "$off" =~ ^[0-9]+$ && "$off" -le "$size" && "$spent" =~ ^[0-9.eE+-]+$ ]] \
+           || [[ "$(_llm_ledger_mark "$off")" != "$mark" ]]; then
+            off=0 spent=0
+        fi
+    fi
+    chunk=$(mktemp "${TMPDIR:-/tmp}/llm-spend.XXXXXX")
+    tail -c "+$((off + 1))" "$_llm_ledger" > "$chunk" 2>/dev/null || true
+    if [[ -n "$(tail -c 1 "$chunk")" ]]; then
+        sed '$d' "$chunk" > "$chunk.whole" && mv -f "$chunk.whole" "$chunk"
+    fi
+    n=$(wc -c < "$chunk"); off=$((off + ${n//[[:space:]]/}))
+    # fromjson? skips a torn or foreign line instead of failing the whole sum.
+    spent=$(jq -Rn --arg s "$since" --argjson base "$spent" '$base + ([inputs | fromjson?
+        | select(type == "object" and (.cost | type) == "number" and (.ts // "") >= $s)
+        | .cost] | add // 0)' "$chunk")
+    rm -f "$chunk"
+    if jq -nc --arg s "$since" --argjson o "$off" --argjson v "$spent" --arg m "$(_llm_ledger_mark "$off")" \
+          '{since: $s, offset: $o, mark: $m, spent: $v}' > "$cache.$$" 2>/dev/null; then
+        mv -f "$cache.$$" "$cache" 2>/dev/null || rm -f "$cache.$$"
+    else
+        rm -f "$cache.$$"
+    fi
+    printf '%s' "$spent"
+}
+_llm_spend_json() {   # {spent, limit, remaining, window, since, ledger, identity}
+    local since="" spent
+    case "$LLM_SPEND_WINDOW" in
+        total) ;;
+        day)   since=$(date -u +%Y-%m-%dT00:00:00Z) ;;
+        month) since=$(date -u +%Y-%m-01T00:00:00Z) ;;
+        *)     die "LLM_SPEND_WINDOW must be total, day or month (got '$LLM_SPEND_WINDOW')" ;;
+    esac
+    [[ -z "$LLM_SPEND_LIMIT_USD" || "$LLM_SPEND_LIMIT_USD" =~ ^[0-9]+([.][0-9]+)?$ ]] \
+        || die "LLM_SPEND_LIMIT_USD must be a dollar amount such as 25 or 2.50 (got '$LLM_SPEND_LIMIT_USD')"
+    spent=$(_llm_spend_sum "$since")
+    jq -nc --argjson spent "$spent" \
+        --arg limit "$LLM_SPEND_LIMIT_USD" --arg window "$LLM_SPEND_WINDOW" --arg since "$since" \
+        --arg ledger "$_llm_ledger" --arg identity "$_llm_identity" '
+        (if $limit == "" then null else ($limit | tonumber) end) as $l
+        | {spent: $spent, limit: $l,
+           remaining: (if $l == null then null else ([$l - $spent, 0] | max) end),
+           window: $window, since: (if $since == "" then null else $since end),
+           ledger: $ledger, identity: (if $identity == "" then null else $identity end)}'
+}
 # Transient-failure retries (provider errors, 429/5xx, network). Retries
 # only happen when NOTHING has been emitted yet — a retry after partial
 # streamed output would duplicate text. LLM_RETRIES=0 disables.
@@ -117,13 +216,16 @@ die() { echo "llm: error: $*" >&2; exit 1; }
 # Last-call health marker: one small JSON in the state home, rewritten after
 # every call, so `ada status`, status.sh and the dash can say "your key ran
 # out of credit" out loud instead of the mind just going quiet.
-#   {"ok":true,"ts":...,"provider":...,"model":...}
-#   {"ok":false,"ts":...,"kind":"credit|auth|rate|other","http_code":402,"message":...,...}
+#   {"ok":true,"ts":...,"provider":...,"model":...,"identity":...}
+#   {"ok":false,"ts":...,"kind":"credit|auth|rate|budget|other","http_code":402,"message":...,...}
+# kind "budget" is our own spend limit (LLM_SPEND_LIMIT_USD), passed in by
+# the caller rather than guessed from the message. identity (when known)
+# says whose call it was: the marker is shared by the state home, the limit is not.
 _llm_health_file="$_llm_home/run/llm_health.json"
-_llm_note() {   # _llm_note ok|error [http_code] [message]
-    local st="$1" code="${2:-}" msg="${3:-}" kind="" m tmp
+_llm_note() {   # _llm_note ok|error [http_code] [message] [kind]
+    local st="$1" code="${2:-}" msg="${3:-}" kind="${4:-}" m tmp
     mkdir -p "$_llm_home/run" 2>/dev/null || return 0
-    if [[ "$st" == error ]]; then
+    if [[ "$st" == error && -z "$kind" ]]; then
         m=$(printf '%s' "$msg" | tr '[:upper:]' '[:lower:]')
         # The HTTP code wins when we have one; the message words are the
         # fallback (streamed errors arrive with no code). A 429 that says
@@ -143,8 +245,9 @@ _llm_note() {   # _llm_note ok|error [http_code] [message]
     tmp="$_llm_health_file.$$"
     if jq -n --arg ok "$st" --arg code "$code" --arg msg "$msg" --arg kind "$kind" \
           --arg provider "${LLM_PROVIDER:-}" --arg model "${LLM_MODEL:-}" \
-          --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg identity "$_llm_identity" \
           '{ok: ($ok == "ok"), ts: $ts, provider: $provider, model: $model}
+           + (if $identity == "" then {} else {identity: $identity} end)
            + (if $ok == "ok" then {} else
                 {kind: $kind, http_code: (if $code == "" then null else ($code | tonumber? // $code) end), message: $msg}
               end)' > "$tmp" 2>/dev/null; then
@@ -229,11 +332,23 @@ _fs_feed() {   # text just emitted; returns 0 once the first block has closed
 # block has closed: the handler breaks out of its read loop, the pipe from
 # curl closes, curl dies on its next write, and the retry loop treats the
 # marker as a clean finish.
+# Under a spend limit the stream is not cut: OpenRouter's cost arrives only in
+# its final usage event, and a cut call is billed but uncounted (measured live:
+# the provider kept generating after the cut, and OpenRouter billed all of it).
+# The output still ends at the closing fence; the rest is read in silence
+# (_fs_draining) for at most _LLM_SPEND_DRAIN_TIME seconds.
+_fs_draining=0 _fs_drain_t0=0
+_LLM_SPEND_DRAIN_TIME="${_LLM_SPEND_DRAIN_TIME:-20}"
 _emit_text() {
+    [[ "$_fs_draining" -eq 1 ]] && return 0
     printf '%s' "$1"
     [[ "$LLM_STOP_AFTER_CODE_BLOCK" == 1 ]] || return 0
     _fs_feed "$1" || return 0
     { [[ -n "${LLM_STOP_MARKER:-}" ]] && printf '%s' "$_fs_bytes" > "$LLM_STOP_MARKER" 2>/dev/null; } || true
+    if [[ -n "$LLM_SPEND_LIMIT_USD" ]]; then
+        _fs_draining=1 _fs_drain_t0=$SECONDS
+        return 0
+    fi
     echo "llm: stopped reading after the first code block closed (LLM_STOP_AFTER_CODE_BLOCK)" >&2
     return 1
 }
@@ -268,6 +383,8 @@ Options:
                            (response_format json_schema, strict) on OpenAI-style
                            providers; ignored with a warning elsewhere
   --raw                    Print raw non-streaming API response JSON
+  --spend                  Print what this usage ledger has spent against
+                           LLM_SPEND_LIMIT_USD, as JSON, and exit
   -h, --help               Show this help
 
 Models:
@@ -356,6 +473,14 @@ Environment:
                            writing after its command no longer costs tokens
                            or wall time. Usage is then estimated
                            (out_tok from bytes, estimated:true).
+  LLM_SPEND_LIMIT_USD      Optional spend limit in USD for the calls in this
+                           usage ledger (one per identity), counted from the
+                           cost OpenRouter reports. At or over it, llm sends
+                           nothing and exits 3. OpenRouter only: with a limit
+                           set, other providers are refused. A call already
+                           in flight finishes, so the limit can be overshot
+                           by up to one call per concurrent caller
+  LLM_SPEND_WINDOW         total (default), day or month (UTC) for the limit
 
 Examples:
   llm -m claude-sonnet-4-5-20250929 "explain quicksort"
@@ -398,6 +523,7 @@ while [[ $# -gt 0 ]]; do
         --json-schema)   _jsf="${2:?--json-schema requires a path}"; [[ -f "$_jsf" ]] || die "Schema file not found: $_jsf"; LLM_JSON_SCHEMA=$(cat "$_jsf"); shift 2 ;;
         --raw)           LLM_RAW=1; shift ;;
         --stop-after-code-block) LLM_STOP_AFTER_CODE_BLOCK=1; shift ;;
+        --spend)         _llm_spend_json; exit 0 ;;
         -*)              die "Unknown option: $1 (try llm --help)" ;;
         *)               LLM_PROMPT="$*"; break ;;
     esac
@@ -532,6 +658,26 @@ else
     fi
     if [[ -n "$_llm_or_env" && -n "$LLM_OR_ONLY$LLM_OR_DATA_COLLECTION$LLM_OR_ZDR" ]]; then
         echo "llm: routing: openrouter${LLM_OR_ONLY:+ only=$LLM_OR_ONLY}${LLM_OR_DATA_COLLECTION:+ data_collection=$LLM_OR_DATA_COLLECTION}${LLM_OR_ZDR:+ zdr=true}" >&2
+    fi
+fi
+
+# Spend limit (LLM_SPEND_LIMIT_USD, see the defaults): refuse before anything
+# is built or sent. Exit 3 tells callers that own a trajectory (bin/shellm,
+# the responder) to record why the mind went quiet.
+if [[ -n "$LLM_SPEND_LIMIT_USD" ]]; then
+    if [[ "$LLM_PROVIDER" != openrouter ]]; then
+        _llm_spend_msg="LLM_SPEND_LIMIT_USD is supported only with OpenRouter, which reports what each call costs (provider here: $LLM_PROVIDER)"
+        _llm_note error "" "$_llm_spend_msg"
+        die "$_llm_spend_msg"
+    fi
+    [[ "$_llm_ledger" != /dev/null ]] || die "LLM_SPEND_LIMIT_USD counts the usage ledger, which LLM_USAGE_LEDGER=/dev/null disables"
+    _llm_spend=$(_llm_spend_json)
+    if [[ "$(printf '%s' "$_llm_spend" | jq -r '.remaining <= 0')" == true ]]; then
+        _llm_spend_msg=$(printf '%s' "$_llm_spend" | jq -r '"spend limit reached: $\(.spent * 100 | round / 100) of $\(.limit) "
+            + ({day: "today", month: "this month"}[.window] // "in total")')
+        _llm_note error "" "$_llm_spend_msg" budget
+        echo "llm: error: $_llm_spend_msg; no request sent (raise LLM_SPEND_LIMIT_USD to continue)" >&2
+        exit 3
     fi
 fi
 
@@ -1014,7 +1160,8 @@ warn_truncated() {
 # cachedContentTokenCount); it is billed at the cached rate, so the prefix
 # cache hit rate is cache_tok / in_tok.
 # A fifth arg "estimated" marks a record derived from bytes rather than the
-# provider's count (the stream was cut before the usage event arrived).
+# provider's count (the stream was cut before the usage event arrived). A
+# sixth is the call's cost in USD, as the provider reported it.
 # The record also carries served_by (the upstream host OpenRouter routed the
 # call to, from the "provider" field on its responses; absent elsewhere) and
 # truncated: true when the output hit max_tokens. One model id on OpenRouter
@@ -1024,43 +1171,25 @@ _llm_served_by=""
 _llm_truncated=0
 write_usage() {
     jq -nc --arg i "${1:-}" --arg o "${2:-}" --arg t "${3:-}" --arg c "${4:-}" --arg e "${5:-}" \
-        --arg p "$_llm_served_by" --arg tr "$_llm_truncated" '
+        --arg k "${6:-}" --arg p "$_llm_served_by" --arg tr "$_llm_truncated" '
         {}
         + (if ($i | test("^[0-9]+$")) then {in_tok: ($i | tonumber)} else {} end)
         + (if ($o | test("^[0-9]+$")) then {out_tok: ($o | tonumber)} else {} end)
         + (if ($t | test("^[0-9]+$")) then {think_tok: ($t | tonumber)} else {} end)
         + (if ($c | test("^[0-9]+$")) then {cache_tok: ($c | tonumber)} else {} end)
+        + (if ($k | test("^[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$")) then {cost: ($k | tonumber)} else {} end)
         + (if $e == "estimated" then {estimated: true} else {} end)
         + (if $p != "" then {served_by: $p} else {} end)
         + (if $tr == "1" then {truncated: true} else {} end)' \
         > "$LLM_USAGE_FILE" 2>/dev/null || true
 }
 
-# Usage ledger: one JSON line per successful call, appended to
-#   $IDENTITY_DIR/usage/llm.jsonl   when running for an identity (thinkers,
-#                                   shellm runs, the responder all have it)
-#   $_llm_home/usage/llm.jsonl      otherwise (hand calls)
-# LLM_USAGE_LEDGER overrides the path (/dev/null disables).
-#   {"ts":...,"provider":...,"model":...,"in_tok":N,"out_tok":N,"think_tok":N,
-#    "cache_tok":N,"served_by":...,"truncated":true,"identity":...,"run_id":...}
-# identity/run_id are present only when known; cache_tok only when the
-# provider reported cached input tokens; served_by only on OpenRouter (the
-# upstream host); truncated only when the output hit max_tokens. The dash usage page and
-# deploy/scripts/audel-metrics count this file, so every llm call counts
-# toward spend, not only the ones bin/shellm stamps on reasoning steps.
-_llm_ledger="${LLM_USAGE_LEDGER:-}"
-if [[ -z "$_llm_ledger" ]]; then
-    if [[ -n "${IDENTITY_DIR:-}" ]]; then
-        _llm_ledger="$IDENTITY_DIR/usage/llm.jsonl"
-    else
-        _llm_ledger="$_llm_home/usage/llm.jsonl"
-    fi
-fi
-_llm_identity="${IDENTITY_NAME:-}"
-[[ -z "$_llm_identity" && -n "${IDENTITY_DIR:-}" ]] && _llm_identity=$(basename "$IDENTITY_DIR")
 _llm_ledger_append() {
     local rec
     [[ -s "$LLM_USAGE_FILE" ]] || return 0
+    if [[ -n "$LLM_SPEND_LIMIT_USD" ]] && ! jq -e 'has("cost")' "$LLM_USAGE_FILE" >/dev/null 2>&1; then
+        echo "llm: warning: OpenRouter reported no cost for this call; the spend limit does not count it" >&2
+    fi
     rec=$(jq -c 'select(type == "object" and length > 0)' "$LLM_USAGE_FILE" 2>/dev/null | head -1) || return 0
     [[ -n "$rec" ]] || return 0
     mkdir -p "$(dirname "$_llm_ledger")" 2>/dev/null || return 0
@@ -1193,10 +1322,19 @@ stream_openai() {
                         (.usage.prompt_tokens_details.cached_tokens // "")
                     ] | @tsv' 2>/dev/null) || _u=""
                 if [[ -n "$_u" ]]; then
-                    local _u_in _u_out _u_think _u_cache
+                    local _u_in _u_out _u_think _u_cache _u_cost
                     IFS=$'\t' read -r _u_in _u_out _u_think _u_cache <<<"$_u"
-                    write_usage "$_u_in" "$_u_out" "$_u_think" "$_u_cache"
+                    # OpenRouter's charge in USD, read on its own: an empty
+                    # tab field above would shift it into the wrong slot.
+                    _u_cost=$(printf '%s' "$json" | jq -r '.usage.cost // empty | numbers' 2>/dev/null) || _u_cost=""
+                    write_usage "$_u_in" "$_u_out" "$_u_think" "$_u_cache" "" "$_u_cost"
                 fi
+            fi
+            # A model that keeps writing after its block must not hold the
+            # caller: past the drain time, cut as if no limit were set.
+            if [[ "$_fs_draining" -eq 1 ]] && (( SECONDS - _fs_drain_t0 >= _LLM_SPEND_DRAIN_TIME )); then
+                echo "llm: stopped reading ${_LLM_SPEND_DRAIN_TIME}s after the first code block closed, before the usage event" >&2
+                break
             fi
         elif [[ "$_saw_data" -eq 0 ]]; then
             _err_buf="${_err_buf}${line}
@@ -1444,6 +1582,7 @@ if [[ "$LLM_STREAM" -eq 1 ]]; then
         LLM_RETRY_ERR=$(mktemp)
         LLM_DATA_MARKER="${LLM_RETRY_ERR}.emitted"
         LLM_STOP_MARKER="${LLM_RETRY_ERR}.stopped"
+        [[ -n "$LLM_SPEND_LIMIT_USD" ]] && : > "$LLM_USAGE_FILE"
         _rc=0
         ( "stream_${LLM_PROVIDER}" < <(curl -sS -N ${_net_args[@]+"${_net_args[@]}"} "${headers[@]}" -d @"$payload_file" "$url" 2>"$_curl_err") ) || _rc=$?
 
@@ -1461,7 +1600,10 @@ if [[ "$LLM_STREAM" -eq 1 ]]; then
         rm -f "$_curl_err" "$LLM_RETRY_ERR" "$LLM_DATA_MARKER" "$LLM_STOP_MARKER"
 
         if [[ -n "$_stopped" && "$_rc" -eq 0 && "$_emitted" -eq 1 ]]; then
-            [[ "$_stopped" =~ ^[0-9]+$ ]] && write_usage "" "$(( (_stopped + 3) / 4 ))" "" "" estimated
+            # A stream read on past the fence (spend limit) may have its real usage.
+            if [[ -z "$LLM_SPEND_LIMIT_USD" || ! -s "$LLM_USAGE_FILE" ]] && [[ "$_stopped" =~ ^[0-9]+$ ]]; then
+                write_usage "" "$(( (_stopped + 3) / 4 ))" "" "" estimated
+            fi
             _llm_note ok
             _llm_ledger_append
             break   # cut on purpose after the first code block
@@ -1555,9 +1697,10 @@ else
         gemini)    _u=$(jq -r '[(.usageMetadata.promptTokenCount // ""), (.usageMetadata.candidatesTokenCount // ""), (.usageMetadata.thoughtsTokenCount // ""), (.usageMetadata.cachedContentTokenCount // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
         *)         _u=$(jq -r '[(.usage.prompt_tokens // ""), (.usage.completion_tokens // ""), (.usage.completion_tokens_details.reasoning_tokens // ""), (.usage.prompt_tokens_details.cached_tokens // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
     esac
+    _u_cost=$(jq -r '.usage.cost // empty | numbers' "$local_resp" 2>/dev/null) || _u_cost=""
     if [[ -n "$_u" ]]; then
         IFS=$'\t' read -r _u_in _u_out _u_think _u_cache <<<"$_u"
-        write_usage "$_u_in" "$_u_out" "$_u_think" "$_u_cache"
+        write_usage "$_u_in" "$_u_out" "$_u_think" "$_u_cache" "" "$_u_cost"
     fi
     _llm_ledger_append
 

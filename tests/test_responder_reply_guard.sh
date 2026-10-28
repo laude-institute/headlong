@@ -79,6 +79,10 @@ case "${STUB_MODE:-reply}" in
     fail)
         echo "llm: error: API error (HTTP 400): schema not supported" >&2
         exit 1 ;;
+    spend)
+        # bin/llm at LLM_SPEND_LIMIT_USD: nothing sent, exit 3.
+        echo 'llm: error: spend limit reached: $25 of $25 in total; no request sent (raise LLM_SPEND_LIMIT_USD to continue)' >&2
+        exit 3 ;;
 esac
 STUB
 chmod +x "$WORK/stub/llm"
@@ -162,6 +166,15 @@ STUB_MODE=timeout run_step t4
 o=$(obs_for t4)
 [[ "$(field "$o" .decision)" == "reply-failed" && "$(field "$o" .failure)" == "timeout" && "$(field "$o" .timed_out)" == "true" ]] && ok "the observation says failure=timeout, timed_out=true" || bad "timeout obs" "$o"
 printf '%s' "$o" | jq -e '.content | test("longer than 180s")' >/dev/null && ok "and tells the mind how long it waited" || bad "timeout text" "$o"
+
+# --- 4b. the spend limit is not retried, and the mind is told why --------------
+msg t4b "are you there"
+STUB_MODE=spend run_step t4b 2>/dev/null
+[[ $(grep -c '^CALL' "$STUB_CALLS") -eq 1 ]] && ok "a spend-limited structured call is not retried as plain text" || bad "no retry at the spend limit" "$(cat "$STUB_CALLS")"
+o=$(obs_for t4b)
+[[ "$(field "$o" .decision)" == "reply-failed" && "$(field "$o" .failure)" == "spend-limit" ]] && ok "the observation says failure=spend-limit" || bad "spend obs" "$o"
+printf '%s' "$o" | jq -e '.content | test("spend limit .*LLM_SPEND_LIMIT_USD")' >/dev/null && ok "and names the setting that stopped it" || bad "spend text" "$o"
+[[ -z "$(sent_for t4b)" ]] && ok "nothing is sent at the spend limit" || bad "sent at spend limit" "$(sent_for t4b)"
 
 # --- 5. a fast failure still falls back to plain text -------------------------
 msg t5 "ping"

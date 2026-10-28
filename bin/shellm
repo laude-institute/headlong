@@ -1731,6 +1731,22 @@ _supervise_exec \"\$(cat)\" \"\$1\"" _ "$control_dir" <<< "$wrapped_code" 2>&1 &
 # LLM API call (delegates to the `llm` tool)
 # ---------------------------------------------------------------------------
 
+# llm exits 3 when LLM_SPEND_LIMIT_USD is reached: it sent nothing, and the
+# run cannot think again until the limit is raised or its window rolls over.
+# Say so in the run's trajectory, so the mind can see why it went quiet.
+note_spend_limit() {
+    local spend
+    spend=$(llm --spend 2>/dev/null) || spend='{}'
+    jq -nc --argjson s "$spend" --arg run_id "${_run_step_id:-}" '
+        {type:"observation", source:"shellm", decision:"spend-limit",
+         content:("spend limit reached: $\(($s.spent // 0) * 100 | round / 100) of $\($s.limit) "
+             + ({day: "today", month: "this month"}[$s.window // ""] // "in total")
+             + ". No model call was made, so this run stopped. Raise LLM_SPEND_LIMIT_USD to continue."),
+         spend:($s | {spent, limit, window})}
+        + (if $run_id == "" then {} else {run_id:$run_id} end)' \
+        | traj append --traj_dir "${_run_traj_dir:-}" "${_run_traj_id:-}" >/dev/null 2>&1 || true
+}
+
 call_llm() {
     local system_prompt="$1"
     local messages_json="$2"
@@ -1778,6 +1794,7 @@ call_llm() {
         local _llm_err=""
         [[ -s "$stderr_file" ]] && _llm_err=$(tail -c 500 "$stderr_file")
         rm -f "$text_file" "$stderr_file" "$messages_file"
+        [[ "$llm_exit" -eq 3 ]] && note_spend_limit
         die "llm failed (exit $llm_exit): $_llm_err"
     fi
 

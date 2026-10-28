@@ -2,13 +2,15 @@
 API (serve cache, refresh, lock)."""
 
 import json
+import shutil
+import stat
 import time
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from headlong_web import usage
+from headlong_web import control, usage
 from headlong_web.server import create_app
 
 ROOT_TRAJ = "efefefef-9999-4999-8999-999999999999"
@@ -35,6 +37,12 @@ def _ledger_row(day: str, model: str, in_tok: int, out_tok: int, think_tok: int 
               "in_tok": in_tok, "out_tok": out_tok}
     if think_tok is not None:
         fields["think_tok"] = think_tok
+    return json.dumps(fields) + "\n"
+
+
+def _cost_row(day: str, model: str, cost, hhmm: str = "12:00", **extra) -> str:
+    fields = {"ts": f"{day}T{hhmm}:00Z", "provider": "openrouter", "model": model,
+              "in_tok": 10, "out_tok": 1, "cost": cost, **extra}
     return json.dumps(fields) + "\n"
 
 
@@ -203,15 +211,16 @@ def test_ledger_wins_per_day_and_older_days_fall_back(traj_dir: Path, ledger: Pa
     assert days["2026-08-02"]["runs"] == 1 and days["2026-08-02"]["reasoning"] == 2
     assert days["2026-08-03"] == {
         "rows": 0, "in_msg": 0, "out_msg": 0, "runs": 0, "reasoning": 0,
-        "calls": 1, "in": 700, "out": 9, "think": 2, "source": "ledger",
+        "calls": 1, "in": 700, "out": 9, "think": 2, "cost_llm": 0, "cost_opencode": 0,
+        "source": "ledger",
     }
     assert body["by_model"] == {
-        "modelA": {"calls": 2, "in": 1700, "out": 59, "think": 12},   # 08-01 stamp + 08-03 ledger
-        "modelB": {"calls": 1, "in": 2000, "out": 80, "think": 0},
-        "fast/model": {"calls": 1, "in": 300, "out": 20, "think": 0},
+        "modelA": {"calls": 2, "in": 1700, "out": 59, "think": 12, "cost": 0},  # 08-01 stamp + 08-03 ledger
+        "modelB": {"calls": 1, "in": 2000, "out": 80, "think": 0, "cost": 0},
+        "fast/model": {"calls": 1, "in": 300, "out": 20, "think": 0, "cost": 0},
     }
     assert body["totals"]["in"] == 4000 and body["totals"]["calls"] == 4
-    assert body["ledger"] == {"rows": 5, "skipped": 2, "since": "2026-08-02"}
+    assert body["ledger"] == {"rows": 5, "skipped": 2, "since": "2026-08-02", "calls": 3, "priced": 0}
     assert body["pending_bytes"] == 0
 
 
@@ -261,8 +270,37 @@ def test_missing_ledger_is_fine(traj_dir: Path, ledger: Path):
     state = usage.refresh(traj_dir, "usr", ledger=ledger)
     assert state["ledger_rows"] == 0 and state["ledger_offset"] == 0
     body = usage.summary(traj_dir, "id", "usr", ledger=ledger)
-    assert body["ledger"] == {"rows": 0, "skipped": 0, "since": None}
+    assert body["ledger"] == {"rows": 0, "skipped": 0, "since": None, "calls": 0, "priced": 0}
     assert all(d["source"] == "mindlog" for _, d in body["daily"])
+
+
+def test_ledger_cost_by_day_model_and_spender(traj_dir: Path, ledger: Path):
+    # Cost comes from the ledger, bin/llm's calls and contrib/opencode's
+    # delegation steps apart. A line with a cost but no tokens still counts,
+    # as it does for bin/llm's spend limit, even on a day whose tokens come
+    # from the mind log; priced says how many token calls had a cost.
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        _cost_row("2026-08-02", "modelB", 0.1, "10:00")
+        + _cost_row("2026-08-02", "modelB", 0.2, "11:00")
+        + _cost_row("2026-08-02", "openai/gpt-x", 0.05, "12:00", source="opencode", delegation="d1")
+        + _ledger_row("2026-08-02", "modelB", 5, 1, None, "13:00")     # no cost
+        + _ledger_row("2026-08-02", "other/model", 5, 1, None, "14:00")  # no cost
+        + json.dumps({"ts": "2026-08-03T01:00:00Z", "model": "modelB", "cost": 0.4}) + "\n"
+        + json.dumps({"ts": "2026-08-03T02:00:00Z", "model": "modelB", "cost": True}) + "\n"
+    )
+    usage.refresh(traj_dir, "usr", ledger=ledger)
+    body = usage.summary(traj_dir, "id", "usr", ledger=ledger)
+    days = dict(body["daily"])
+    assert days["2026-08-02"]["cost_llm"] == 0.3        # 0.1 + 0.2, float noise rounded away
+    assert days["2026-08-02"]["cost_opencode"] == 0.05
+    assert days["2026-08-03"]["source"] == "mindlog" and days["2026-08-03"]["cost_llm"] == 0.4
+    assert days["2026-08-01"]["cost_llm"] == 0
+    assert body["by_model"]["modelB"]["cost"] == 0.7
+    assert body["by_model"]["openai/gpt-x"]["cost"] == 0.05
+    assert body["by_model"]["other/model"]["cost"] == 0
+    assert body["totals"]["cost_llm"] == 0.7 and body["totals"]["cost_opencode"] == 0.05
+    assert body["ledger"]["calls"] == 5 and body["ledger"]["priced"] == 4
 
 
 # --- API ------------------------------------------------------------------
@@ -288,6 +326,7 @@ def test_usage_refresh_then_serve(client: TestClient, traj_dir: Path, ledger: Pa
     assert [d for d, _ in body["daily"]] == ["2026-08-01", "2026-08-02", "2026-08-03"]
     assert body["totals"] == {
         "in": 3040, "out": 134, "think": 11, "calls": 3, "in_msg": 1, "out_msg": 1, "runs": 2,
+        "cost_llm": 0, "cost_opencode": 0,
     }
     assert set(body["by_model"]) == {"modelA", "modelB", "modelC"}
     assert body["skipped"] == 2
@@ -318,3 +357,61 @@ def test_usage_refresh_read_only(identity: Path, traj_dir: Path):
     resp = ro.post("/api/identities/.identities~usr/usage/refresh", json={})
     assert resp.status_code == 403
     assert ro.get("/api/identities/.identities~usr/usage").status_code == 200
+
+
+
+# --- spend limit: GET .../spend asks llm --spend ------------------------------
+
+def _stub_llm(tmp_path: Path, monkeypatch, body: str) -> Path:
+    stub = tmp_path / "stub-bin"
+    stub.mkdir()
+    script = stub / "llm"
+    script.write_text("#!/usr/bin/env bash\n"
+                      f'echo "ARGS=$* IDENTITY_DIR=$IDENTITY_DIR" >> {stub}/calls.txt\n' + body)
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(control, "BIN_DIR", stub)
+    control._spend_cache.clear()
+    return stub
+
+
+def test_spend_serves_llm_spend_for_the_identity(client: TestClient, identity: Path,
+                                                 tmp_path: Path, monkeypatch):
+    stub = _stub_llm(tmp_path, monkeypatch, (
+        "printf '{\"spent\":1.5,\"limit\":2,\"remaining\":0.5,\"window\":\"day\","
+        "\"since\":\"2026-08-02T00:00:00Z\",\"ledger\":\"/x/llm.jsonl\",\"identity\":\"usr\"}'\n"))
+    body = client.get("/api/identities/.identities~usr/spend").json()
+    assert body == {"ok": True, "spent": 1.5, "limit": 2, "remaining": 0.5, "window": "day",
+                    "since": "2026-08-02T00:00:00Z"}
+    calls = (stub / "calls.txt").read_text().splitlines()
+    assert calls == [f"ARGS=--spend IDENTITY_DIR={identity}"]
+    # Polled by the usage page: served from a short cache, read-only too.
+    ro = TestClient(create_app(identity.parent.parent, read_only=True))
+    assert ro.get("/api/identities/.identities~usr/spend").json() == body
+    assert len((stub / "calls.txt").read_text().splitlines()) == 1
+
+
+def test_spend_reports_rejected_settings(client: TestClient, tmp_path: Path, monkeypatch):
+    _stub_llm(tmp_path, monkeypatch,
+              "echo \"llm: error: LLM_SPEND_WINDOW must be total, day or month (got 'week')\" >&2\n"
+              "exit 1\n")
+    body = client.get("/api/identities/.identities~usr/spend").json()
+    assert body == {"ok": False,
+                    "error": "llm: error: LLM_SPEND_WINDOW must be total, day or month (got 'week')"}
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="bin/llm needs jq")
+def test_spend_runs_the_real_llm_with_the_identity_env(client: TestClient, identity: Path,
+                                                      ledger: Path, tmp_path: Path, monkeypatch):
+    # The limit is in the identity's .env, as docs/install.md says; bin/llm
+    # sums the ledger's cost, OpenCode delegation steps included.
+    monkeypatch.setenv("HEADLONG_HOME", str(tmp_path / "state"))  # not the developer's own .env
+    for var in ("LLM_SPEND_LIMIT_USD", "LLM_SPEND_WINDOW", "LLM_USAGE_LEDGER"):
+        monkeypatch.delenv(var, raising=False)
+    control._spend_cache.clear()
+    (identity / ".env").write_text("LLM_SPEND_LIMIT_USD=1\n")
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(_cost_row("2026-08-02", "m", 0.25)
+                      + _cost_row("2026-08-02", "m", 0.5, "13:00", source="opencode"))
+    body = client.get("/api/identities/.identities~usr/spend").json()
+    assert body == {"ok": True, "spent": 0.75, "limit": 1, "remaining": 0.25, "window": "total",
+                    "since": None}

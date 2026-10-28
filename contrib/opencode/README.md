@@ -83,7 +83,24 @@ API-key environment variable (for example `OPENROUTER_API_KEY`); all providers'
 keys are not required. Run in the same user environment as the identity. Keep
 credentials out of arguments and task text. Set provider-side spending limits
 before any live experiment: a timeout is not a spending cap. No lifecycle
-command makes paid calls. A live smoke run requires explicit operator spending
+command makes paid calls.
+
+When the identity has a spend limit (`LLM_SPEND_LIMIT_USD`, see
+[docs/install.md](../../docs/install.md#optional-spend-limit)), delegations
+count against it alongside the mind's own model calls. The wrapper asks
+`llm --spend` before starting and refuses (exit 3) when nothing is left. While
+OpenCode runs, each `step_finish` event's cost and tokens go to the identity's
+usage ledger, and the run is stopped once its cost reaches what was left:
+status `budget_exhausted`, exit 3, with the run's total in the result's `spend`
+field. Under a limit, delegations must use an OpenRouter model
+(`--model openrouter/<vendor>/<model>`), and a step that reports tokens but no
+cost stops the run, because the limit cannot count it. OpenCode reports $0 for
+a model missing from its price table and for a free model alike, so under a
+limit a free model's delegation stops at its first step. Two caveats: OpenCode
+reports cost only after each model step, so a run can overshoot by up to one
+step; and the cost is OpenCode's own estimate from its price table, not
+OpenRouter's bill. Keep the provider-side cap as the backstop. Without a
+limit, step costs are still recorded in the ledger. A live smoke run requires explicit operator spending
 authorization; no live provider run is claimed by the offline test suite.
 
 The wrapper uses OpenCode `--pure run --format json`, transporting the prompt

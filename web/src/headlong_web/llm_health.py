@@ -152,7 +152,8 @@ def _state_home() -> Path:
 
 def last_call() -> dict | None:
     """The marker bin/llm rewrites after every call (state home, run/llm_health.json):
-    ok, or a classified failure (credit / auth / rate / other). None if absent."""
+    ok, or a classified failure (credit / auth / rate / budget / other), and
+    whose call it was when known. None if absent."""
     path = _state_home() / "run" / "llm_health.json"
     try:
         data = json.loads(path.read_text())
@@ -165,6 +166,7 @@ def last_call() -> dict | None:
         "ts": data.get("ts"),
         "provider": data.get("provider") or None,
         "model": data.get("model") or None,
+        "identity": data.get("identity") or None,
         "kind": data.get("kind"),
         "http_code": data.get("http_code"),
         "message": data.get("message"),
