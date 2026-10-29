@@ -193,7 +193,7 @@ action_search() {
             desc=$(frontmatter_field "${skill_dir}SKILL.md" "description")
             [[ -z "$name" ]] && name=$(basename "$skill_dir")
 
-            if printf '%s %s' "$name" "$desc" | grep -qi "$query"; then
+            if printf '%s %s' "$name" "$desc" | grep -qiE "$query"; then
                 found_local=1
                 printf "  ${_bold}%-20s${_reset} %s\n" "$name" "$desc"
             fi
@@ -211,7 +211,7 @@ action_search() {
         local remote_found=0
         local rname rdesc rremote
         while IFS=$'\t' read -r rname rdesc rremote; do
-            if printf '%s %s' "$rname" "$rdesc" | grep -qi "$query"; then
+            if printf '%s %s' "$rname" "$rdesc" | grep -qiE "$query"; then
                 remote_found=1
                 printf "  ${_bold}%-20s${_reset} %-50s ${_dim}%s${_reset}\n" "$rname" "$rdesc" "$rremote"
             fi
