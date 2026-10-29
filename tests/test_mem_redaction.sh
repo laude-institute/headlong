@@ -23,9 +23,6 @@ bad() { fail=$((fail + 1)); printf 'FAIL %s\n' "$1"; }
 # argument parsing without putting even fake secrets/large text in external argv.
 sed '$d' "$REPO/bin/mem" > "$WORK/mem-library"
 mem() ( source "$WORK/mem-library"; main "$@"; )
-# Import the library once at test level so bake_summary is callable for
-# the expected-summary derivation below.
-source "$WORK/mem-library"
 body() { sed '1d' "$1" | sed '1,/^---$/d' | sed '1d'; }
 repeat() { local i; for ((i=0; i<$2; i++)); do printf '%s' "$1"; done; }
 
@@ -58,7 +55,11 @@ check_text() {
             # line is clipped to 80 and marked with the dropped count plus a
             # route (bake_summary). On a base with no bake_summary (before the
             # marker change) fall back to the plain clip the base produced.
-            summary=$(bake_summary "$expected" 2>/dev/null || true)
+            summary=$(
+                # Source inside a subshell: the library sets its own shell
+                # options, and set -e at test level would kill the suite.
+                { source "$WORK/mem-library"; bake_summary "$expected"; } 2>/dev/null || true
+            )
             [[ -n "$summary" ]] || summary=$(printf '%s' "$expected" | sed -n '1p' | cut -c1-80)
             if [[ "$actual" == "$expected" ]] && grep -Fx "summary: $summary" "$file" >/dev/null; then
                 ok "$label $action/$mode body and summary"
