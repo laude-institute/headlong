@@ -191,6 +191,28 @@ ids=$(stream 20 | jq -r .step_id | tr '\n' ' ')
 [[ "$ids" == "w1 ii3 wf " ]] && ok "three idle runs collapse to one idle line; their finals are dropped; a working run keeps its final" || bad "idle-run finals dropped" "got $ids"
 stream 20 | jq -e 'select(.step_id == "ii3") | .collapsed == 3' >/dev/null && ok "the collapsed idle line counts the runs" || bad "idle count" "$(stream 20 | jq -c 'select(.step_id == "ii3")')"
 
+# A run that does real work (a durable thought/observation) and then idles is
+# NOT a pure idle run: its final is its handoff to the next wake and must be
+# kept. The pure-idle drop rule (finals dropped when the run holds an idle)
+# used to fire on these too, so a work run that ended with a deliberate idle
+# lost the only record the next wake ever sees of it. Born red 2026-10-29.
+: > "$TRAJ"
+printf '{"step_id":"hdr","type":"trajectory","ts":"%s"}\n' "$(ts 9999)" >> "$TRAJ"
+step wt1 thought "did the owed reads" 30 ',"run_id":"run-wi-1"'
+step wi1 idle    "idle"               29 ',"run_id":"run-wi-1"'
+step wf1 final   "Rest: took both owed reads, nothing else due" 29 ',"run_id":"run-wi-1"'
+step pi1 idle    "idle"               25 ',"run_id":"run-pi-1"'
+step pf1 final   "Idle — nothing to do" 25 ',"run_id":"run-pi-1"'
+step m1 message "sent X to Nick" 20 ',"run_id":"run-m1"'
+ids=$(stream 20 | jq -r .step_id | tr '\n' ' ')
+if [[ "$ids" == "wt1 wf1 ii3-sentinel " ]] || [[ "$ids" == *wf1* && "$ids" == *pi1* && "$ids" != *pf1* ]]; then
+    ok "a work run's final survives its idle; a pure idle run's final is still dropped"
+else
+    bad "work+idle run lost its final" "got $ids"
+fi
+stream 20 | jq -e 'select(.step_id == "wf1") | .type == "final"' >/dev/null \
+    && ok "the kept final keeps its type" || bad "kept final type" "$(stream 20 | jq -c 'select(.step_id == "wf1")')"
+
 echo
 echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]

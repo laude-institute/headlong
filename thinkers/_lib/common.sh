@@ -577,7 +577,10 @@ _RECENT_STREAM_PAIR_JQ='
             | map(select(.value.type == "observation" and ((.value.run_id // "") | tostring) == $r))
             | last | .key) as $j
          | if $j != null then del(.[$j]) + [$s]
-           elif (map(select(.type == "idle" and ((.run_id // "") | tostring) == $r)) | length) > 0 then .
+           elif (map(select(.type == "idle" and ((.run_id // "") | tostring) == $r)) | length) > 0
+         # a run that also holds non-idle steps did real work first:
+         # its final is a handoff, not an idle echo (2026-10-29)
+         and (map(select(((.run_id // "") | tostring) == $r and .type != "idle")) | length) == 0 then .
            else . + [$s] end
     else . + [$s] end)
   | .[]'
