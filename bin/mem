@@ -54,6 +54,19 @@ warn_flag_summary() {
     esac
 }
 
+bake_summary() {
+    # First non-blank line of the body, clipped to 80 chars for display. A clip
+    # is marked with the dropped character count and a route to the whole
+    # line: the body below the frontmatter holds it uncut.
+    local line
+    line=$(printf '%s' "$1" | sed '/^[[:space:]]*$/d' | sed -n '1p')
+    if [[ ${#line} -gt 80 ]]; then
+        printf '%s +%d chars (route: full line in the memory body)' "$(printf '%s' "$line" | cut -c1-80)" "$(( ${#line} - 80 ))"
+    else
+        printf '%s' "$line"
+    fi
+}
+
 debug() {
     if [[ "$VERBOSE" -eq 1 ]]; then
         printf '[mem debug] %s\n' "$*" >&2
@@ -248,7 +261,7 @@ action_add() {
     slug=$(slugify "$text")
     filename="${timestamp}_${hex}_${slug}"
     # Drain the body so upstream writers cannot fail with SIGPIPE.
-    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p' | cut -c1-80)
+    summary=$(bake_summary "$text")
     warn_flag_summary "$summary"
     created=$(date +"%Y-%m-%d %H:%M:%S")
 
@@ -616,7 +629,7 @@ action_edit() {
     # expire that night. So do `schedule:` and `tz:` (design/scheduled_goals.md).
     local summary type created id until _k _v
     # Drain the body so upstream writers cannot fail with SIGPIPE.
-    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p' | cut -c1-80)
+    summary=$(bake_summary "$text")
     warn_flag_summary "$summary"
     type=$(frontmatter_field "$file" "type")
     created=$(frontmatter_field "$file" "created")
