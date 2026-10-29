@@ -652,12 +652,13 @@ build_inactivity_feedback() {
         generic_prompt)
             advice="DETECTED: Likely interactive prompt (line ending with ':' or '?'). Use non-interactive flags or pipe input." ;;
         unknown)
-            advice="Could not detect a specific prompt pattern. The process may be waiting for stdin, a network response, or is simply slow. Try non-interactive flags or investigate the command's batch mode." ;;
+            advice="Quiet work survives by printing a heartbeat now and then; run a long silent command in the background with its output in a file, then read the file in a later step." ;;
     esac
 
     printf 'Execution was KILLED after %s seconds of inactivity\n' "$timeout"
-    printf '(likely waiting for interactive input that will never arrive).\n'
-    printf 'stdin is connected to /dev/null — interactive prompts get immediate EOF.\n'
+    printf 'Inactivity means this block produced no output for that long — the\n'
+    printf 'watchdog measures output silence, not a wait for input. stdin is connected\n'
+    printf 'to /dev/null, so an interactive prompt gets immediate EOF and cannot be the hang.\n'
     printf '\nLast output before timeout:\n%s\n' "$last_output"
     printf '\n%s\n' "$advice"
 }

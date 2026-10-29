@@ -96,6 +96,24 @@ else
     bad "idle block is killed at SHELLM_INACTIVITY_TIMEOUT" "$(tail -3 "$WORK/err")"
 fi
 
+# The feedback for an idle kill must describe what the floor measured, output
+# silence, and never guess an input wait: stdin sits at /dev/null, so an
+# interactive prompt gets immediate EOF and cannot be the hang (2026-10-29
+# three-arm probe: a fully silent sleep 60 died at the floor while heartbeat
+# and chatty-foreground arms survived).
+idle_traj=$(ls "$HEADLONG_HOME"/trajectories/*idle-case*/trajectory.jsonl 2>/dev/null | head -1)
+if [ -z "$idle_traj" ]; then
+    bad "idle kill feedback is recorded" "no trajectory found for the idle case"
+elif grep -q 'likely waiting for interactive input' "$idle_traj"; then
+    bad "idle kill feedback names output silence, not an input wait" "old input-wait header still present"
+elif ! grep -q 'no output for that long' "$idle_traj"; then
+    bad "idle kill feedback names output silence" "the no-output line is missing"
+elif ! grep -q 'heartbeat' "$idle_traj"; then
+    bad "idle kill feedback tells quiet work how to survive" "no heartbeat advice in the unknown arm"
+else
+    ok "idle kill feedback names output silence, not an input wait"
+fi
+
 # --- case 2: a live nested run keeps the block alive --------------------------
 # The nested run's own model call stalls for 9s, well past the 3s idle timeout.
 # Before the beacon, this was the exit-143 death that killed real delegation.
