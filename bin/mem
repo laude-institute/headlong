@@ -458,16 +458,36 @@ $(cat "$f")
         ) >/dev/null &
         _hb_pid=$!
     fi
-    local rc=0
+    local rc=0 reply=""
     # Keep the real llm adapter in our worker group. Otherwise llm's own
     # deadline regroups it, and cancelling search kills its supervisor but
     # leaves the adapter alive holding our caller's output pipes.
     # This also applies with the search deadline disabled: public TERM/INT
     # must still cancel the whole tree. llm retains its own shorter bound.
+    # The reply is validated against the store before it reaches stdout
+    # (2026-10-30): the model sometimes returns a plausible row for a file
+    # that does not exist, and callers read search rows as store facts. A
+    # row is a line naming a store file; a line whose .md token names no
+    # real file is dropped, and a reply whose every row was dropped is
+    # answered as the engine's own no-match line. Prose passes through.
     # shellcheck disable=SC2086
-    printf 'Search these memories for: %s\n\n%s' "$query" "$memories" | \
+    reply=$(printf 'Search these memories for: %s\n\n%s' "$query" "$memories" | \
         _LLM_SHARED_PROCESS_GROUP=1 llm ${SHELLM_FAST_MODEL:+-m "$SHELLM_FAST_MODEL"} -t "${MEM_SEARCH_MAX_TOKENS:-16000}" \
-            -s "You are a semantic search engine for memory files. Each memory has a filename header (=== filename ===), YAML frontmatter (summary, type), and a body. Return ONLY the filenames and summaries of semantically matching memories, one per line. If nothing matches, say 'No matches found.'" || rc=$?
+            -s "You are a semantic search engine for memory files. Each memory has a filename header (=== filename ===), YAML frontmatter (summary, type), and a body. Return ONLY the filenames and summaries of semantically matching memories, one per line. If nothing matches, say 'No matches found.'") || rc=$?
+    printf '%s' "$reply" | awk -v dir="$MEM_DIR" '
+        match($0, /[^ ]+\.md/) {
+            fn = substr($0, RSTART, RLENGTH)
+            if ((getline junk < (dir "/" fn)) < 0) { dropped++; next }
+            close(dir "/" fn)
+        }
+        { print; kept = 1 }
+        END {
+            if (dropped > 0)
+                printf "mem search: dropped %d row(s) naming files that are not in the store\n", dropped > "/dev/stderr"
+            if (dropped > 0 && kept != 1)
+                print "No matches found."
+        }
+    '
     # The EXIT trap owns heartbeat cleanup; a second wait here would print
     # "not a child" once the trap has already reaped it.
     return "$rc"
