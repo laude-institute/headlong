@@ -5,14 +5,16 @@
 # Usage: tests/test_mem_search_ghost_rows.sh
 #
 # Why: the search sends candidates to a model and streams the model's reply
-# to stdout with no check that a returned row names a real store file
-# (2026-10-30). A hallucinated row then reaches downstream callers — kin and
-# dupe gates, recall, any store-fact read — as a store fact. Checks, with a
-# stubbed llm that returns one real filename, one ghost filename that exists
-# in no store, and one filename-like line that is really prose: the real row
-# passes, the ghost is filtered, the prose line passes, and a reply that is
-# all ghosts is itself refused as a result (the engine answers "No matches
-# found." rather than an empty success).
+# to stdout with no grounding check (2026-10-30). A hallucinated row then
+# reaches downstream callers — kin and dupe gates, recall, any store-fact
+# read — as a store fact. Grounding keys on the row's eight-hex memory id:
+# a row whose id the store knows passes even when the model redates or
+# shortens the filename; a row whose id the store does not know falls back
+# to the named file and is dropped when that file does not exist. Checks,
+# with a stubbed llm: a real filename passes, a ghost is filtered, a
+# filename-like prose line passes, an all-ghost reply is refused as a
+# result ("No matches found." rather than empty success), and rows naming
+# a real memory by id survive both a wrong date and a date-less filename.
 
 set -uo pipefail
 
@@ -76,6 +78,26 @@ if printf '%s' "$out" | grep -q "No matches found"; then
     ok "all-ghost reply refused"
 else
     bad "all-ghost reply refused" "rc=$rc out: $(printf '%s' "$out" | head -3)"
+fi
+
+# --- 3. the id key keeps rows the filename check would drop -----------
+mk "2026-09-23-00-38-26_d80cbb98_a-correction-reaches-the-next-wake" "Six channels" "A correction reaches the next wake through six channels."
+cat > "$WORK/bin/llm" <<'STUB'
+#!/usr/bin/env bash
+cat > "$LLM_STUB_PROMPT"
+cat <<'REPLY'
+2026-01-01-00-00-00_d80cbb98_a-correction-reaches-the-next-wake.md: A correction reaches the next wake.
+d80cbb98_a-correction-reaches-the-next-wake.md: A correction reaches the next wake.
+REPLY
+STUB
+chmod +x "$WORK/bin/llm"
+
+out=$(mem search "correction channels") 2>/dev/null
+c1=$(printf '%s' "$out" | grep -c "d80cbb98") || true
+if [[ "${c1:-0}" -ge 2 ]]; then
+    ok "redated and date-less rows naming a real id kept"
+else
+    bad "redated and date-less rows naming a real id kept" "got ${c1:-0} of 2 rows: $(printf '%s' "$out" | head -4 | tr '\n' '|')"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

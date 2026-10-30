@@ -465,25 +465,46 @@ $(cat "$f")
     # This also applies with the search deadline disabled: public TERM/INT
     # must still cancel the whole tree. llm retains its own shorter bound.
     # The reply is validated against the store before it reaches stdout
-    # (2026-10-30): the model sometimes returns a plausible row for a file
-    # that does not exist, and callers read search rows as store facts. A
-    # row is a line naming a store file; a line whose .md token names no
-    # real file is dropped, and a reply whose every row was dropped is
-    # answered as the engine's own no-match line. Prose passes through.
+    # (2026-10-30): the model sometimes returns a plausible row for a
+    # memory that does not exist, and callers read search rows as store
+    # facts. A row is grounded when its eight-hex id is one of the
+    # store's ids (filenames carry the id between underscores); a
+    # filename carrying no id, or an id the store does not know, falls
+    # back to the full-filename check, and a row failing both is
+    # dropped, with a reply whose every row was dropped answered as the
+    # engine's own no-match line. Prose passes through. Keying on the
+    # id, not the filename alone, keeps rows the model redates or
+    # shortens: a live measure (294 rows, 2026-10-30) had the filename
+    # check drop 54 real rows and one ghost; the id key dropped only
+    # the ghost.
     # shellcheck disable=SC2086
     reply=$(printf 'Search these memories for: %s\n\n%s' "$query" "$memories" | \
         _LLM_SHARED_PROCESS_GROUP=1 llm ${SHELLM_FAST_MODEL:+-m "$SHELLM_FAST_MODEL"} -t "${MEM_SEARCH_MAX_TOKENS:-16000}" \
             -s "You are a semantic search engine for memory files. Each memory has a filename header (=== filename ===), YAML frontmatter (summary, type), and a body. Return ONLY the filenames and summaries of semantically matching memories, one per line. If nothing matches, say 'No matches found.'") || rc=$?
-    printf '%s' "$reply" | awk -v dir="$MEM_DIR" '
+    local idlist=""
+    idlist=$(ls -1 "$MEM_DIR" 2>/dev/null | awk '
+        { n = split($0, f, "_")
+          for (i = 1; i <= n; i++)
+            if (length(f[i]) == 8 && f[i] ~ /^[0-9a-f]+$/) { print f[i]; break }
+        }' | paste -sd, -)
+    printf '%s' "$reply" | awk -v dir="$MEM_DIR" -v idlist="$idlist" '
+        BEGIN { n = split(idlist, a, ","); for (i = 1; i <= n; i++) known[a[i]] = 1 }
         match($0, /[^ ]+\.md/) {
             fn = substr($0, RSTART, RLENGTH)
-            if ((getline junk < (dir "/" fn)) < 0) { dropped++; next }
-            close(dir "/" fn)
+            n = split(fn, rf, "_")
+            rid = ""
+            for (i = 1; i <= n; i++)
+                if (length(rf[i]) == 8 && rf[i] ~ /^[0-9a-f]+$/) { rid = rf[i]; break }
+            if (rid == "" || !(rid in known)) {
+                if ((getline junk < (dir "/" fn)) < 0) { dropped++; next }
+                close(dir "/" fn)
+            }
+            print; kept = 1; next
         }
         { print; kept = 1 }
         END {
             if (dropped > 0)
-                printf "mem search: dropped %d row(s) naming files that are not in the store\n", dropped > "/dev/stderr"
+                printf "mem search: dropped %d row(s) naming memories that are not in the store\n", dropped > "/dev/stderr"
             if (dropped > 0 && kept != 1)
                 print "No matches found."
         }
