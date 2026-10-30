@@ -477,6 +477,9 @@ $(cat "$f")
     # shortens: a live measure (294 rows, 2026-10-30) had the filename
     # check drop 54 real rows and one ghost; the id key dropped only
     # the ghost.
+    # A row the id admits is then displayed with the store's canonical
+    # filename when the model composed a different one, so the reply never
+    # names a file the store does not hold.
     # shellcheck disable=SC2086
     reply=$(printf 'Search these memories for: %s\n\n%s' "$query" "$memories" | \
         _LLM_SHARED_PROCESS_GROUP=1 llm ${SHELLM_FAST_MODEL:+-m "$SHELLM_FAST_MODEL"} -t "${MEM_SEARCH_MAX_TOKENS:-16000}" \
@@ -487,14 +490,44 @@ $(cat "$f")
           for (i = 1; i <= n; i++)
             if (length(f[i]) == 8 && f[i] ~ /^[0-9a-f]+$/) { print f[i]; break }
         }' | paste -sd, -)
-    printf '%s' "$reply" | awk -v dir="$MEM_DIR" -v idlist="$idlist" '
-        BEGIN { n = split(idlist, a, ","); for (i = 1; i <= n; i++) known[a[i]] = 1 }
+    # Canonical names for display: a row the id key admits is printed with
+    # the store's own filename, never the model's composed one, so no kept
+    # row names a file that does not exist — the redated/shortened shape the
+    # id key keeps would otherwise ship the very defect this filter refuses.
+    # Built from a second listing so a map-build failure costs the rewrite
+    # only, never the grounding: an empty or missing map leaves rows shown
+    # exactly as the model wrote them, with idlist still admitting known ids.
+    local canonfile=""
+    canonfile=$(mktemp "${TMPDIR:-/tmp}/memsearch-canon.XXXXXX") || canonfile=""
+    if [[ -n "$canonfile" ]]; then
+        ls -1 "$MEM_DIR" 2>/dev/null | awk -v OFS='\t' '
+            { n = split($0, f, "_"); id = ""
+              for (i = 1; i <= n; i++)
+                if (length(f[i]) == 8 && f[i] ~ /^[0-9a-f]+$/) { id = f[i]; break }
+              if (id != "") print id, $0
+            }' > "$canonfile"
+    fi
+    printf '%s' "$reply" | awk -v dir="$MEM_DIR" -v idlist="$idlist" -v canonfile="$canonfile" '
+        BEGIN {
+            n = split(idlist, a, ","); for (i = 1; i <= n; i++) known[a[i]] = 1
+            if (canonfile != "") {
+                while ((getline mrow < canonfile) > 0) {
+                    split(mrow, m, "\t")
+                    if (m[1] != "" && m[2] != "") canon[m[1]] = m[2]
+                }
+                close(canonfile)
+            }
+        }
         match($0, /[^ ]+\.md/) {
             fn = substr($0, RSTART, RLENGTH)
             n = split(fn, rf, "_")
             rid = ""
             for (i = 1; i <= n; i++)
                 if (length(rf[i]) == 8 && rf[i] ~ /^[0-9a-f]+$/) { rid = rf[i]; break }
+            if (rid != "" && (rid in canon) && fn != canon[rid]) {
+                print substr($0, 1, RSTART - 1) canon[rid] substr($0, RSTART + RLENGTH)
+                kept = 1; next
+            }
             if (rid == "" || !(rid in known)) {
                 if ((getline junk < (dir "/" fn)) < 0) { dropped++; next }
                 close(dir "/" fn)
@@ -509,6 +542,7 @@ $(cat "$f")
                 print "No matches found."
         }
     '
+    [[ -n "$canonfile" ]] && rm -f "$canonfile"
     # The EXIT trap owns heartbeat cleanup; a second wait here would print
     # "not a child" once the trap has already reaped it.
     return "$rc"

@@ -14,7 +14,9 @@
 # with a stubbed llm: a real filename passes, a ghost is filtered, a
 # filename-like prose line passes, an all-ghost reply is refused as a
 # result ("No matches found." rather than empty success), and rows naming
-# a real memory by id survive both a wrong date and a date-less filename.
+# a real memory by id survive both a wrong date and a date-less filename,
+# and a kept row prints the store's own filename when the model composed
+# a different one, so no kept row names a file that does not exist.
 
 set -uo pipefail
 
@@ -98,6 +100,29 @@ if [[ "${c1:-0}" -ge 2 ]]; then
     ok "redated and date-less rows naming a real id kept"
 else
     bad "redated and date-less rows naming a real id kept" "got ${c1:-0} of 2 rows: $(printf '%s' "$out" | head -4 | tr '\n' '|')"
+fi
+
+# --- 4. a kept row displays the store's canonical filename -------------
+mk "2026-09-24-01-02-03_1a2b3c4d_a-memory-with-a-known-id" "Canon arm" "A body for the canonical display arm."
+cat > "$WORK/bin/llm" <<'STUB'
+#!/usr/bin/env bash
+cat > "$LLM_STUB_PROMPT"
+cat <<'REPLY'
+1999-01-01-00-00-00_1a2b3c4d_a-memory-with-a-known-id.md: The row as the model composed it.
+REPLY
+STUB
+chmod +x "$WORK/bin/llm"
+
+out=$(mem search "canonical display") 2>/dev/null
+if printf '%s' "$out" | grep -q "2026-09-24-01-02-03_1a2b3c4d_a-memory-with-a-known-id.md"; then
+    ok "kept row displays the canonical filename"
+else
+    bad "kept row displays the canonical filename" "got: $(printf '%s' "$out" | head -3 | tr '\n' '|')"
+fi
+if printf '%s' "$out" | grep -q "1999-01-01-00-00-00_1a2b3c4d"; then
+    bad "composed filename not shown" "the model's redated name reached stdout"
+else
+    ok "composed filename not shown"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
