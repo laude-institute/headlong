@@ -10,11 +10,14 @@
 # reply updates the same file (no duplicates) and keeps id, created, and
 # aliases; the prompt carries a "What you know about" block; the notes prompt
 # has the facts-only rules Experiment C asked for; key-shaped strings are
-# redacted; RESPONDER_PERSON_NOTES=0 disables it. The writer runs in the
+# redacted; the stored file names the model as its drafter (a summary
+# marker plus an author key) and refuses a rewrite whose cited dates trace
+# to neither the conversation nor the previous notes; RESPONDER_PERSON_NOTES=0
+# disables it. The writer runs in the
 # foreground here (RESPONDER_PERSON_NOTES_SYNC=1). Stubbed llm; no LLM calls.
 
 set -uo pipefail
-unset IDENTITY_DIR IDENTITY_NAME MEM_DIR TRAJ_DIR TRAJ_ID ROOT_TRAJ_ID THINK_CONTEXT_TAIL 2>/dev/null
+unset IDENTITY_DIR IDENTITY_NAME MEM_DIR TRAJ_DIR TRAJ_ID ROOT_TRAJ_ID THINK_CONTEXT_TAIL THINK_MODEL MONOLITH_REPLY_MODEL 2>/dev/null
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(dirname "$HERE")"
@@ -68,6 +71,7 @@ run_step() {  # run_step <trigger json> [extra env...]
         "$STEP" >> "$WORK/step.log" 2>&1
 }
 now() { date -u +%Y-%m-%dT%H:%M:%S.000Z; }
+TODAY=$(date -u +%Y-%m-%d)
 msg() { printf '{"step_id":"%s","type":"message","from":"%s","to":"%s","content":"%s","ts":"%s","source":"chat"}\n' "$1" "$2" "$3" "$4" "$(now)" >> "$TRAJ"; }
 person_files() { grep -l '^type: person' "$ID/memories"/*.md 2>/dev/null | wc -l | tr -d ' '; }
 
@@ -77,7 +81,7 @@ printf '{"step_id":"hdr","type":"trajectory","ts":"%s"}\n' "$(now)" >> "$TRAJ"
 # --- 1. first reply creates the notes file --------------------------------
 msg trig-1 "$THEM" "$ME" "hi, I am Andy, I run the lab. keep replies short please"
 printf 'Hi Andy, will do.\n' > "$STUB_REPLY_FILE"
-printf 'Andy runs the lab and reaches testid on Slack.\nPrefers short replies (stated 2026-09-02).\nToken sk-abcdefghijklmnopqrstuvwxyz0123 was pasted once.\n' > "$STUB_NOTES_FILE"
+printf 'Andy runs the lab and reaches testid on Slack.\nPrefers short replies (stated %s).\nToken sk-abcdefghijklmnopqrstuvwxyz0123 was pasted once.\n' "$TODAY" > "$STUB_NOTES_FILE"
 run_step "$(grep -F '"step_id":"trig-1"' "$TRAJ")"
 
 [[ "$(person_files)" == 1 ]] && ok "a type: person memory is created after the first reply" || bad "a type: person memory is created after the first reply" "found $(person_files); $(tail -3 "$WORK/step.log")"
@@ -92,6 +96,16 @@ if grep -q '\[redacted\]' "$f" && ! grep -q 'sk-abcdefghijklmnop' "$f"; then
     ok "key-shaped strings are redacted before writing"
 else
     bad "key-shaped strings are redacted before writing"
+fi
+if grep -q '^summary: Model-drafted notes on ' "$f"; then
+    ok "the summary line names the model as its drafter"
+else
+    bad "the summary line names the model as its drafter"
+fi
+if grep -q '^author: responder-notes-model$' "$f"; then
+    ok "the frontmatter carries an author key naming the writer"
+else
+    bad "the frontmatter carries an author key naming the writer"
 fi
 case "$(basename "$f")" in
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]_person-*.md) ok "filename follows mem's timestamp_hex_slug convention" ;;
@@ -109,7 +123,7 @@ sed -i.bak 's/^aliases: \[\]$/aliases: [pwa:andy]/' "$f" && rm -f "$f.bak"
 id_before=$(sed -n 's/^id: //p' "$f"); created_before=$(sed -n 's/^created: //p' "$f")
 msg trig-2 "$THEM_DM" "$ME" "did you see the new PR?"
 printf 'Not yet, looking now.\n' > "$STUB_REPLY_FILE"
-printf 'Andy runs the lab and reaches testid on Slack (threads and DMs).\nPrefers short replies (stated 2026-09-02).\nAsked about a new PR on 2026-09-02; open.\n' > "$STUB_NOTES_FILE"
+printf 'Andy runs the lab and reaches testid on Slack (threads and DMs).\nPrefers short replies (stated %s).\nAsked about a new PR on %s; open.\n' "$TODAY" "$TODAY" > "$STUB_NOTES_FILE"
 run_step "$(grep -F '"step_id":"trig-2"' "$TRAJ")"
 
 if grep -q 'What you know about slack-U0614H65RN3-D0BNW58GP5W' "$STUB_REPLY_SYS" && grep -q 'Prefers short replies' "$STUB_REPLY_SYS"; then
@@ -144,6 +158,18 @@ printf 'hi\n' > "$STUB_REPLY_FILE"
 printf 'Stranger said hello.\n' > "$STUB_NOTES_FILE"
 run_step "$(grep -F '"step_id":"trig-4"' "$TRAJ")"
 jq -e 'select(.type=="message" and .reply_to=="trig-4")' "$TRAJ" >/dev/null && ok "first contact replies and writes notes without error" || bad "first contact replies"
+
+# --- 5. a rewrite citing a date in neither source is refused ----------
+THEM3="slack-U999ZZZZZZZ-D0NOTES99"
+msg trig-5 "$THEM3" "$ME" "quick question about the deploy"
+printf 'Sure, ask away.\n' > "$STUB_REPLY_FILE"
+printf 'Wants to know about the deploy (stated 2031-01-01).\n' > "$STUB_NOTES_FILE"
+run_step "$(grep -F '"step_id":"trig-5"' "$TRAJ")"
+if grep -q 'the cited date 2031-01-01' "$WORK/step.log" && ! grep -q '2031-01-01' "$ID/memories"/*.md 2>/dev/null; then
+    ok "a rewrite citing a date in neither source is refused and nothing is stored"
+else
+    bad "a rewrite citing a date in neither source is refused and nothing is stored"
+fi
 
 echo
 echo "$pass passed, $fail failed"
