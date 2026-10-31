@@ -299,6 +299,12 @@ _build_system_prompt() {
 # (`mem add --until`). Before 2026-09-04 only goal and intention were read,
 # so 10 of Audel's 13 goal memories were invisible, three were duplicates
 # of a finished objective, and two todos had expired weeks earlier.
+# A record's body renders up to three non-blank lines: blank lines are
+# paragraph separators and never count against the window (before
+# 2026-10-31 each blank ate one of the three lines, so every amendment
+# past the first was invisible to a firing wake). When lines are cut, an
+# ellipsis and up to three more lines of the newest paragraph render too,
+# because the newest paragraph carries the operative state.
 get_goals() {
     local mem_dir="${1:-$MEM_DIR}" max="${GOALS_MAX:-8}"
     [[ -d "$mem_dir" ]] || return 0
@@ -313,7 +319,33 @@ get_goals() {
         case "$ftype" in goal|intention|objective|todo) ;; *) continue ;; esac
         until=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^until:/{sub(/^until:[[:space:]]*/, ""); print}' "$f")
         [[ -n "$until" && "$until" < "$today" ]] && continue
-        body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" | sed '/./,$!d' | head -3)
+        body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" \
+            | awk -v w=3 '
+                { L[NR] = $0 }
+                END {
+                    n = 0; pend = 0
+                    for (i = 1; i <= NR; i++) {
+                        if (L[i] ~ /[^[:space:]]/) { n++; K[n] = L[i]; P[n] = pend; pend = 0 }
+                        else if (n > 0) pend = 1
+                    }
+                    if (n <= w) {
+                        for (j = 1; j <= n; j++) { if (P[j]) print ""; print K[j] }
+                        exit
+                    }
+                    last = 1
+                    for (j = 1; j <= n; j++) if (P[j]) last = j
+                    c = 0
+                    for (j = 1; j <= n; j++) {
+                        if (P[j] && c > 0 && c < w) print ""
+                        if (c >= w) break
+                        print K[j]
+                        c++
+                    }
+                    ts = (last > c + 1) ? last : c + 1
+                    te = (ts + 2 < n) ? ts + 2 : n
+                    if (n > c + te - ts + 1) print "... "
+                    for (j = ts; j <= te; j++) print K[j]
+                }')
         [[ -n "$body" ]] || continue
         if (( shown >= max )); then hidden=$((hidden + 1)); continue; fi
         created=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^created:/{sub(/^created:[[:space:]]*/, ""); print}' "$f")
