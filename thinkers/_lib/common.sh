@@ -544,6 +544,7 @@ _RECENT_STREAM_COLLAPSE_JQ='
   def collapsible: .type == "idle" or .type == "error";
   reduce .[] as $s ([];
     if ($s | collapsible) and length > 0 and .[-1].type == $s.type
+       and ($s.type != "error" or ((.[-1].run_id // "") == ($s.run_id // "")))
     then .[:-1] + [ .[-1] | .n += 1 | .last_ts = ($s.ts // .last_ts)
                     | .step_id = ($s.step_id // .step_id) | .rc = ($s.rc // .rc) ]
     else . + [ $s + {n: 1, first_ts: ($s.ts // ""), last_ts: ($s.ts // "")} ] end)
@@ -576,8 +577,18 @@ _RECENT_STREAM_PAIR_JQ='
          | (to_entries
             | map(select(.value.type == "observation" and ((.value.run_id // "") | tostring) == $r))
             | last | .key) as $j
-         | if $j != null then del(.[$j]) + [$s]
-           elif (map(select(.type == "idle" and ((.run_id // "") | tostring) == $r)) | length) > 0 then .
+         | if $j != null
+                    then (.[$j].step_id // "") as $oid
+                         | del(.[$j])
+                           + [ (if (($oid | tostring) | length) > 0
+                                then (($oid | tostring) | if length > 8 then .[0:8] else . end) as $p
+                                     | $s
+                                     | .folded = ("observation " + $p + ": traj show " + $p)
+                                else $s end) ]
+                    elif (map(select(.type == "idle" and ((.run_id // "") | tostring) == $r)) | length) > 0
+                  # a run that also holds non-idle steps did real work first:
+                  # its final is a handoff, not an idle echo (2026-10-29)
+                  and (map(select(((.run_id // "") | tostring) == $r and .type != "idle")) | length) == 0 then .
            else . + [$s] end
     else . + [$s] end)
   | .[]'
