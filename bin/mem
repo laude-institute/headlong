@@ -54,6 +54,28 @@ warn_flag_summary() {
     esac
 }
 
+clip_summary() {
+    # Clip to at most 80 bytes without splitting a UTF-8 character:
+    # head -c 80 takes bytes, iconv -c drops a trailing partial
+    # character (an invalid UTF-8 sequence) so the clip stays whole.
+    local text="$1"
+    ( printf '%s' "$text" | head -c 80 \
+        | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null )
+}
+
+bake_summary() {
+    # Clip, then mark the dropped remainder so a list/search row never
+    # reads as if the memory ended mid-word.
+    local line="$1" clip dropped
+    clip=$(clip_summary "$line")
+    dropped=$(( ${#line} - ${#clip} ))
+    if (( dropped > 0 )); then
+        printf '%s +%d chars (route: full line in the memory body)' "$clip" "$dropped"
+    else
+        printf '%s' "$clip"
+    fi
+}
+
 debug() {
     if [[ "$VERBOSE" -eq 1 ]]; then
         printf '[mem debug] %s\n' "$*" >&2
@@ -248,7 +270,7 @@ action_add() {
     slug=$(slugify "$text")
     filename="${timestamp}_${hex}_${slug}"
     # Drain the body so upstream writers cannot fail with SIGPIPE.
-    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p' | cut -c1-80)
+    summary=$(bake_summary "$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p')")
     warn_flag_summary "$summary"
     created=$(date +"%Y-%m-%d %H:%M:%S")
 
@@ -691,7 +713,7 @@ action_edit() {
     # expire that night. So do `schedule:` and `tz:` (design/scheduled_goals.md).
     local summary type created id until _k _v
     # Drain the body so upstream writers cannot fail with SIGPIPE.
-    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p' | cut -c1-80)
+    summary=$(bake_summary "$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p')")
     warn_flag_summary "$summary"
     type=$(frontmatter_field "$file" "type")
     created=$(frontmatter_field "$file" "created")
