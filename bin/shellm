@@ -408,13 +408,13 @@ redact_sensitive() {
     local output="$input"
 
     if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-        output="${output//${ANTHROPIC_API_KEY}/<redacted-anthropic-key>}"
+        output="${output//"${ANTHROPIC_API_KEY}"/<redacted-anthropic-key>}"
     fi
 
     # LLM_API_KEY (openai-compatible endpoints) has no vendor prefix to
     # pattern-match, so only value-based masking can catch it.
     if [[ -n "${LLM_API_KEY:-}" ]]; then
-        output="${output//${LLM_API_KEY}/<redacted-api-key>}"
+        output="${output//"${LLM_API_KEY}"/<redacted-api-key>}"
     fi
 
     # Preserve exact masking of every nonempty configured provider value,
