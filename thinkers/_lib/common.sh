@@ -123,8 +123,14 @@ _runtime_line() {
         sha=""
     done
     [[ -n "$sha" ]] || return 0
-    subject=$(git -C "$root" log -1 --format=%s 2>/dev/null | cut -c1-60) || subject=""
-    head_t=$(_mtime_utc "$root/.git/HEAD")
+    # The subject gloss is bounded and any cut is marked (2026-10-17 sweep:
+    # this was one of three unmarked cuts in the prompt's assembly path), so
+    # the reader can see the take is not the whole subject and reach the rest.
+    subject=$(git -C "$root" log -1 --format=%s 2>/dev/null) || subject=""
+    if [[ ${#subject} -gt 60 ]]; then
+        subject="${subject:0:60} (+$(( ${#subject} - 60 )) more: git log -1)"
+    fi
+    head_t=$(_checkout_time_utc "$root")
     sync_t=""
     if [[ -d "${IDENTITY_DIR:-}/thinkers" ]]; then
         local newest
@@ -151,6 +157,29 @@ _mtime_utc() {  # _mtime_utc <file> -> "YYYY-MM-DD HH:MMZ" or ""
     local t
     t=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null) || { printf ''; return 0; }
     _epoch_utc "$t"
+}
+
+# The runtime line's "checked out" time: when HEAD last moved, from the last
+# reflog entry. .git/HEAD's mtime is the wrong source twice over: HEAD is a
+# symref whose content never changes under an ff-only pull, so its mtime froze
+# at clone birth while every pull moved main (a checkout that ff-pulls daily
+# read "checked out 2026-09-14 08:02Z", the clone's birth, through 31 later
+# pulls), and in a linked worktree .git/HEAD is not a regular path at all, so
+# the segment was dropped there (contrib/opencode/docs/validation.md records
+# test_workspace_runtime.sh failing that way). Fall back to the mtime when no
+# reflog answers.
+_checkout_time_utc() {  # _checkout_time_utc <git-root> -> "YYYY-MM-DD HH:MMZ" or ""
+    local sel t
+    sel=$(git -C "$1" reflog show -1 --date=unix --format='%gd' HEAD 2>/dev/null) || sel=""
+    t=${sel#*[{]}
+    t=${t%%[^0-9]*}
+    case "$t" in ''|*[!0-9]*) _mtime_utc "$1/.git/HEAD"; return 0 ;; esac
+    # a bare position renders "@{0}": refuse 1970 rather than print it
+    if [ "$t" -ge 946684800 ]; then
+        _epoch_utc "$t"
+    else
+        _mtime_utc "$1/.git/HEAD"
+    fi
 }
 
 _epoch_utc() {  # _epoch_utc <epoch> -> "YYYY-MM-DD HH:MMZ"
@@ -251,7 +280,13 @@ _schedule_signals() {
         [[ -n "$f" ]] || continue
         sched=$(_fm "$f" schedule); until=$(_fm "$f" until)
         if [[ -z "$sched" || ( -n "$until" && "$until" < "$(date -u +%Y-%m-%d)" ) ]]; then continue; fi
-        gtz=$(_fm "$f" tz); gtz="${gtz:-$tz}"; id=$(_fm "$f" id); title=$(_fm "$f" summary | cut -c1-60)
+        gtz=$(_fm "$f" tz); gtz="${gtz:-$tz}"; id=$(_fm "$f" id)
+        title=$(_fm "$f" summary)
+        # Bounded and marked when cut (2026-10-17 sweep), same shape as the
+        # goal-body marker (be080b0): the count of what dropped plus the route.
+        if [[ ${#title} -gt 60 ]]; then
+            title="${title:0:60} (+$(( ${#title} - 60 )) more: mem show $id)"
+        fi
         day=$(TZ="$gtz" date +%Y-%m-%d); now=$(TZ="$gtz" date +%H:%M); zone=$(TZ="$gtz" date +%Z)
         now_m=$(( 10#${now%:*} * 60 + 10#${now#*:} )); due=""; next=""; said=""
         for t in $sched; do
@@ -299,6 +334,12 @@ _build_system_prompt() {
 # (`mem add --until`). Before 2026-09-04 only goal and intention were read,
 # so 10 of Audel's 13 goal memories were invisible, three were duplicates
 # of a finished objective, and two todos had expired weeks earlier.
+# A record's body renders up to three non-blank lines: blank lines are
+# paragraph separators and never count against the window (before
+# 2026-10-31 each blank ate one of the three lines, so every amendment
+# past the first was invisible to a firing wake). When lines are cut, an
+# ellipsis and up to three more lines of the newest paragraph render too,
+# because the newest paragraph carries the operative state.
 get_goals() {
     local mem_dir="${1:-$MEM_DIR}" max="${GOALS_MAX:-8}"
     [[ -d "$mem_dir" ]] || return 0
@@ -313,7 +354,33 @@ get_goals() {
         case "$ftype" in goal|intention|objective|todo) ;; *) continue ;; esac
         until=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^until:/{sub(/^until:[[:space:]]*/, ""); print}' "$f")
         [[ -n "$until" && "$until" < "$today" ]] && continue
-        body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" | sed '/./,$!d' | head -3)
+        body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" \
+            | awk -v w=3 '
+                { L[NR] = $0 }
+                END {
+                    n = 0; pend = 0
+                    for (i = 1; i <= NR; i++) {
+                        if (L[i] ~ /[^[:space:]]/) { n++; K[n] = L[i]; P[n] = pend; pend = 0 }
+                        else if (n > 0) pend = 1
+                    }
+                    if (n <= w) {
+                        for (j = 1; j <= n; j++) { if (P[j]) print ""; print K[j] }
+                        exit
+                    }
+                    last = 1
+                    for (j = 1; j <= n; j++) if (P[j]) last = j
+                    c = 0
+                    for (j = 1; j <= n; j++) {
+                        if (P[j] && c > 0 && c < w) print ""
+                        if (c >= w) break
+                        print K[j]
+                        c++
+                    }
+                    ts = (last > c + 1) ? last : c + 1
+                    te = (ts + 2 < n) ? ts + 2 : n
+                    if (n > c + te - ts + 1) print "... "
+                    for (j = ts; j <= te; j++) print K[j]
+                }')
         [[ -n "$body" ]] || continue
         if (( shown >= max )); then hidden=$((hidden + 1)); continue; fi
         created=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^created:/{sub(/^created:[[:space:]]*/, ""); print}' "$f")
@@ -378,7 +445,12 @@ _related_memories() {  # _related_memories <query> [prev-names, one per line] [n
         case "$age" in *h) continue ;; esac
         if [[ "$fresh" -gt 86400 && "$age" == *d ]]; then (( ${age%d} * 86400 < fresh )) && continue; fi
         ftype=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^type:/{sub(/^type:[[:space:]]*/, ""); print}' "$f")
-        body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" | sed '/./,$!d' | head -1 | sed 's/^# *//' | cut -c1-140)
+        body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" | sed '/./,$!d' | head -1 | sed 's/^# *//')
+        # Bounded and marked when cut (2026-10-17 sweep), the marker shape of
+        # be080b0: the dropped count plus the mem show name of this memory.
+        if [[ ${#body} -gt 140 ]]; then
+            body="${body:0:140} (+$(( ${#body} - 140 )) more: mem show $name)"
+        fi
         [[ -n "$body" ]] || continue
         printf -- '- %s [%s%s]: %s\n' "$name" "${ftype:-memory}" "${age:+, $age}" "$body"
         shown=$((shown + 1))
@@ -544,6 +616,7 @@ _RECENT_STREAM_COLLAPSE_JQ='
   def collapsible: .type == "idle" or .type == "error";
   reduce .[] as $s ([];
     if ($s | collapsible) and length > 0 and .[-1].type == $s.type
+       and ($s.type != "error" or ((.[-1].run_id // "") == ($s.run_id // "")))
     then .[:-1] + [ .[-1] | .n += 1 | .last_ts = ($s.ts // .last_ts)
                     | .step_id = ($s.step_id // .step_id) | .rc = ($s.rc // .rc) ]
     else . + [ $s + {n: 1, first_ts: ($s.ts // ""), last_ts: ($s.ts // "")} ] end)
@@ -576,8 +649,18 @@ _RECENT_STREAM_PAIR_JQ='
          | (to_entries
             | map(select(.value.type == "observation" and ((.value.run_id // "") | tostring) == $r))
             | last | .key) as $j
-         | if $j != null then del(.[$j]) + [$s]
-           elif (map(select(.type == "idle" and ((.run_id // "") | tostring) == $r)) | length) > 0 then .
+         | if $j != null
+                    then (.[$j].step_id // "") as $oid
+                         | del(.[$j])
+                           + [ (if (($oid | tostring) | length) > 0
+                                then (($oid | tostring) | if length > 8 then .[0:8] else . end) as $p
+                                     | $s
+                                     | .folded = ("observation " + $p + ": traj show " + $p)
+                                else $s end) ]
+                    elif (map(select(.type == "idle" and ((.run_id // "") | tostring) == $r)) | length) > 0
+                  # a run that also holds non-idle steps did real work first:
+                  # its final is a handoff, not an idle echo (2026-10-29)
+                  and (map(select(((.run_id // "") | tostring) == $r and .type != "idle")) | length) == 0 then .
            else . + [$s] end
     else . + [$s] end)
   | .[]'

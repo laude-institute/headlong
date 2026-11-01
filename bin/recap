@@ -51,12 +51,13 @@ BACKFILL=0                             # --backfill: also summarize pre-enable h
 FANOUT="${ROLLUP_FANOUT:-10}"          # F: children per tier; tier k covers F^k steps
 CTX_BUDGET="${MONOLITH_CONTEXT_BUDGET:-auto}"   # token budget; auto = fraction of model window
 CTX_RAW_TAIL="${ROLLUP_RAW_TAIL:-auto}"         # R: verbatim recent steps; auto = from budget
-ROLLUP_PROMPT_VERSION=5                 # stamped into sealed blocks for honest determinism (v2: first-person voice; v3: outcomes, not temperament; v5: supersession citations)
+ROLLUP_PROMPT_VERSION=6                 # stamped into sealed blocks for honest determinism (v2: first-person voice; v3: outcomes, not temperament; v5: supersession citations; v6: message-row direction and merge/shellm-run bookkeeping gloss documented)
 # Output cap for one rollup call. Thinking tokens count against it on
 # reasoning models: at 1024, Sonnet 5 spent about 700 thinking and was cut
 # off mid-JSON on a quarter of Audel's rollups (42 of 166, 2026-10-12).
 ROLLUP_MAX_TOKENS=4096
 ROLLUP_MAX_SEALS="${ROLLUP_MAX_SEALS:-20}"   # blocks one --context call may seal (0 = no cap)
+ROLLUP_REFUSED_RETRY_HOURS="${ROLLUP_REFUSED_RETRY_HOURS:-24}"  # hours a refused placeholder waits before a later build re-asks it (0 = every call)
 _CTX_SEALED=0
 
 usage() {
@@ -168,6 +169,7 @@ ROLLUP_META="$ROLLUP_DIR/meta.json"
 
 [[ "$FANOUT" =~ ^[0-9]+$ && "$FANOUT" -ge 2 ]] || die "--fanout must be a number >= 2"
 [[ "$ROLLUP_MAX_SEALS" =~ ^[0-9]+$ ]] || die "ROLLUP_MAX_SEALS must be a number (0 = no cap)"
+[[ "$ROLLUP_REFUSED_RETRY_HOURS" =~ ^[0-9]+$ ]] || die "ROLLUP_REFUSED_RETRY_HOURS must be a number of hours (0 = every call)"
 # Validated only when --context/--backfill will actually read them: both are
 # seeded from env (MONOLITH_CONTEXT_BUDGET, ROLLUP_RAW_TAIL), and a malformed
 # identity .env must not break plain `recap`, which never consults them.
@@ -284,8 +286,12 @@ _llm_json() {
     # _llm_json <model> <system_prompt> <user_text> [max_tokens]
     # Returns validated JSON or fails. The cap must leave room for
     # reasoning-channel tokens on models that bill them against max_tokens.
-    # Returns 2 when the model refused the input: that is decided by the
-    # content, so a retry gets the same answer.
+    # Returns 2 when the model refused the input. A refusal is NOT decided
+    # by the content: 2026-10-15, byte-identical re-asks of three windows
+    # that had refused for days stopped refusing on 2 of 3 (the replies
+    # came back malformed, but the refusals had drifted), so refusals
+    # drift in time, not with the text. This call still does not retry; the rollup build re-asks the
+    # window later (ROLLUP_REFUSED_RETRY_HOURS).
     local model="$1" system="$2" user="$3" max_tokens="${4:-2048}" attempt raw cleaned errf
     errf=$(mktemp "${TMPDIR:-/tmp}/recap-llm.XXXXXX") || return 1
     for attempt in 1 2; do
@@ -516,7 +522,7 @@ _print_json() {
 # cached forever; only the frontier (newly-complete blocks) is built each run.
 # See design/tiered_memory.md.
 
-_ROLLUP_SYSTEM='You are the AI agent whose life log this is. Summarize this one slice of your own history in the FIRST PERSON — say "I", never "the agent". The input is a chronological list of lines: either raw steps "[id] type: content", or child rollup summaries (already first person). Child rollup summaries arrive prefixed by their step-id list, e.g. "[id1,id2] I did X"; when your summary corrects or supersedes a claim stated in an earlier child window supplied in this same input, and the correcting evidence is also present in this input, name that child by quoting its "[id,...]" prefix verbatim in your summary text, e.g. "this corrects [old-ids]: the earlier claim of X is superseded because Y". Cite only prefixes actually supplied here; do not invent or infer a prefix for an unseen window. This names a correction target in the new parent summary; it does not rewrite or link separately sealed siblings that are absent from this input. Reply with ONLY a JSON object, no markdown fences:
+_ROLLUP_SYSTEM='You are the AI agent whose life log this is. Summarize this one slice of your own history in the FIRST PERSON — say "I", never "the agent". The input is a chronological list of lines: either raw steps "[id] type: content", or child rollup summaries (already first person). Child rollup summaries arrive prefixed by their step-id list, e.g. "[id1,id2] I did X"; when your summary corrects or supersedes a claim stated in an earlier child window supplied in this same input, and the correcting evidence is also present in this input, name that child by quoting its "[id,...]" prefix verbatim in your summary text, e.g. "this corrects [old-ids]: the earlier claim of X is superseded because Y". Cite only prefixes actually supplied here; do not invent or infer a prefix for an unseen window. This names a correction target in the new parent summary; it does not rewrite or link separately sealed siblings that are absent from this input.  Message lines read "[id] message(chat) FROM→TO: content": the name before the arrow is the sender, the name after it the recipient; your own name before the arrow means you sent the message, your name after it means you received it. Merge and shellm-run rows are dispatcher bookkeeping for nested runs, not actions you performed; never narrate them as completed operations. Reply with ONLY a JSON object, no markdown fences:
 {"summary": "2-3 first-person sentences on outcomes: what I did, decided, learned, and left open, naming people, artifacts, and threads. Events, not my character: no words for my habits or temperament (not disciplined, restrained, patient, waiting mode); if I idled, say once what I was waiting for",
  "themes": ["1-4 short kebab-case topics"],
  "step_ids": ["up to 4 of the most important 8-char step ids that literally appear in the input"]}'
@@ -565,11 +571,13 @@ _ctx_resolve_R() {
 }
 
 # The JSON body for one block. When the model refuses the window (a content
-# filter, decided by the text, so it would refuse again on every call), the
-# block is sealed with a placeholder so the build moves past it: Harris's
-# summary sat frozen for 12 days behind one refused block (2026-10-03). Any
-# other failure leaves the block unsealed and stops this build; the next
-# call tries again.
+# filter), the block is sealed with a placeholder so the build moves past
+# it: Harris's summary sat frozen for 12 days behind one refused block
+# (2026-10-03). A refusal is not permanent and not decided by the text
+# (2026-10-15: byte-identical re-asks stopped refusing on 2 of 3
+# long-refused windows), so a later build re-asks each placeholder via
+# _ctx_retry_refused. Any other failure leaves the block unsealed and
+# stops this build; the next call tries again.
 _ctx_rollup_body() {
     local tier=$1 s=$2 e=$3 input=$4 rc=0
     _llm_json "$MAP_MODEL" "$_ROLLUP_SYSTEM" "$input" "$ROLLUP_MAX_TOKENS" || rc=$?
@@ -579,6 +587,128 @@ _ctx_rollup_body() {
            printf '{"summary":"(Not summarized: the summary model refused this window.)","themes":[],"step_ids":[],"refused":true}' ;;
         *) note "rollup t$tier [$s,$e): no valid JSON, stopping the build here"; return 1 ;;
     esac
+}
+
+# Is this sealed block a refused placeholder old enough to re-ask?
+_ctx_refused_stale() { # _ctx_refused_stale <blockfile>
+    local f=$1 age
+    [[ -f "$f" ]] || return 1
+    jq -e '(.refused // false) == true' "$f" >/dev/null 2>&1 || return 1
+    if (( ROLLUP_REFUSED_RETRY_HOURS == 0 )); then return 0; fi
+    age=$(( ROLLUP_REFUSED_RETRY_HOURS * 60 ))
+    [[ -n "$(find "$f" -maxdepth 0 -mmin +"$age" 2>/dev/null)" ]]
+}
+
+# Does any child of [s,e) at `tier` refuse, or not exist yet? A parent
+# retried over such a child would only re-seal a placeholder, so the child
+# is retried (or built) first; the parent then rides the prune.
+_ctx_children_refused() { # _ctx_children_refused <tier> <s> <e>
+    local tier=$1 s=$2 e=$3 childblk c cf
+    childblk=$(_ctx_pow "$FANOUT" $((tier - 1)))
+    for (( c = s; c < e; c += childblk )); do
+        cf=$(_ctx_blockfile $((tier - 1)) "$c" "$((c + childblk))")
+        [[ -f "$cf" ]] || return 0
+        jq -e '(.refused // false) == true' "$cf" >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
+# Drop the higher-tier blocks whose summaries were built over [s,e): the
+# recovered block changes what they should say, and this same build
+# (bottom-up, cap permitting) rebuilds them from the new child. An aligned
+# tier-t range never straddles a tier-k boundary (k>t), so one block per
+# tier covers it; the first missing one ends the climb, since nothing
+# above it was ever built.
+_ctx_prune_above() { # _ctx_prune_above <tier> <s>
+    local tier=$1 s=$2 k size start f
+    k=$(( tier + 1 ))
+    while :; do
+        size=$(_ctx_pow "$FANOUT" "$k")
+        start=$(( (s / size) * size ))
+        f=$(_ctx_blockfile "$k" "$start" "$(( start + size ))")
+        [[ -f "$f" ]] || return 0
+        rm -f "$f"
+        note "pruned t$k [$start,$(( start + size ))), it summarized the recovered block"
+        k=$(( k + 1 ))
+    done
+}
+
+# Re-ask one stale refused block. The placeholder moves aside first, never
+# un-sealed: a crash mid-retry leaves the aside, which the next call
+# restores (_ctx_retry_recover). A repeat refusal re-seals a fresh
+# placeholder with a new clock. A reply with no valid JSON puts the
+# placeholder back untouched and restamps it, so a flaky retry costs one
+# round and never re-dams the build, which is what froze 2026-10-03.
+_ctx_retry_one() { # _ctx_retry_one <tier> <s> <e> <file>
+    local tier=$1 s=$2 e=$3 file=$4 rc=0
+    note "re-asking refused rollup t$tier [$s,$e) after the retry floor"
+    mv "$file" "$file.retry.tmp"
+    if (( tier == 1 )); then _ctx_seal_tier1 "$s" "$e" || rc=$?
+    else _ctx_seal_tierk "$tier" "$s" "$e" || rc=$?; fi
+    if (( rc == 0 )); then
+        rm -f "$file.retry.tmp"
+        if jq -e '(.refused // false) == true' "$file" >/dev/null 2>&1; then
+            return 0   # refused again: fresh placeholder, new clock; the
+                       # tiers above already summarize this exact text
+        fi
+        note "recovered rollup t$tier [$s,$e); rebuilding the tiers above it"
+        _ctx_prune_above "$tier" "$s"
+        return 0
+    fi
+    mv -f "$file.retry.tmp" "$file"
+    touch "$file"                    # fresh clock: the next retry waits
+    _CTX_SEALED=$((_CTX_SEALED + 1)) # the LLM calls cost the cap too
+    note "rollup t$tier [$s,$e): retry gave no valid JSON, keeping the placeholder"
+    return 0
+}
+
+# Crash recovery: a retry moves the placeholder aside before re-asking, so
+# if the process died mid-seal the aside is the only good copy. A valid
+# main file retires its aside; anything else gets the aside back.
+_ctx_retry_recover() {
+    local f main
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        main=${f%.retry.tmp}
+        if jq -e . "$main" >/dev/null 2>&1; then rm -f "$f"
+        else mv -f "$f" "$main"; fi
+    done < <(find "$ROLLUP_DIR" -name '*.retry.tmp' 2>/dev/null)
+}
+
+# Re-ask refused placeholders older than ROLLUP_REFUSED_RETRY_HOURS, tier by
+# tier, before the forward build: refusals drift in time rather than with
+# the window's text, so what a first build sealed as a hole a later build
+# can eventually fill (2026-10-15: 2 of 3 windows stopped refusing on
+# byte-identical re-asks, though both replies came back malformed).
+# Fresh placeholders keep their seal; a recovered block prunes the
+# summaries built over it so this same call rebuilds them; every retry
+# counts against the seal cap like any other seal.
+_ctx_retry_refused() { # _ctx_retry_refused <n> <max>
+    local n=$1 max=$2 tier blk dir f base s e
+    blk=$FANOUT; tier=1
+    while (( blk <= n )); do
+        dir="$ROLLUP_DIR/t$tier"
+        if [[ -d "$dir" ]]; then
+            # grep pre-filters (one process per tier, jq only on hits);
+            # block names are machine-generated with no spaces, so the
+            # unquoted expansion is safe here.
+            for f in $(grep -l -E '"refused": ?true' "$dir"/*.json 2>/dev/null); do
+                _ctx_refused_stale "$f" || continue
+                if (( max > 0 && _CTX_SEALED >= max )); then
+                    note "sealed $_CTX_SEALED blocks, the cap for one call; the rest waits"
+                    return 0
+                fi
+                base=$(basename "$f" .json)
+                s=$((10#${base%%-*})); e=$((10#${base##*-}))
+                if (( tier > 1 )) && _ctx_children_refused "$tier" "$s" "$e"; then
+                    continue   # a still-refused child is retried first; the
+                               # parent would only re-seal over a placeholder
+                fi
+                _ctx_retry_one "$tier" "$s" "$e" "$f"
+            done
+        fi
+        tier=$(( tier + 1 )); blk=$(( blk * FANOUT ))
+    done
 }
 
 # Write one sealed tier-1 block over filtered-step indices [s,e) (TSV lines s+1..e).
@@ -668,6 +798,8 @@ _ctx_build() {
     local n=$1 start=$2 tier=1 blk nblocks b s e max
     max=$ROLLUP_MAX_SEALS
     [[ "$BACKFILL" -eq 1 ]] && max=0
+    _ctx_retry_recover
+    _ctx_retry_refused "$n" "$max"
     blk=$FANOUT
     while (( blk <= n )); do
         nblocks=$(( n / blk ))
