@@ -46,7 +46,10 @@ run_wrapped() {
     # The extracted wrapper reads these locals through eval.
     # shellcheck disable=SC2034
     local code="$1" final_path="$2"
-    local wrapped_code
+    # The composed wrapper (xtrace separation) references trace_file; the
+    # lifted block opens it on fd 9 harmlessly. Bind it so eval sees it.
+    # shellcheck disable=SC2034
+    local trace_file=""
     eval "$wrapper_src"
     bash -e -c "$wrapped_code" </dev/null >/dev/null 2>&1
 }

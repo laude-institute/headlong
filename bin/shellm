@@ -3100,8 +3100,8 @@ if [ -n \"$trace_file\" ] && { [ \"\${BASH_VERSINFO[0]}\" -gt 4 ] || { [ \"\${BA
 fi
 set -x
 $code
-set +x"$'\n'"
 __shellm_rc=\$?
+set +x"$'\n'"
 set +e
 [ -n \"\${FINAL+x}\" ] && printf '%s' \"\$FINAL\" > \"$final_path\"
 [ -n \"\${FINAL_FILE+x}\" ] && cat \"\$FINAL_FILE\" > \"$final_path\"
