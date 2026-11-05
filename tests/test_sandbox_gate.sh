@@ -122,6 +122,12 @@ chmod +x "$WORK/toolbin/llm"
 cp "$STUB/docker" "$WORK/toolbin/docker"
 mkdir -p "$WORK/wd" "$WORK/shome"
 
+# An ambient trajectory variable (any run inside shellm leaves these set:
+# SHELLM_TRAJ_DIR outranks TRAJ_DIR, which outranks HEADLONG_HOME) would
+# send the stub runs into the caller's real log. Neutralize all three
+# before any nested exec.
+unset TRAJ_DIR TRAJ_ID SHELLM_TRAJ_DIR
+
 run_shellm() {  # run_shellm <SHELLM_REQUIRE_DOCKER value>
     ( cd "$WORK/wd" && \
       env -u SHELLM_ENV DOCKER_STUB_INFO_RC=1 PATH="$WORK/toolbin:$PATH" \

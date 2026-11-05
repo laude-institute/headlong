@@ -19,6 +19,12 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# An ambient SHELLM_TRAJ_DIR (set by any run inside shellm) outranks the
+# TRAJ_DIR each arm sets below, because bin/shellm resolves SHELLM_TRAJ_DIR
+# first; without this, a run inside a live wake writes its nested shellm run
+# into the caller's real log.
+unset SHELLM_TRAJ_DIR
+
 pass=0
 fail=0
 ok()  { pass=$((pass+1)); printf 'ok   %s\n' "$1"; }
