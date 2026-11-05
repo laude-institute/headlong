@@ -2390,24 +2390,51 @@ generate_run_summary() {
         stdin_content=$(cat "$stdin_file")
     fi
 
-    # Build combined context for LLM (cap at 20K chars)
+    # Build combined context for LLM (cap at 20K chars). Every cut is marked
+    # with the dropped count and a route to the full text: the CLI argument is
+    # recorded whole as this run's prompt step, files stay at their paths,
+    # stdin is not stored anywhere past this call. A fully cut input is named
+    # with its whole size rather than silently omitted.
     local max_ctx=20000
-    local combined="CLI argument: ${prompt:0:$max_ctx}"
+    local prompt_kept=${prompt:0:$max_ctx}
+    local combined="CLI argument: $prompt_kept"
+    local prompt_dropped=$(( ${#prompt} - ${#prompt_kept} ))
+    if [[ $prompt_dropped -gt 0 ]]; then
+        combined+=$'\n(+'"$prompt_dropped"$' chars more: full text in the prompt step of this run)'
+    fi
 
     if [[ -n "$stdin_content" ]]; then
         local avail=$((max_ctx - ${#combined}))
         if [[ $avail -gt 0 ]]; then
-            combined+=$'\n\nstdin:\n'"${stdin_content:0:$avail}"
+            local stdin_kept=${stdin_content:0:$avail}
+            local stdin_dropped=$(( ${#stdin_content} - ${#stdin_kept} ))
+            combined+=$'\n\nstdin:\n'"$stdin_kept"
+            if [[ $stdin_dropped -gt 0 ]]; then
+                combined+=$'\n(+'"$stdin_dropped"$' chars more: stdin is not stored anywhere)'
+            fi
+        else
+            combined+=$'\n\nstdin:\n(+'"${#stdin_content}"$' chars more: stdin is not stored anywhere)'
         fi
     fi
 
     for f in "${file_paths[@]+"${file_paths[@]}"}"; do
         if [[ -f "$f" ]]; then
+            local fbytes
+            fbytes=$(wc -c < "$f" 2>/dev/null || echo 0)
             local avail=$((max_ctx - ${#combined}))
-            [[ $avail -le 0 ]] && break
+            if [[ $avail -le 0 ]]; then
+                combined+=$'\n\nFile '"$f"$':\n(+'"$fbytes"$' bytes more: full file at '"$f"$')'
+                continue
+            fi
             local fc
             fc=$(head -c "$avail" "$f" 2>/dev/null || true)
-            combined+=$'\n\nFile '"${f}"$':\n'"${fc}"
+            combined+=$'\n\nFile '"${f}"$':\n'"$fc"
+            # head -c keeps exactly min(file size, avail) bytes, so the
+            # dropped count stays exact where characters and bytes differ.
+            local dropped_bytes=$(( fbytes - (fbytes < avail ? fbytes : avail) ))
+            if [[ $dropped_bytes -gt 0 ]]; then
+                combined+=$'\n(+'"$dropped_bytes"$' bytes more: full file at '"$f"$')'
+            fi
         fi
     done
 
@@ -2438,10 +2465,9 @@ ${combined}"
     printf '%s' "$llm_prompt" > "$_prompt_tmp"
     msg_json=$(jq -n --rawfile p "$_prompt_tmp" '[{"role":"user","content":$p}]')
     rm -f "$_prompt_tmp"
-
     local text
     text=$(llm -m "$summary_model" -t 2048 \
-        -s "You produce concise summaries as JSON. Output only valid JSON. No markdown fences. No preamble." \
+        -s "You produce concise summaries as JSON. Output only valid JSON. No markdown fences. No preamble. A line ending in (+N chars more: ...) or (+N bytes more: ...) marks a cut input: its text continues at the named route, so never quote its ending as the whole content." \
         -M "$msg_json" 2>/dev/null) || true
 
     # Parse JSON response
