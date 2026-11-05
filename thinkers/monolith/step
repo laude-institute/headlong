@@ -492,7 +492,26 @@ kill "$run_err_tail_pid" 2>/dev/null || true
 wait "$run_err_tail_pid" 2>/dev/null || true
 run_response=$(cat "$run_out_tmp" 2>/dev/null) || run_response=""
 rm -f "$run_out_tmp"
-run_err_tail=$(grep -v '^[[:space:]]*$' "$run_err_tmp" 2>/dev/null | tail -n 3 | cut -c1-300 | tr '\n' ' ' | sed 's/ $//') || run_err_tail=""
+# The fallback error row's stderr tail is a write-time cut (be080b0
+# family): the last 3 non-blank lines, each capped at 300 bytes, are baked
+# into a durable row, and the temp file is deleted right after, so no
+# later renderer can mark the drop. Both caps are marked here: a clipped
+# line names its dropped bytes, and dropped older lines are counted. The
+# route is honest: the whole stderr streams live into the dispatcher's
+# thinker log (the tail -F above), so the full text survives at
+# run/logs/monolith.log even after this temp file goes.
+run_err_tail=""
+err_nonblank=$(grep -cv '^[[:space:]]*$' "$run_err_tmp" 2>/dev/null) || err_nonblank=0
+if (( err_nonblank > 0 )); then
+    run_err_tail=$(grep -v '^[[:space:]]*$' "$run_err_tmp" 2>/dev/null | tail -n 3 \
+        | while IFS= read -r err_line; do
+              _excerpt_marked "$err_line" 300 "full line in run/logs/monolith.log"
+              printf ' '
+          done | sed 's/ $//') || run_err_tail=""
+    if (( err_nonblank > 3 )); then
+        run_err_tail="$run_err_tail (+$(( err_nonblank - 3 )) more stderr lines dropped; full stderr in run/logs/monolith.log)"
+    fi
+fi
 rm -f "$run_err_tmp"
 
 # Anything still alive in this step's session is a process the run left
