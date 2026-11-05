@@ -43,7 +43,7 @@ KEEP_TYPES='["thought","action","observation","message","feedback","final","shel
 # Cached-render format version: bump when the TSV row format changes, so a
 # stale rendered.tsv is rebuilt instead of mixing formats. (A KEEP_TYPES
 # change is detected independently — the keep set is stored in the meta.)
-RENDER_VERSION=1
+RENDER_VERSION=2
 
 # --- Tiered rollups / --context (see design/tiered_memory.md) ---
 CONTEXT=0
@@ -51,7 +51,7 @@ BACKFILL=0                             # --backfill: also summarize pre-enable h
 FANOUT="${ROLLUP_FANOUT:-10}"          # F: children per tier; tier k covers F^k steps
 CTX_BUDGET="${MONOLITH_CONTEXT_BUDGET:-auto}"   # token budget; auto = fraction of model window
 CTX_RAW_TAIL="${ROLLUP_RAW_TAIL:-auto}"         # R: verbatim recent steps; auto = from budget
-ROLLUP_PROMPT_VERSION=5                 # stamped into sealed blocks for honest determinism (v2: first-person voice; v3: outcomes, not temperament; v5: supersession citations)
+ROLLUP_PROMPT_VERSION=6                 # stamped into sealed blocks for honest determinism (v2: first-person voice; v3: outcomes, not temperament; v5: supersession citations; v6: cut rows read as partial)
 # Output cap for one rollup call. Thinking tokens count against it on
 # reasoning models: at 1024, Sonnet 5 spent about 700 thinking and was cut
 # off mid-JSON on a quarter of Audel's rollups (42 of 166, 2026-10-12).
@@ -241,8 +241,19 @@ _render_steps() {
                                             | gsub("[\\t\\n\\r]+"; " "))[-200:])
                           else "" end)
                    else
+                       # The 500-char cap is load-bearing: _ctx_resolve_R
+                       # budgets the raw tail from this worst case, so the
+                       # cap stays and the cut is marked instead, be080b0
+                       # family shape, the dropped count plus a route.
+                       # Without the marker a sealed tier block or a window
+                       # summary inherits a half sentence as the whole
+                       # step content.
                        ((.content // .command // .tldr // "") | tostring
-                        | gsub("[\\t\\n\\r]+"; " ") | .[0:500])
+                        | gsub("[\\t\\n\\r]+"; " ")
+                        | if length > 500
+                          then .[0:500] + " (+" + ((length - 500) | tostring)
+                               + " more: full step in the raw log)"
+                          else . end)
                    end)
             ),
             ((.ts // "") | epoch_min)
@@ -304,7 +315,7 @@ _llm_json() {
     return 1
 }
 
-_WINDOW_SYSTEM='You summarize one window of an AI agent'\''s mind log. Lines look like "[step-id] type(source): content". Reply with ONLY a JSON object, no markdown fences:
+_WINDOW_SYSTEM='You summarize one window of an AI agent'\''s mind log. Lines look like "[step-id] type(source): content". A line ending in "(+N more: full step in the raw log)" is a cut row: the step continues in the raw log, so treat its text as partial and never quote its ending as the whole step content. Reply with ONLY a JSON object, no markdown fences:
 {"title": "short episode title (<=8 words)",
  "summary": "2-4 sentences on outcomes: what the agent did, decided, learned, and left open, naming people, artifacts, and threads. Events, not character: no words for its habits or temperament (not disciplined, restrained, patient, waiting mode); if it idled, say once what it was waiting for",
  "themes": ["1-4 short kebab-case topics"],
@@ -516,7 +527,7 @@ _print_json() {
 # cached forever; only the frontier (newly-complete blocks) is built each run.
 # See design/tiered_memory.md.
 
-_ROLLUP_SYSTEM='You are the AI agent whose life log this is. Summarize this one slice of your own history in the FIRST PERSON — say "I", never "the agent". The input is a chronological list of lines: either raw steps "[id] type: content", or child rollup summaries (already first person). Child rollup summaries arrive prefixed by their step-id list, e.g. "[id1,id2] I did X"; when your summary corrects or supersedes a claim stated in an earlier child window supplied in this same input, and the correcting evidence is also present in this input, name that child by quoting its "[id,...]" prefix verbatim in your summary text, e.g. "this corrects [old-ids]: the earlier claim of X is superseded because Y". Cite only prefixes actually supplied here; do not invent or infer a prefix for an unseen window. This names a correction target in the new parent summary; it does not rewrite or link separately sealed siblings that are absent from this input. Reply with ONLY a JSON object, no markdown fences:
+_ROLLUP_SYSTEM='You are the AI agent whose life log this is. Summarize this one slice of your own history in the FIRST PERSON — say "I", never "the agent". The input is a chronological list of lines: either raw steps "[id] type: content", or child rollup summaries (already first person). A raw step ending in "(+N more: full step in the raw log)" is a cut row: the step continues in the raw log, so treat its text as partial and never quote its ending as the whole step content. Child rollup summaries arrive prefixed by their step-id list, e.g. "[id1,id2] I did X"; when your summary corrects or supersedes a claim stated in an earlier child window supplied in this same input, and the correcting evidence is also present in this input, name that child by quoting its "[id,...]" prefix verbatim in your summary text, e.g. "this corrects [old-ids]: the earlier claim of X is superseded because Y". Cite only prefixes actually supplied here; do not invent or infer a prefix for an unseen window. This names a correction target in the new parent summary; it does not rewrite or link separately sealed siblings that are absent from this input. Reply with ONLY a JSON object, no markdown fences:
 {"summary": "2-3 first-person sentences on outcomes: what I did, decided, learned, and left open, naming people, artifacts, and threads. Events, not my character: no words for my habits or temperament (not disciplined, restrained, patient, waiting mode); if I idled, say once what I was waiting for",
  "themes": ["1-4 short kebab-case topics"],
  "step_ids": ["up to 4 of the most important 8-char step ids that literally appear in the input"]}'
@@ -538,8 +549,9 @@ _ctx_model_window() {
 }
 
 # Raw-tail size R from the budget (recency gets ~40% of budget). A rendered
-# step is capped at 500 chars (_render_steps), ~4 chars/token, so budget at
-# ~125 tok/step — the worst case, not the mean, because overshooting the
+# step is capped at 500 chars plus at most ~42 of cut marker
+# (_render_steps), ~4 chars/token, so budget at
+# ~136 tok/step — the worst case, not the mean, because overshooting the
 # window truncates the mind's context while undershooting only shortens it.
 _ctx_resolve_R() {
     local n=$1
@@ -558,7 +570,7 @@ _ctx_resolve_R() {
     else
         budget=$CTX_BUDGET
     fi
-    r=$(( (budget * 4 / 10) / 125 ))
+    r=$(( (budget * 4 / 10) / 136 ))
     (( r < 20 )) && r=20
     (( r > n )) && r=n
     printf '%s' "$r"
