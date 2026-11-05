@@ -43,7 +43,13 @@ KEEP_TYPES='["thought","action","observation","message","feedback","final","shel
 # Cached-render format version: bump when the TSV row format changes, so a
 # stale rendered.tsv is rebuilt instead of mixing formats. (A KEEP_TYPES
 # change is detected independently — the keep set is stored in the meta.)
-RENDER_VERSION=1
+RENDER_VERSION=2
+
+# Whose log this is: outbound message rows render "I sent to X", rows
+# addressed here render "X sent to me". RECAP_SELF overrides, then the
+# identity shell's IDENTITY_NAME. A caller that names nobody gets the
+# third-party form for every row, so no first-person claim is invented.
+RECAP_SELF="${RECAP_SELF:-${IDENTITY_NAME:-}}"
 
 # --- Tiered rollups / --context (see design/tiered_memory.md) ---
 CONTEXT=0
@@ -51,7 +57,7 @@ BACKFILL=0                             # --backfill: also summarize pre-enable h
 FANOUT="${ROLLUP_FANOUT:-10}"          # F: children per tier; tier k covers F^k steps
 CTX_BUDGET="${MONOLITH_CONTEXT_BUDGET:-auto}"   # token budget; auto = fraction of model window
 CTX_RAW_TAIL="${ROLLUP_RAW_TAIL:-auto}"         # R: verbatim recent steps; auto = from budget
-ROLLUP_PROMPT_VERSION=6                 # stamped into sealed blocks for honest determinism (v2: first-person voice; v3: outcomes, not temperament; v5: supersession citations; v6: message-row direction and merge/shellm-run bookkeeping gloss documented)
+ROLLUP_PROMPT_VERSION=7                 # stamped into sealed blocks for honest determinism (v2: first-person voice; v3: outcomes, not temperament; v5: supersession citations; v6: message-row direction gloss; v7: verb-led nameless message rows, third-party rows name both sides)
 # Output cap for one rollup call. Thinking tokens count against it on
 # reasoning models: at 1024, Sonnet 5 spent about 700 thinking and was cut
 # off mid-JSON on a quarter of Audel's rollups (42 of 166, 2026-10-12).
@@ -196,7 +202,7 @@ _render_steps() {
     # high-water mark and duplicate on the next incremental pass.
     tail -n "+$from_line" "$JSONL" \
         | { if [[ -n "$limit" ]]; then head -n "$limit"; else cat; fi; } \
-        | jq -r --argjson keep "$KEEP_TYPES" --argjson off "$((from_line - 1))" '
+        | jq -r --argjson keep "$KEEP_TYPES" --argjson off "$((from_line - 1))" --arg me "$RECAP_SELF" '
         def epoch_min:
           (tostring
            | capture("^(?<y>[0-9]{4})-(?<mo>[0-9]{2})-(?<d>[0-9]{2})T(?<h>[0-9]{2}):(?<mi>[0-9]{2})(:[0-9]{2})?([.][0-9]+)?(?<tz>Z|[+-][0-9]{4})?")
@@ -227,7 +233,14 @@ _render_steps() {
                 + (if .source then "(" + .source + ")"
                    elif .launched_by then "(" + (.launched_by|tostring) + ")"
                    else "" end)
-                + (if .from then " " + (.from|tostring) + "→" + ((.to // "?")|tostring) else "" end)
+                + (if .from then
+                       (if $me != "" and .from == $me
+                        then " I sent to " + ((.to // "?")|tostring)
+                        elif $me != "" and .to == $me
+                        then " " + (.from|tostring) + " sent to me"
+                        else " " + (.from|tostring) + " sent to " + ((.to // "?")|tostring)
+                        end)
+                   else "" end)
                 + ": "
                 + (if .type == "shellm-run" then
                        # The launcher argv is ~500 chars of identical flags on
@@ -522,7 +535,7 @@ _print_json() {
 # cached forever; only the frontier (newly-complete blocks) is built each run.
 # See design/tiered_memory.md.
 
-_ROLLUP_SYSTEM='You are the AI agent whose life log this is. Summarize this one slice of your own history in the FIRST PERSON — say "I", never "the agent". The input is a chronological list of lines: either raw steps "[id] type: content", or child rollup summaries (already first person). Child rollup summaries arrive prefixed by their step-id list, e.g. "[id1,id2] I did X"; when your summary corrects or supersedes a claim stated in an earlier child window supplied in this same input, and the correcting evidence is also present in this input, name that child by quoting its "[id,...]" prefix verbatim in your summary text, e.g. "this corrects [old-ids]: the earlier claim of X is superseded because Y". Cite only prefixes actually supplied here; do not invent or infer a prefix for an unseen window. This names a correction target in the new parent summary; it does not rewrite or link separately sealed siblings that are absent from this input.  Message lines read "[id] message(chat) FROM→TO: content": the name before the arrow is the sender, the name after it the recipient; your own name before the arrow means you sent the message, your name after it means you received it. Merge and shellm-run rows are dispatcher bookkeeping for nested runs, not actions you performed; never narrate them as completed operations. Reply with ONLY a JSON object, no markdown fences:
+_ROLLUP_SYSTEM='You are the AI agent whose life log this is. Summarize this one slice of your own history in the FIRST PERSON — say "I", never "the agent". The input is a chronological list of lines: either raw steps "[id] type: content", or child rollup summaries (already first person). Child rollup summaries arrive prefixed by their step-id list, e.g. "[id1,id2] I did X"; when your summary corrects or supersedes a claim stated in an earlier child window supplied in this same input, and the correcting evidence is also present in this input, name that child by quoting its "[id,...]" prefix verbatim in your summary text, e.g. "this corrects [old-ids]: the earlier claim of X is superseded because Y". Cite only prefixes actually supplied here; do not invent or infer a prefix for an unseen window. This names a correction target in the new parent summary; it does not rewrite or link separately sealed siblings that are absent from this input.  Message lines read "[id] message(chat) I sent to RECIPIENT: content" when you sent that message to the named recipient, "[id] message(chat) SENDER sent to me: content" when the named sender sent it to you, and "[id] message(chat) SENDER sent to RECIPIENT: content" when other people wrote to each other; your own name never appears in a message line. Merge and shellm-run rows are dispatcher bookkeeping for nested runs, not actions you performed; never narrate them as completed operations. Reply with ONLY a JSON object, no markdown fences:
 {"summary": "2-3 first-person sentences on outcomes: what I did, decided, learned, and left open, naming people, artifacts, and threads. Events, not my character: no words for my habits or temperament (not disciplined, restrained, patient, waiting mode); if I idled, say once what I was waiting for",
  "themes": ["1-4 short kebab-case topics"],
  "step_ids": ["up to 4 of the most important 8-char step ids that literally appear in the input"]}'
