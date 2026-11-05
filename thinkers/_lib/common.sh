@@ -331,7 +331,14 @@ get_goals() {
         order+=("${until:-9999-99-99}|$created|$f")
     done
     if (( ${#order[@]} > 0 )); then
-        mapfile -t order < <(printf '%s\n' "${order[@]}" | LC_ALL=C sort)
+        # bash 3.2 (macOS) has no mapfile: read the sorted keys back with the
+        # portable while-read, which every bash in support has.
+        local sorted="" line=""
+        sorted=$(printf '%s\n' "${order[@]}" | LC_ALL=C sort)
+        order=()
+        while IFS= read -r line; do
+            order+=("$line")
+        done <<<"$sorted"
     fi
     for (( i = 0; i < ${#order[@]}; i++ )); do
         f="${order[$i]##*|}"

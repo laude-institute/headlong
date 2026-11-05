@@ -33,10 +33,15 @@ mk() {  # mk <name> <type> <created> <extra-frontmatter> <body>
 
 lib() { ( source "$REPO/thinkers/_lib/common.sh"; "$@" ); }
 
-soon=$(date -u -d tomorrow +%Y-%m-%d)
-mid=$(date -u -d "+3 days" +%Y-%m-%d)
-far=$(date -u -d "+20 days" +%Y-%m-%d)
-expired=$(date -u -d yesterday +%Y-%m-%d)
+# Portable future/past dates: GNU date takes -d @epoch, BSD date takes -r
+# epoch (the _epoch_utc idiom in thinkers/_lib/common.sh). macOS runners
+# would reject the old `date -u -d tomorrow` as a GNU-only spelling.
+ymd() {  # ymd <offset-days> -> YYYY-MM-DD
+    local off="$1" e
+    e=$(( $(date -u +%s) + off * 86400 ))
+    date -u -d "@$e" +%Y-%m-%d 2>/dev/null || date -u -r "$e" +%Y-%m-%d
+}
+soon=$(ymd 1); mid=$(ymd 3); far=$(ymd 20); expired=$(ymd -1)
 
 # Store one: the record owed soonest, minted oldest, must render inside a
 # one-line cap while the later record is only counted.
