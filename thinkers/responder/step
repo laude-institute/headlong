@@ -581,6 +581,24 @@ _redact_keys() {
         -e 's/(^|[^A-Za-z0-9])(key-[A-Za-z0-9]{20,})/\1[redacted]/g' \
         -e 's/((aws|AWS)_secret_access_key)[[:space:]]*[=:][[:space:]]*[^[:space:]]+/\1=[redacted]/g' | _redact_card
 }
+# _bake_person_summary <line> — the person card's stored summary, clipped
+# for display with the drop marked. This writer used to cut the line at 60
+# chars silently (head -1 | cut -c1-60), so every later list or search row
+# showed a summary ending mid word, baked into the store at write time.
+# The cap stays (it bounds the display row); the drop is marked with the
+# mem store's own summary marker shape (bin/mem bake_summary): the dropped
+# character count plus a route to the whole line, which lives in the
+# card's body, whole.
+_bake_person_summary() {
+    local line="$1" clip dropped
+    clip=$(printf '%s' "$line" | head -c 60 | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+    dropped=$(( ${#line} - ${#clip} ))
+    if (( dropped > 0 )); then
+        printf '%s +%d chars (route: full line in the memory body)' "$clip" "$dropped"
+    else
+        printf '%s' "$clip"
+    fi
+}
 _update_person_notes() {
     local key="$1" person="$2" hist prev_body prev_file system user new_body
     local lockdir="${MEM_DIR:-/tmp}/.person-notes.lock"
@@ -602,12 +620,26 @@ Recent conversation (UTC, oldest first; \"them\" is $person):
 $user
 
 Now: $(date -u +%Y-%m-%dT%H:%MZ). Output the rewritten notes."
-    new_body=$(llm -m "$NOTES_MODEL" -s "$system" -M "$(jq -nc --arg u "$user" '[{role:"user", content:$u}]')" 2>/dev/null | _redact_keys | head -n 20) || new_body=""
+    new_body=$(llm -m "$NOTES_MODEL" -s "$system" -M "$(jq -nc --arg u "$user" '[{role:"user", content:$u}]')" 2>/dev/null | _redact_keys) || new_body=""
     new_body=$(printf '%s' "$new_body" | sed '/./,$!d')
     [[ -n "$new_body" ]] || return 0
+    # The body cap was silent too: lines past 20 of the notes model's
+    # output were dropped with no trace. Visibility is owed even where
+    # recovery is not (the dropped lines are kept nowhere), so the dropped
+    # count is marked in the body itself, the store's marker convention.
+    local nb_total nb_dropped
+    nb_total=$(printf '%s\n' "$new_body" | wc -l)
+    if (( nb_total > 20 )); then
+        nb_dropped=$(( nb_total - 20 ))
+        # awk reads to EOF where head would close the pipe early, so the
+        # truncation itself cannot take EPIPE under pipefail.
+        new_body=$(printf '%s\n' "$new_body" | awk 'NR <= 20')
+        new_body="$new_body
+(+$nb_dropped more lines: dropped by the 20-line writer cap, not kept anywhere)"
+    fi
     local now summary
     now=$(date +"%Y-%m-%d %H:%M:%S")
-    summary="Notes on $person: $(printf '%s' "$new_body" | head -1 | cut -c1-60)"
+    summary=$(_bake_person_summary "Notes on $person: $(printf '%s' "$new_body" | head -1)")
     if [[ -n "$prev_file" ]]; then
         # Rewrite in place, keeping id/created/person_key/aliases as they are.
         local fm id created aliases_block
