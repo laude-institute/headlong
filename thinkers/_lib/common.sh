@@ -306,7 +306,10 @@ get_goals() {
     [[ -d "$mem_dir" ]] || return 0
     local today now f ftype until created body age shown=0 hidden=0 goals=""
     today=$(date -u +%Y-%m-%d); now=$(date -u +%s)
-    local -a files=("$mem_dir"/*.md) order=()
+    # The array is named sortkeys, not order: tests that source this file
+    # hold local string variables named order, and shellcheck reading across
+    # the source flags the name collision (SC2178/SC2128) in those tests.
+    local -a files=("$mem_dir"/*.md) sortkeys=()
     local i
     # Owed order before the cap. The window used to visit the store
     # newest-minted first, so a floor due tonight sank one position per
@@ -328,20 +331,20 @@ get_goals() {
         body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" | sed '/./,$!d' | head -3)
         [[ -n "$body" ]] || continue
         created=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^created:/{sub(/^created:[[:space:]]*/, ""); print}' "$f")
-        order+=("${until:-9999-99-99}|$created|$f")
+        sortkeys+=("${until:-9999-99-99}|$created|$f")
     done
-    if (( ${#order[@]} > 0 )); then
+    if (( ${#sortkeys[@]} > 0 )); then
         # bash 3.2 (macOS) has no mapfile: read the sorted keys back with the
         # portable while-read, which every bash in support has.
         local sorted="" line=""
-        sorted=$(printf '%s\n' "${order[@]}" | LC_ALL=C sort)
-        order=()
+        sorted=$(printf '%s\n' "${sortkeys[@]}" | LC_ALL=C sort)
+        sortkeys=()
         while IFS= read -r line; do
-            order+=("$line")
+            sortkeys+=("$line")
         done <<<"$sorted"
     fi
-    for (( i = 0; i < ${#order[@]}; i++ )); do
-        f="${order[$i]##*|}"
+    for (( i = 0; i < ${#sortkeys[@]}; i++ )); do
+        f="${sortkeys[$i]##*|}"
         if (( shown >= max )); then hidden=$((hidden + 1)); continue; fi
         ftype=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^type:/{sub(/^type:[[:space:]]*/, ""); print}' "$f")
         until=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^until:/{sub(/^until:[[:space:]]*/, ""); print}' "$f")
