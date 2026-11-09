@@ -292,7 +292,7 @@ mem_prefilter() {
     # store, and a 3000-file store kills every trial. awk drains the sort,
     # so the writer fails only on its own terms.
     LC_ALL=C awk -v terms="$terms" '
-        BEGIN { n = split(terms, T, " ") }
+        BEGIN { n = split(terms, T, " "); for (i = 1; i <= n; i++) gsub(/[.]/, "[.]", T[i]) }
         FNR == 1 { nf++; files[nf] = FILENAME }
         { line = tolower($0); len[nf] += length($0) + 1
           for (i = 1; i <= n; i++) { c = gsub(T[i], "&", line); if (c > 0) cnt[nf, i] += c } }
