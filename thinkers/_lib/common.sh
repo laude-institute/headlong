@@ -302,7 +302,7 @@ _build_system_prompt() {
 get_goals() {
     local mem_dir="${1:-$MEM_DIR}" max="${GOALS_MAX:-8}"
     [[ -d "$mem_dir" ]] || return 0
-    local today now f ftype until created body age shown=0 hidden=0 goals=""
+    local today now f ftype until created body age born elapsed shown=0 hidden=0 goals=""
     today=$(date -u +%Y-%m-%d); now=$(date -u +%s)
     local -a files=("$mem_dir"/*.md)
     local i
@@ -365,7 +365,7 @@ _related_memories() {  # _related_memories <query> [prev-names, one per line] [n
     (( n > 0 )) || return 0
     [[ -d "${MEM_DIR:-}" ]] || return 0
     command -v mem >/dev/null 2>&1 || return 0
-    local cleaned now fresh f name ftype created body age shown=0
+    local cleaned now fresh f name ftype created body age born elapsed shown=0
     cleaned=$(printf '%s' "$query" | tr -c 'A-Za-z0-9_#@.-' '\n' | grep -vxiE "$_RELATED_STOPWORDS" | tr '\n' ' ')
     [[ -n "${cleaned// /}" ]] || return 0
     now=$(date -u +%s); fresh="${RELATED_FRESH_S:-86400}"
@@ -375,8 +375,14 @@ _related_memories() {  # _related_memories <query> [prev-names, one per line] [n
         case "$prev" in *"$name"*) continue ;; esac
         created=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^created:/{sub(/^created:[[:space:]]*/, ""); print}' "$f")
         age=$(_mem_age "$created" "$f" "$now")
-        case "$age" in *h) continue ;; esac
-        if [[ "$fresh" -gt 86400 && "$age" == *d ]]; then (( ${age%d} * 86400 < fresh )) && continue; fi
+        if (( fresh > 0 )); then
+            born=$(date -u -d "$created" +%s 2>/dev/null) || born=$(date -j -u -f '%Y-%m-%d %H:%M:%S' "$created" +%s 2>/dev/null) || born=""
+            [[ -n "$born" ]] || born=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null) || born=""
+            if [[ -n "$born" ]]; then
+                elapsed=$(( now - born ))
+                (( elapsed < fresh )) && continue
+            fi
+        fi
         ftype=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^type:/{sub(/^type:[[:space:]]*/, ""); print}' "$f")
         body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" | sed '/./,$!d' | head -1 | sed 's/^# *//' | cut -c1-140)
         [[ -n "$body" ]] || continue
