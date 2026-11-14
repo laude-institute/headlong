@@ -180,13 +180,17 @@ _workspace_section() {  # _workspace_section <workdir>
     local max="${WORKSPACE_DIRS:-12}"
     while IFS= read -r d; do
         [[ -n "$d" ]] || continue
-        n=$(find "$d" -type f 2>/dev/null | head -n "$cap" | wc -l | tr -d ' ')
+        # awk drains find to EOF; head -n cap would exit early and SIGPIPE the
+        # writer under pipefail once a directory holds more than the pipe buffer.
+        n=$(find "$d" -type f 2>/dev/null | awk -v n="$cap" 'NR<=n' | wc -l | tr -d ' ')
         lines+=("$(printf '%s\t%s' "$n" "${d##*/}/")")
     done < <(find "$wd" -mindepth 1 -maxdepth 1 -type d ! -name '.*' ! -name '__pycache__' 2>/dev/null | sort)
     loose=$(find "$wd" -mindepth 1 -maxdepth 1 -type f ! -name '.*' 2>/dev/null | wc -l | tr -d ' ')
     printf 'Workspace: %s (every wake starts here; paths below are relative to it)\n' "$wd"
     if [[ ${#lines[@]} -gt 0 ]]; then
-        printf '%s\n' "${lines[@]}" | sort -t$'\t' -k1,1nr | head -n "$max" \
+        # Same drain for the ranked list: head -n max exits early and sort takes
+        # the broken pipe (killed a 600-directory workdir every trial, 2026-10-03).
+        printf '%s\n' "${lines[@]}" | sort -t$'\t' -k1,1nr | awk -v n="$max" 'NR<=n' \
             | while IFS=$'\t' read -r n d; do printf -- '- %s %s files\n' "$d" "$(_coarse_count "$n" "$cap")"; done
         [[ ${#lines[@]} -gt "$max" ]] && printf -- '- and %d more directories\n' $(( ${#lines[@]} - max ))
     fi
