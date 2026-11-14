@@ -105,8 +105,8 @@ for ((i=0; i<20; i++)); do
     esac
     file=$(printf '%s/scope001/rollups/t1/%012d-%012d.json' "$TRAJ_ROOT" "$((i*10))" "$((i*10+10))")
     jq -nc --arg summary "$summary" --argjson ids "$ids" \
-        --argjson start "$((i*10))" --argjson end "$((i*10+10))" \
-        '{tier:1,start:$start,end:$end,n:10,summary:$summary,step_ids:$ids,prompt_version:5}' > "$file"
+        --argjson start "$((i*10))" --argjson stop "$((i*10+10))" \
+        '{tier:1,start:$start,end:$stop,n:10,summary:$summary,step_ids:$ids,prompt_version:5}' > "$file"
 done
 check "scope: tier-2 generation succeeds" \
     recap scope001 --traj_dir "$TRAJ_ROOT" --backfill
