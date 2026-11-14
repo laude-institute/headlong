@@ -34,7 +34,10 @@ How a line is chosen:
 - No model call. About 500 bytes a wake.
 
 Knobs: `MONOLITH_RELATED_MEMORIES` (lines, default 3, 0 disables),
-`RELATED_FRESH_S` (skip memories newer than this, default a day).
+`RELATED_FRESH_S` (skip memories newer than this many seconds, default a day;
+0 disables age exclusion while keeping the previous-wake exclusion). Invalid
+values produce a warning and use the one-day default. Creation dates use the
+local time written by `mem`; missing or invalid dates fall back to file mtime.
 
 What it does not do: associative recall of a memory whose relevance the
 current words do not carry. That needs the model stage of the search or the
