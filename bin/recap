@@ -293,7 +293,7 @@ _llm_json() {
         cat "$errf" >&2
         if grep -q 'refused:' "$errf"; then rm -f "$errf"; return 2; fi
         cleaned=$(printf '%s\n' "$raw" | sed '/^```/d')
-        if printf '%s' "$cleaned" | jq -e . >/dev/null 2>&1; then
+        if printf '%s' "$cleaned" | jq -se 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1; then
             rm -f "$errf"
             printf '%s' "$cleaned"
             return 0
