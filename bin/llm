@@ -1188,9 +1188,9 @@ stream_openai() {
             if [[ "$json" == *'"usage"'* && "$json" != *'"usage":null'* ]]; then
                 local _u=""
                 _u=$(printf '%s' "$json" | jq -r 'select(.usage != null) | [
-                        (.usage.prompt_tokens // ""), (.usage.completion_tokens // ""),
-                        (.usage.completion_tokens_details.reasoning_tokens // ""),
-                        (.usage.prompt_tokens_details.cached_tokens // "")
+                        (.usage.prompt_tokens // "-"), (.usage.completion_tokens // "-"),
+                        (.usage.completion_tokens_details.reasoning_tokens // "-"),
+                        (.usage.prompt_tokens_details.cached_tokens // "-")
                     ] | @tsv' 2>/dev/null) || _u=""
                 if [[ -n "$_u" ]]; then
                     local _u_in _u_out _u_think _u_cache
@@ -1231,10 +1231,10 @@ stream_gemini() {
             if [[ "$json" == *'"usageMetadata"'* ]]; then
                 local _u=""
                 _u=$(printf '%s' "$json" | jq -r '[
-                        (.usageMetadata.promptTokenCount // ""),
-                        (.usageMetadata.candidatesTokenCount // ""),
-                        (.usageMetadata.thoughtsTokenCount // ""),
-                        (.usageMetadata.cachedContentTokenCount // "")
+                        (.usageMetadata.promptTokenCount // "-"),
+                        (.usageMetadata.candidatesTokenCount // "-"),
+                        (.usageMetadata.thoughtsTokenCount // "-"),
+                        (.usageMetadata.cachedContentTokenCount // "-")
                     ] | @tsv' 2>/dev/null) || _u=""
                 if [[ -n "$_u" ]]; then
                     local _u_in _u_out _u_think _u_cache
@@ -1551,9 +1551,9 @@ else
 
     case "$LLM_PROVIDER" in
         # opencode (Zen) speaks the Anthropic wire protocol, usage shape included.
-        anthropic|opencode) _u=$(jq -r '[(.usage.input_tokens // ""), (.usage.output_tokens // ""), "", (.usage.cache_read_input_tokens // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
-        gemini)    _u=$(jq -r '[(.usageMetadata.promptTokenCount // ""), (.usageMetadata.candidatesTokenCount // ""), (.usageMetadata.thoughtsTokenCount // ""), (.usageMetadata.cachedContentTokenCount // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
-        *)         _u=$(jq -r '[(.usage.prompt_tokens // ""), (.usage.completion_tokens // ""), (.usage.completion_tokens_details.reasoning_tokens // ""), (.usage.prompt_tokens_details.cached_tokens // "")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
+        anthropic|opencode) _u=$(jq -r '[(.usage.input_tokens // "-"), (.usage.output_tokens // "-"), "-", (.usage.cache_read_input_tokens // "-")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
+        gemini)    _u=$(jq -r '[(.usageMetadata.promptTokenCount // "-"), (.usageMetadata.candidatesTokenCount // "-"), (.usageMetadata.thoughtsTokenCount // "-"), (.usageMetadata.cachedContentTokenCount // "-")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
+        *)         _u=$(jq -r '[(.usage.prompt_tokens // "-"), (.usage.completion_tokens // "-"), (.usage.completion_tokens_details.reasoning_tokens // "-"), (.usage.prompt_tokens_details.cached_tokens // "-")] | @tsv' "$local_resp" 2>/dev/null) || _u="" ;;
     esac
     if [[ -n "$_u" ]]; then
         IFS=$'\t' read -r _u_in _u_out _u_think _u_cache <<<"$_u"
