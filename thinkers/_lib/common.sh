@@ -174,6 +174,50 @@ _coarse_count() {  # _coarse_count <n> [cap]
     printf 'about %s' "$(( (n + scale / 2) / scale * scale ))"
 }
 
+# _excerpt_marked <text> <byte-cap> <route> — a write-time excerpt cut,
+# marked. Sites that bake a durable row quoting a longer source (an
+# observation excerpting a person's message, an error row excerpting the
+# run's stderr) cap the excerpt with no sign, and no later renderer can
+# mark what was already cut: every downstream reader sees a half sentence
+# as the whole text. The cap stays; the drop is marked in the cut-marker
+# family shape (be080b0, PRs 240 to 244): a clipped excerpt ends
+# " (+N bytes more: <route>)" with the exact dropped byte count, and the
+# caller owns an honest route. A fitting excerpt prints unchanged. The
+# take drains through awk (no producer can SIGPIPE under pipefail, the
+# PR 216 class) and the boundary is repaired so a clipped excerpt can
+# never end inside a multibyte UTF-8 character (the PR 171 class).
+# <text> arrives in the command-substitution form: no trailing newline.
+_excerpt_marked() {  # _excerpt_marked <text> <byte-cap> <route>
+    local text="$1" cap="$2" route="$3"
+    printf '%s' "$text" | LC_ALL=C awk -v n="$cap" -v route="$route" '
+        function repair(s,  i, c, k) {
+            # Walk back over continuation bytes to the lead byte; a short
+            # sequence is an incomplete character and is dropped whole.
+            k = 0; i = length(s)
+            while (i > 0 && k < 3) {
+                c = substr(s, i, 1)
+                if (c < "\200") return s
+                if (c < "\300") { k++; i--; continue }
+                break
+            }
+            if (i == 0) return s
+            c = substr(s, i, 1)
+            if (c < "\200") return s
+            if (c < "\340") return (k == 1 ? s : substr(s, 1, i - 1))
+            if (c < "\360") return (k == 2 ? s : substr(s, 1, i - 1))
+            return (k == 3 ? s : substr(s, 1, i - 1))
+        }
+        { buf = buf $0 "\n" }
+        END {
+            if (NR == 0) exit
+            buf = substr(buf, 1, length(buf) - 1)
+            total = length(buf)
+            if (total <= n) { printf "%s", buf; exit }
+            kept = repair(substr(buf, 1, n))
+            printf "%s (+%d bytes more: %s)", kept, total - length(kept), route
+        }'
+}
+
 _workspace_section() {  # _workspace_section <workdir>
     local wd="$1" d n loose lines=() cap=5000
     [[ -d "$wd" ]] || return 0

@@ -65,8 +65,22 @@ grep -qxF "$mid" "$SEEN" 2>/dev/null && exit 0
 
 obs="I'm reminded of memory $mid: $summary ($hits shared words; mem show $mid for the full note)"
 if [[ "${RETRIEVAL_SEMANTIC:-0}" == 1 ]]; then
-    sem=$(timeout 60 mem search "$content" 2>/dev/null | head -3 | tr '\n' ' ') || sem=""
-    [[ -n "$sem" ]] && obs="$obs | mem search: ${sem:0:300}"
+    # The mem search rows baked into this durable observation are a
+    # write-time cut (be080b0 family): the 3-row window and the 300-byte
+    # cap both mark their drops now, with a route to the store, where
+    # every summary the rows quote lives. awk drains the search output
+    # (head after a live pipe would SIGPIPE mem under pipefail) and takes
+    # the first 3 non-blank rows.
+    sem_all=$(timeout 60 mem search "$content" 2>/dev/null) || sem_all=""
+    sem_rows=$(printf '%s\n' "$sem_all" | grep -c '[^[:space:]]') || sem_rows=0
+    sem=$(printf '%s\n' "$sem_all" | awk 'NF && ++k <= 3' | tr '\n' ' ' | sed 's/ $//') || sem=""
+    if [[ -n "$sem" ]]; then
+        sem=$(_excerpt_marked "$sem" 300 "full summaries live in the memory store")
+        obs="$obs | mem search: $sem"
+        if (( sem_rows > 3 )); then
+            obs="$obs (+$(( sem_rows - 3 )) more search rows dropped; their summaries live in the memory store)"
+        fi
+    fi
 fi
 jq -nc --arg c "$obs" --arg s "$THINKER_NAME" --arg m "$mid" --arg t "$step_id" \
     '{type:"observation", content:$c, source:$s, retrieved_mem:$m}
