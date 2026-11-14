@@ -169,8 +169,12 @@ skills_dir() {
 
 # Build deduplicated list of skill search directories.
 # Checks: .skills (project), kernel dir (if set), SKILLS_DIR (identity/override)
+# Buffer before emitting so directory resolution cannot race an early reader.
+# This is one printf call, not a promise of one OS write for arbitrary paths.
+# Keep write diagnostics for draining callers; find_skill alone expects an
+# early close and silences its producer below.
 _all_skill_dirs() {
-    local d real _seen=""
+    local d real _seen="" _list=""
     for d in ".skills" ${SKILLS_KERNEL_DIR:+"$SKILLS_KERNEL_DIR"} "$SKILLS_DIR"; do
         [[ -z "$d" ]] && continue
         real=$(cd "$d" 2>/dev/null && pwd) || real="$d"
@@ -178,8 +182,10 @@ _all_skill_dirs() {
             *"|$real|"*) continue ;;
         esac
         _seen="${_seen}|${real}|"
-        echo "$d"
+        _list="${_list}${d}
+"
     done
+    printf '%s' "$_list"
 }
 
 # Label a skill directory as project, kernel, or local.
@@ -219,7 +225,8 @@ find_skill() {
                 return
             fi
         done
-    done < <(_all_skill_dirs)
+    # First match wins, so this reader may close before its producer finishes.
+    done < <(_all_skill_dirs 2>/dev/null || true)
     return 1
 }
 
