@@ -131,19 +131,29 @@ for _ in $(seq 1 100); do
 done
 is "tail -f -n 2 --filter replays the two newest matches" "T1 T2" \
    "$(contents < "$WORK/follow.out")"
-# Allow tail -F to start after replay, then exercise its live filter too.
-sleep 1
+# Confirm live reads before the assertion. A marker written between replay
+# and tail -F startup may be missed, so retry it until one is observed.
+ready=0
+for _ in $(seq 1 100); do
+    if grep -F '"content":"follow-ready"' "$WORK/follow.out" >/dev/null; then
+        ready=1
+        break
+    fi
+    traj append --field type=thought --field content=follow-ready >/dev/null
+    sleep 0.1
+done
+is "tail -f observes a live readiness marker" "1" "$ready"
 traj append --field type=action --field content=ignored >/dev/null
 traj append --field type=thought --field content=T3 >/dev/null
 for _ in $(seq 1 100); do
-    [[ "$(grep -c . "$WORK/follow.out" 2>/dev/null)" -ge 3 ]] && break
+    grep -F '"content":"T3"' "$WORK/follow.out" >/dev/null && break
     sleep 0.1
 done
 kill -- "-$follower" 2>/dev/null || true
 wait "$follower" 2>/dev/null || true
 follower=""
 is "tail -f filters newly appended steps after replay" "T1 T2 T3" \
-   "$(contents < "$WORK/follow.out")"
+   "$(jq -c 'select(.content != "follow-ready")' "$WORK/follow.out" | contents)"
 
 printf 'not valid json\n' >> "$FILE"
 traj append --field type=thought --field content=T4 >/dev/null
@@ -183,10 +193,13 @@ case "$details" in
         ok "the earlier run's final carries a traj tail --full-scan --filter command" ;;
     *)  bad "the earlier run's final carries a traj tail --full-scan --filter command" "got [$details]" ;;
 esac
-cmd=(traj tail --full-scan -n 400 --filter run_id=run-a)
-[[ -n "$details" ]] && read -r -a cmd <<< "$details"
-is "that command prints the whole earlier run" "a-one a-two a-done" \
-   "$("${cmd[@]}" --raw | contents)"
+if [[ -n "$details" ]]; then
+    read -r -a cmd <<< "$details"
+    is "that command prints the whole earlier run" "a-one a-two a-done" \
+       "$("${cmd[@]}" --raw | contents)"
+else
+    bad "that command prints the whole earlier run" "no details command stamped"
+fi
 is "-n still bounds a run longer than N, keeping its newest steps" "b-449 b-450 b-done" \
    "$(traj tail --full-scan -n 3 --raw --filter run_id=run-b | contents)"
 

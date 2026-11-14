@@ -222,9 +222,8 @@ current finals are not.
 
 Each final should also point at the run it summarises, so the mind can dig
 into the raw steps when the summary is not enough. The recent stream
-already prints `run_id` on every line, and `traj tail --filter run_id=<id>`
-already prints a run's steps, so the prompt can say that a run's details
-are available with
+already prints `run_id` on every line. Reading a run's steps across the
+whole trajectory requires `--full-scan`, so the prompt points to
 
 ```
 traj tail --full-scan -n 400 --filter run_id=<run_id>
