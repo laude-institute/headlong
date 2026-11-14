@@ -191,6 +191,30 @@ ids=$(stream 20 | jq -r .step_id | tr '\n' ' ')
 [[ "$ids" == "w1 ii3 wf " ]] && ok "three idle runs collapse to one idle line; their finals are dropped; a working run keeps its final" || bad "idle-run finals dropped" "got $ids"
 stream 20 | jq -e 'select(.step_id == "ii3") | .collapsed == 3' >/dev/null && ok "the collapsed idle line counts the runs" || bad "idle count" "$(stream 20 | jq -c 'select(.step_id == "ii3")')"
 
+# Dedup by turn (2026-11-14): the stutter fault minted one turn three times
+# inside one run (fresh step ids, drifting ts, byte-identical content).
+# Adjacent rows of one run sharing (run_id, type, content) are one event and
+# render once. Identical content in a different run is legitimate repetition
+# and stays. Same-run copies separated by another row stay (the scope is
+# consecutive rows). Rows with no run id are untouched.
+step b1 thought "one turn minted three times" 100 ',"run_id":"run-burst"'
+step b2 thought "one turn minted three times" 99 ',"run_id":"run-burst"'
+step b3 thought "one turn minted three times" 98 ',"run_id":"run-burst"'
+step rr thought "one turn minted three times" 97 ',"run_id":"run-other"'
+step n1 thought "ancient rows carry no run id" 96
+step n2 thought "ancient rows carry no run id" 95
+step b4 thought "same words in a later turn" 94 ',"run_id":"run-burst2"'
+step mid observation "separating row" 93 ',"run_id":"run-burst2"'
+step b5 thought "same words in a later turn" 92 ',"run_id":"run-burst2"'
+ids=$(stream 40 | jq -r .step_id | tr '\n' ' ')
+case "$ids" in *" b2 "*|*" b3 "*) bad "a turn minted three times renders once" "got $ids" ;; *) ok "a turn minted three times renders once" ;; esac
+case "$ids" in *" b1 rr "*) ok "the first copy stays and the same text in another run stays too" ;; *) bad "first copy or cross-run repeat lost" "got $ids" ;; esac
+case "$ids" in *" n1 n2 "*) ok "adjacent identical rows with no run id both stay" ;; *) bad "rows with no run id were deduped" "got $ids" ;; esac
+case "$ids" in *" b4 mid b5 "*) ok "same-run copies separated by another row both stay" ;; *) bad "separated same-run copies were deduped" "got $ids" ;; esac
+[[ "$ids" == "w1 ii3 wf b1 rr n1 n2 b4 mid b5 " ]] && ok "the window renders in order with the burst collapsed" || bad "window order" "got $ids"
+ids3=$(stream 4 | jq -r .step_id | tr '\n' ' ')
+[[ "$ids3" == "n2 b4 mid b5 " ]] && ok "dedup runs before the window cut (N=4 -> n2 b4 mid b5)" || bad "dedup before the window cut" "got $ids3"
+
 echo
 echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]
