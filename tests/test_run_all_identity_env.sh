@@ -15,7 +15,9 @@ cat > "$WORK/suite/test_fixture.sh" <<'FIXTURE'
 #!/usr/bin/env bash
 set -uo pipefail
 fail=0
-for name in IDENTITY_NAME IDENTITY_DIR MEM_DIR SKILLS_DIR SKILLS_KERNEL_DIR TRAJ_ID TRAJ_DIR ROOT_TRAJ_ID; do
+for name in IDENTITY_NAME IDENTITY_DIR MEM_DIR SKILLS_DIR SKILLS_KERNEL_DIR TRAJ_ID TRAJ_DIR ROOT_TRAJ_ID \
+         SHELLM_MODEL THINK_MODEL MONOLITH_REPLY_MODEL HEADLONG_TZ SHELLM_RUNDIR LLM_RUN_ID TMPDIR \
+         SHELLM_TRAJ_DIR; do
     if [[ -n "${!name+x}" ]]; then
         printf 'FAIL inherited %s reached the child\n' "$name"
         fail=1
@@ -45,6 +47,10 @@ env -i HOME="$WORK/home" TMPDIR="$WORK/tmp" \
     SKILLS_KERNEL_DIR="$WORK/live/caller/kernel" \
     TRAJ_ID=caller-root TRAJ_DIR="$WORK/live/caller/trajectories" \
     ROOT_TRAJ_ID=caller-root \
+    SHELLM_MODEL=wake-model THINK_MODEL=wake-thinker \
+    MONOLITH_REPLY_MODEL=wake-reply HEADLONG_TZ=America/Los_Angeles \
+    SHELLM_RUNDIR="$WORK/live/run" LLM_RUN_ID=wake-usage TMPDIR="$WORK/tmp/leaked" \
+    SHELLM_TRAJ_DIR="$WORK/live/caller/trajectories" \
     bash "$WORK/suite/run-all.sh" || rc=$?
 
 if diff -r "$WORK/live-before" "$WORK/live"; then

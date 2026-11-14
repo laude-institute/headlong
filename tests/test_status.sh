@@ -43,7 +43,7 @@ check_not "unknown option errors"            bash "$REPO/status.sh" --bogus
 
 # --- a one-liner-shaped install ----------------------------------------------------
 H="$WORK/h"; APP="$H/.headlong/app"; mkdir -p "$H/.headlong" "$H/.local/bin"
-git clone -q --local "$REPO" "$APP" 2>/dev/null || { bad "clone"; exit 1; }
+git clone -q "$REPO" "$APP" 2>/dev/null || { bad "clone"; exit 1; }
 rm -rf "$APP/tui"
 ( cd "$APP" && HOME="$H" HEADLONG_HOME="$H/.headlong" PREFIX="$H/.local/bin" bash install.sh --symlinks --no-init >/dev/null 2>&1 ) || { bad "install"; exit 1; }
 ( cd "$APP" && HOME="$H" PATH="$APP/bin:$APP/tools:$PATH" identity new ada --default >/dev/null 2>&1 ) || { bad "identity new"; exit 1; }
