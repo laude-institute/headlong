@@ -1870,6 +1870,28 @@ extract_code() {
                 next
             }
 
+            # Glued close: a fence fused to the end of a code line, the
+            # next block opener tag possibly attached. Live fault family
+            # measured 2026-11-14: cmd```bash fused two blocks into one
+            # script and burned ten commands on exit 2. A mid-line ``` is
+            # never valid bash, so with no heredoc open a ``` at line end
+            # whose prefix is real content and has no backtick closes the
+            # block; the prefix survives as code. A fused tag means a
+            # second block follows and is dropped, so fire the truncation
+            # signal.
+            if (hd_top == 0 && match($0, /```(bash|shell|sh)?[[:space:]]*$/)) {
+                pre = substr($0, 1, RSTART - 1)
+                if (pre ~ /[^[:space:]]/ && pre !~ /`/) {
+                    print pre
+                    if (substr($0, RSTART + 3) !~ /^[[:space:]]*$/) {
+                        print "TRUNCATED" > "/dev/stderr"
+                    }
+                    in_block = 0
+                    first_block_closed = 1
+                    next
+                }
+            }
+
             # Track heredoc opens inside the code we are collecting
             try_open_heredoc($0)
 
