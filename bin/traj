@@ -988,10 +988,13 @@ _tail_steps() {
 # keep the existing renderer for formatted and unfiltered output.
 _replay_tail() {
     if [[ "$format" -eq 0 && "$_filter_json" != "[]" ]]; then
-        _tail_steps "$1" || {
-            local rc=$?
-            # The old raw filter loop tolerated an early-closing reader.
-            [[ "$rc" -eq 141 ]] || return "$rc"
+        _tail_steps "$1" | {
+            # Drain after an early-closing reader, as the old raw jq loop
+            # did. GNU tail may report EPIPE as 1 rather than SIGPIPE 141.
+            trap '' PIPE
+            while IFS= read -r line; do
+                printf '%s\n' "$line" 2>/dev/null || { cat >/dev/null; break; }
+            done
         }
     else
         _tail_steps "$1" | while IFS= read -r line; do
