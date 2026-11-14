@@ -240,6 +240,49 @@ _outbound_section() {
 # later, and only the latest open window is ever due, so an outage costs one
 # post, not one per lost window. Local HH:MM strings and minutes of the day
 # only: no date parsing, so GNU and BSD date both work.
+# Clip the first line of <text> to at most <limit> bytes without splitting a
+# UTF-8 character at the boundary. `cut -c<limit>` counts bytes on this
+# runtime (GNU coreutils under a UTF-8 locale, probed 2026-09-30), so a clip
+# landing mid-character stores bytes that no longer decode as text; the
+# responder's person-notes writer hit exactly that at its summary line. This
+# is the thinkers' copy of the boundary classifier in bin/mem (PR 168),
+# parameterized by limit and carrying the same signed-char normalization:
+# `printf '%d' "'<byte>"` yields the byte as a C char, and a shell built with
+# signed char (bash 3.2 on macOS) sign-extends bytes >= 0x80 to negative, so
+# every range test against 128+ would otherwise evaluate false. ASCII input
+# clips byte for byte exactly as `cut -c` did; multi-byte input may come out
+# a few bytes under the limit.
+_utf8_clip_line() (  # _utf8_clip_line <limit> <text>
+    LC_ALL=C
+    local limit="$1" line="${2%%$'\n'*}"
+    if (( ${#line} <= limit )); then
+        printf '%s\n' "$line"
+        return 0
+    fi
+    local i=$(( limit - 1 )) b
+    while (( i >= 0 )); do
+        b=$(printf '%d' "'${line:i:1}")
+        if (( b < 0 )); then b=$(( b + 256 )); fi
+        if (( b < 128 )); then break; fi
+        if (( b < 192 )); then i=$(( i - 1 )); continue; fi
+        break
+    done
+    if (( i < 0 || b < 192 )); then
+        printf '%s\n' "${line:0:limit}"
+        return 0
+    fi
+    local len=1
+    if (( b >= 240 )); then len=4
+    elif (( b >= 224 )); then len=3
+    else len=2
+    fi
+    if (( i + len <= limit )); then
+        printf '%s\n' "${line:0:limit}"
+    else
+        printf '%s\n' "${line:0:i}"
+    fi
+)
+
 _fm() { awk -v k="$2: " 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && index($0, k)==1{print substr($0, length(k)+1)}' "$1"; }
 _schedule_signals() {
     local mem_dir="${1:-$MEM_DIR}" tz="${HEADLONG_TZ:-UTC}" grace="${SCHEDULE_GRACE_MIN:-360}"
