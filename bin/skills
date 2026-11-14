@@ -231,6 +231,61 @@ find_skill() {
 # Supports inline JSON (metadata: {"shelllm": {...}}) and multi-line YAML.
 # Returns JSON: {"requires":{"env":[],"bins":[],"anyBins":[],"os":[]}}
 # Returns "{}" if no metadata.shelllm block found.
+# The items of requires.<key> from a SKILL.md frontmatter, as a JSON array.
+# Accepts every list spelling a frontmatter author might write: the same-line
+# flow list (bins: ["curl"] or bins: [curl]), the YAML block list (the key
+# alone on one line, "- item" lines below), or a bare scalar (os: linux, read
+# as a one-item list). Items are re-encoded by jq, so an unquoted flow list
+# parses instead of killing jq, and a declaration the reader cannot treat as
+# a list still gates the skill on a visible name instead of passing it
+# silently. Prints [] when the key is absent. Never fails: every unreadable
+# shape degrades to a skip, not a crash.
+_requires_list() {
+    local frontmatter="$1" key="$2"
+    local items
+    items=$(printf '%s\n' "$frontmatter" | awk -v k="$key" -v q="'" '
+        function clean(s) {
+            sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s)
+            if (s ~ "^" q ".*" q "$") { sub("^" q, "", s); sub(q "$", "", s) }
+            else if (s ~ /^".*"$/) { sub(/^"/, "", s); sub(/"$/, "", s) }
+            return s
+        }
+        $0 ~ "^[[:space:]]+" k ":[[:space:]]*" {
+            val = $0
+            sub("^[[:space:]]+" k ":[[:space:]]*", "", val)
+            if (val != "") {
+                if (val ~ /^\[/ && val ~ /\]$/) {
+                    sub(/^\[/, "", val); sub(/\]$/, "", val)
+                    n = split(val, arr, ",")
+                    for (i = 1; i <= n; i++) {
+                        c = clean(arr[i])
+                        if (c != "") print c
+                    }
+                } else {
+                    c = clean(val)
+                    if (c != "") print c
+                }
+                inlist = 0
+            } else inlist = 1
+            next
+        }
+        inlist && /^[[:space:]]*-[[:space:]]/ {
+            item = $0
+            sub(/^[[:space:]]*-[[:space:]]*/, "", item)
+            c = clean(item)
+            if (c != "") print c
+            next
+        }
+        inlist { inlist = 0 }
+    ')
+    if [[ -z "$items" ]]; then
+        echo '[]'
+        return
+    fi
+    printf '%s\n' "$items" | jq -R -n '[inputs | select(length > 0)]'
+}
+
+# Extract metadata.shelllm (requirements so far) from a SKILL.md as JSON.
 _extract_shelllm_meta() {
     local file="$1"
     [[ -f "$file" ]] || { echo '{}'; return; }
@@ -252,26 +307,25 @@ _extract_shelllm_meta() {
         return
     fi
 
-    # Multi-line YAML: extract requires fields by grepping indented lines.
-    # Arrays use JSON bracket notation ["a", "b"], so jq can parse them directly.
-    local env_val bins_val anybins_val os_val
-    env_val=$(printf '%s\n' "$frontmatter" | awk '/^[[:space:]]+env:/{sub(/.*env:[[:space:]]*/, ""); print; exit}')
-    bins_val=$(printf '%s\n' "$frontmatter" | awk '/^[[:space:]]+bins:/{sub(/.*bins:[[:space:]]*/, ""); print; exit}')
-    anybins_val=$(printf '%s\n' "$frontmatter" | awk '/^[[:space:]]+anyBins:/{sub(/.*anyBins:[[:space:]]*/, ""); print; exit}')
-    os_val=$(printf '%s\n' "$frontmatter" | awk '/^[[:space:]]+os:/{sub(/.*os:[[:space:]]*/, ""); print; exit}')
+    # Multi-line YAML: read each requires key in every list spelling.
+    local env_json bins_json anybins_json os_json
+    env_json=$(_requires_list "$frontmatter" env)
+    bins_json=$(_requires_list "$frontmatter" bins)
+    anybins_json=$(_requires_list "$frontmatter" anyBins)
+    os_json=$(_requires_list "$frontmatter" os)
 
     # If nothing found, return empty
-    if [[ -z "$env_val" && -z "$bins_val" && -z "$anybins_val" && -z "$os_val" ]]; then
+    if [[ "$env_json" == "[]" && "$bins_json" == "[]" && "$anybins_json" == "[]" && "$os_json" == "[]" ]]; then
         echo '{}'
         return
     fi
 
     jq -n \
-        --argjson env "${env_val:-[]}" \
-        --argjson bins "${bins_val:-[]}" \
-        --argjson anybins "${anybins_val:-[]}" \
-        --argjson os "${os_val:-[]}" \
-        '{requires: {env: $env, bins: $bins, anyBins: $anybins, os: $os}}'
+        --argjson env "$env_json" \
+        --argjson bins "$bins_json" \
+        --argjson anyBins "$anybins_json" \
+        --argjson os "$os_json" \
+        '{requires: {env: $env, bins: $bins, anyBins: $anyBins, os: $os}}'
 }
 
 # Returns a comma-separated summary of missing requirements.
@@ -478,7 +532,7 @@ action_prompt() {
     # See design/wake_prompt_cull.md.
     local skills_dir="${SKILLS_DIR:-}"
     local kernel_dir="${SKILLS_KERNEL_DIR:-}"
-    local dir skill_dir sname sdesc list="" seen=" "
+    local dir skill_dir sname sdesc list="" seen=" " pmeta pmissing
     for dir in "$kernel_dir" "$skills_dir"; do
         [[ -n "$dir" && -d "$dir" ]] || continue
         for skill_dir in "$dir"/*/; do
@@ -489,6 +543,12 @@ action_prompt() {
             seen="$seen$sname "
             sdesc=$(frontmatter_field "${skill_dir}SKILL.md" description)
             [[ -z "$sdesc" ]] && sdesc="(no description; run skills show $sname)"
+            # The requirements gate `skills list` runs: an ineligible skill is
+            # offered with what it is missing named inline, never bare, so the
+            # mind does not reach for a skill that cannot run here.
+            pmeta=$(_extract_shelllm_meta "${skill_dir}SKILL.md") || pmeta='{}'
+            pmissing=$(_missing_summary "$pmeta") || pmissing=''
+            [[ -n "$pmissing" ]] && sdesc="${sdesc} (missing: ${pmissing})"
             list="${list}  - ${sname}: ${sdesc}
 "
         done
@@ -542,6 +602,11 @@ Requirements:
       bins: ["curl", "jq"]        All binaries must exist on PATH
       anyBins: ["gh", "hub"]      At least one must exist on PATH
       os: ["darwin", "linux"]     Current OS must be in list
+    Lists may also be written as YAML block lists, the key alone on one
+    line with "- item" lines below, and items may be unquoted:
+      bins:
+        - curl
+        - jq
   By default `skills list` only shows skills whose requirements are met.
 
 Executable blocks:
