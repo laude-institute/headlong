@@ -1,0 +1,14 @@
+a-coref-control.md accept
+a-front-control.md accept
+a-trailing-checked.md accept
+a-trailing-intotal.md accept
+a-trailing-ofthem.md accept
+a-trailing-parens.md accept
+lesson-draft.md accept
+m-count-then-adv.md refuse
+m-dangling-ofthem.md refuse
+m-front-date.md refuse
+m-second-clause.md refuse
+m-trailing-days.md refuse
+m-trailing-owndomain.md refuse
+m-trailing-wrongnoun.md refuse

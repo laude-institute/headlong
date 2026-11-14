@@ -1,0 +1,56 @@
+=== edge corpus (pre-registered 2026-10-10) ===
+ok   edge/r-never-ever            want=1
+ok   edge/r-always-fact           want=1
+ok   edge/r-upper                 want=1
+ok   edge/r-nocircumstance        want=1
+ok   edge/r-innocase              want=1
+ok   edge/r-nomatterwhat          want=1
+ok   edge/r-alltimes              want=1
+ok   edge/r-invariably            want=1
+ok   edge/r-withoutfail           want=1
+ok   edge/r-nolesson              want=1
+ok   edge/r-eachandevery          want=1
+ok   edge/r-everyrespect          want=1
+ok   edge/r-acrossboard           want=1
+ok   edge/r-twosent               want=1
+ok   edge/r-normshield            want=1
+ok   edge/r-nonewline             want=1
+ok   edge/p-count-all             want=0
+ok   edge/p-count-all-pre         want=0
+ok   edge/p-count-all-post        want=0
+ok   edge/p-install               want=0
+ok   edge/p-recall                want=0
+ok   edge/p-balloon               want=0
+ok   edge/p-bounded               want=0
+ok   edge/p-norm                  want=0
+ok   edge/p-calls                 want=0
+ok   edge/p-evid-quant            want=0
+ok   edge/p-crlf                  want=0
+=== reachgap corpus (recorded 10 refused / 6 pass) ===
+ok   reachgap/m-allsrc            want=1
+ok   reachgap/m-any               want=1
+ok   reachgap/m-attimes           want=1
+ok   reachgap/m-claim-quant       want=1
+ok   reachgap/m-each              want=1
+ok   reachgap/m-eachand           want=1
+ok   reachgap/m-everyfile         want=1
+ok   reachgap/m-nocase            want=1
+ok   reachgap/m-whenever          want=1
+ok   reachgap/m-without           want=1
+ok   reachgap/a-allthree          want=0
+ok   reachgap/a-eachline-closed   want=0
+ok   reachgap/a-eachofthe         want=0
+ok   reachgap/a-evid-quant        want=0
+ok   reachgap/lesson-draft        want=0
+=== overreach/fix corpus (recorded 11) ===
+FAIL over/accept-*                want=0 got=2
+     no such draft: /opt/shellm/app/.identities/audel/workdir/scratch/lesson-derive-gate-2026-10-10/overreach/fix/accept-*.md
+FAIL over/refuse-*                want=1 got=2
+     no such draft: /opt/shellm/app/.identities/audel/workdir/scratch/lesson-derive-gate-2026-10-10/overreach/fix/refuse-*.md
+=== fold regression through the folded gate (recorded 35) ===
+     ok   regress-t8 (rc=2)
+     ---
+     pass=34 fail=1
+FAIL fold/harness
+---
+pass=42 fail=3

@@ -1,0 +1,1 @@
+Lesson: the 3 fixtures I built and re-ran all pass.

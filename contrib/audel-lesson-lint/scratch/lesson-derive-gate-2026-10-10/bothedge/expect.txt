@@ -1,0 +1,7 @@
+a-both-anaphoric.md accept
+a-both-halfs.md accept
+a-both-known.md accept
+a-both-predicate.md accept
+m-both-nomod.md refuse
+m-both-noun.md refuse
+m-both-of.md refuse

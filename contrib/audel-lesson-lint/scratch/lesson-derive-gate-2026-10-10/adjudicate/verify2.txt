@@ -1,0 +1,21 @@
+-- M1 irregular-participle modifier:
+  domain_self(all built machines failed)  [want not-name, now?]: no
+  coref_ok(all built machines failed)     [want corefer=0, now?]: yes
+  domain_self(all given fixtures failed)  [ctl names]: yes
+-- M4 s-final singular subject:
+  relcl(the harness produced)  [want yes, now no]: no
+  relcl(the thing produced)    [ctl]: yes
+-- M2 bothre detection:
+  hits_of(both corpora failed) nonempty   [want yes, now no]: no
+  hits_of(both sessions failed) nonempty  [ctl]: yes
+  hits_of(both eager green fresh keen cohorts failed) nonempty [want yes, now no]: no
+  hits_of(both green cohorts failed) nonempty [ctl]: yes
+-- M3 false relative bound:
+  relcl(all runs failed the checks the log read) [want no, now yes]: yes
+-- M5 determiner eaten by stop list:
+  relcl(both soft spots my check flagged)  [want yes, now no]: no
+  relcl(both soft spots the check flagged) [ctl]: yes
+-- M6 shared-VP continuation:
+  coref_ok(re-ran all pass) [want corefer=0, now 1]: no
+  bound_in(the 3 fixtures I built) [sibbound]: yes
+  hits_of(re-ran all pass) nonempty: yes

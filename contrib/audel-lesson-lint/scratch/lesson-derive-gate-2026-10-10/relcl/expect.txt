@@ -1,0 +1,11 @@
+a-nodeterm-named.md accept
+a-verb-made.md accept
+a-verb-refactored.md accept
+a-verb-shipped.md accept
+m-arguniversal.md refuse
+m-nounverbnorel.md refuse
+m-plain.md refuse
+m-rebreak-clipped.md accept
+m-rebreak-future.md refuse
+m-rebreak-reduced.md refuse
+m-verbmid.md refuse

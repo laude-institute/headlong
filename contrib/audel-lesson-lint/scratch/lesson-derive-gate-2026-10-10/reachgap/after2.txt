@@ -1,0 +1,11 @@
+m-any.md                 refused
+m-attimes.md             refused
+m-each.md                refused
+m-eachand.md             refused
+m-nocase.md              refused
+m-whenever.md            refused
+m-without.md             refused
+a-eachline-closed.md     PASS
+a-eachofthe.md           PASS
+draft.md                 refused
+draft.md                 PASS

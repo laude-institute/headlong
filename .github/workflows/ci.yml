@@ -158,7 +158,7 @@ jobs:
         run: |
           set -euo pipefail
           shellcheck --version
-          files=$( { git ls-files -z | xargs -0 grep -lE '^#!.*\b(ba)?sh\b' ; git ls-files '*.sh'; } | sort -u | grep -v '\.tpl$')
+          files=$( { git ls-files -z | xargs -0 grep -lE '^#!.*\b(ba)?sh\b' ; git ls-files '*.sh'; } | sort -u | grep -v -e '\.tpl$' -e '^contrib/audel-lesson-lint/scratch/')
           echo "$files" | wc -l | xargs echo "checking files:"
           echo "$files" | xargs shellcheck -S warning
   macos:

@@ -1,0 +1,13 @@
+a-coref-all6.md expect=accept got=accept
+a-coref-count.md expect=accept got=accept
+a-coref-none.md expect=accept got=accept
+a-fronted-comma.md expect=accept got=accept
+a-noquant-and.md expect=accept got=accept
+a-norm.md expect=accept got=accept
+a-second-noquant.md expect=accept got=accept
+m-and-always.md expect=refuse got=accept
+m-and-cannot.md expect=refuse got=accept
+m-and-invariably.md expect=refuse got=accept
+m-and-never.md expect=refuse got=accept
+m-and-nothing-ever.md expect=refuse got=refuse
+m-and-verb-always.md expect=refuse got=accept

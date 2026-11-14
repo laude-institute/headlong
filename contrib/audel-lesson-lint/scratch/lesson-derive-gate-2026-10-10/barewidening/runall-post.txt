@@ -1,0 +1,63 @@
+=== edge corpus (pre-registered 2026-10-10) ===
+ok   edge/r-never-ever            want=1
+ok   edge/r-always-fact           want=1
+ok   edge/r-upper                 want=1
+ok   edge/r-nocircumstance        want=1
+ok   edge/r-innocase              want=1
+ok   edge/r-nomatterwhat          want=1
+ok   edge/r-alltimes              want=1
+ok   edge/r-invariably            want=1
+ok   edge/r-withoutfail           want=1
+ok   edge/r-nolesson              want=1
+ok   edge/r-eachandevery          want=1
+ok   edge/r-everyrespect          want=1
+ok   edge/r-acrossboard           want=1
+ok   edge/r-twosent               want=1
+ok   edge/r-normshield            want=1
+ok   edge/r-nonewline             want=1
+ok   edge/p-count-all             want=0
+ok   edge/p-count-all-pre         want=0
+ok   edge/p-count-all-post        want=0
+ok   edge/p-install               want=0
+ok   edge/p-recall                want=0
+ok   edge/p-balloon               want=0
+ok   edge/p-bounded               want=0
+ok   edge/p-norm                  want=0
+ok   edge/p-calls                 want=0
+ok   edge/p-evid-quant            want=0
+ok   edge/p-crlf                  want=0
+=== reachgap corpus (recorded 10 refused / 6 pass) ===
+ok   reachgap/m-allsrc.md         want=1
+ok   reachgap/m-any.md            want=1
+ok   reachgap/m-attimes.md        want=1
+ok   reachgap/m-claim-quant.md    want=1
+ok   reachgap/m-each.md           want=1
+ok   reachgap/m-eachand.md        want=1
+ok   reachgap/m-everyfile.md      want=1
+ok   reachgap/m-nocase.md         want=1
+ok   reachgap/m-whenever.md       want=1
+ok   reachgap/m-without.md        want=1
+ok   reachgap/a-allthree.md       want=0
+ok   reachgap/a-eachline-closed.md want=0
+ok   reachgap/a-eachofthe.md      want=0
+ok   reachgap/a-evid-quant.md     want=0
+ok   reachgap/lesson-draft        want=0
+=== overreach/fix corpus (recorded 11) ===
+ok   over/accept-evidence-skip    want=0
+ok   over/accept-far              want=0
+ok   over/accept-norm             want=0
+ok   over/accept-plain            want=0
+ok   over/accept-scoped           want=0
+ok   over/refuse-all              want=1
+ok   over/refuse-always           want=1
+ok   over/refuse-double           want=1
+ok   over/refuse-never            want=1
+ok   over/refuse-nomarker         want=1
+ok   over/refuse-nonewline        want=1
+=== fold regression through the folded gate (recorded 35) ===
+     ok   regress-t8 (rc=2)
+     ---
+     pass=35 fail=0
+ok   fold/harness (35 recorded)
+---
+pass=54 fail=0

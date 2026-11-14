@@ -1,0 +1,7 @@
+scratch/lesson-derive-gate-2026-10-10/relcl/a-nodeterm-named.md pre=1 post=0
+scratch/lesson-derive-gate-2026-10-10/relcl/a-verb-made.md pre=1 post=0
+scratch/lesson-derive-gate-2026-10-10/relcl/a-verb-refactored.md pre=1 post=0
+scratch/lesson-derive-gate-2026-10-10/relcl/a-verb-shipped.md pre=1 post=0
+scratch/lesson-derive-gate-2026-10-10/adjrel/a-relcl-pronoun.md pre=1 post=0
+scratch/lesson-derive-gate-2026-10-10/lexedge/a-rcbare-named.md pre=1 post=0
+fixtures-swept=394

@@ -1,0 +1,28 @@
+m-join.md                  Lesson: in the 2 cases I checked the gate refused and the fix always holds.
+m-join2.md                 Lesson: the 3 fixtures pass and every later build never fails.
+m-coref-second.md          the 3 fixtures pass and every later build never fails
+m-coref-widen.md           in the 3 cases I checked the gate refused and nothing else ever broke
+m-coref-temporal.md        in the 3 fixtures I built the gate refused every mutant and all passed later
+a-coref-all.md             in the 3 fixtures I built the gate refused every mutant and all passed
+a-coref-none.md            all three sources were checked and none failed
+a-countnoun.md             Lesson: in the 3 cases I checked, the gate refused every mutant.
+w: a-control-bound.md     Lesson: in the 3 cases I checked the gate always refused.
+w: a-control-listed.md    Lesson: in the 6 fixtures checked the gate held and nothing broke.
+w: a-coref-unlisted-1.md  Lesson: in the 6 fixtures checked the gate held and none leaked.
+w: a-coref-unlisted-2.md  Lesson: in the 3 cases checked the fix held and all vanished from the log.
+w: a-coref-unlisted-3.md  Lesson: in the 2 windows checked the guard stayed on and nothing slipped through.
+s: a-control-bound.md     Lesson: in the 3 cases I checked the gate always refused.
+s: a-control-noso.md      Lesson: in the 6 fixtures checked the gate held and nothing broke.
+s: a-sothat-boundafter.md Lesson: the gate held so that in the 3 cases checked nothing broke.
+s: a-sothat-coref-all.md  Lesson: in the 3 cases I checked the label stayed out so that all held.
+s: a-sothat-coref-none.md Lesson: in the 6 fixtures checked the gate held so that nothing broke.
+s: a-sothat-nouniversal.md Lesson: in the 2 cases checked the guard was kept so that the check ran.
+s: lesson-draft.md        Lesson: evidence: contains notes/tests/2026-10-10-overreach-sothat-subordination.md Post: 13 of 13
+s: m-sothat-boundwrong.md Lesson: every draft is refused so that in the 3 cases checked nothing leaks.
+s: m-sothat-coref-widen.md Lesson: in the 4 cases checked the gate held so that none failed elsewhere.
+s: m-sothat-domain.md     Lesson: in the 2 cases checked the gate held so that no draft passes.
+s: m-sothat-ever.md       Lesson: the gate held so that nothing ever breaks.
+s: m-sothat-general.md    Lesson: the guard stays on so that no lesson is skipped.
+s: m-sothat-own.md        Lesson: in the 3 cases checked the gate held so that all builds stall.
+s: m-sothat-widen.md      Lesson: in the 3 cases checked the gate held so that every run failed everywhere.
+s: probe-domainself.md    Lesson: in the 3 cases checked the gate refused and every run failed.

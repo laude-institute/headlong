@@ -1,0 +1,11 @@
+a-bounded.md accept
+a-coref-then.md accept
+a-norm.md accept
+a-sofar-front.md accept
+a-sofar-hold.md accept
+m-so-always.md refuse
+m-so-never.md refuse
+m-then-invariably.md refuse
+m-whereas-cannot.md refuse
+m-whereas-subj.md refuse
+m-while-always.md refuse

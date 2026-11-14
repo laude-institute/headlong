@@ -1,0 +1,13 @@
+a-quantrel-every.md rc=0
+a-subjpron-clipped.md rc=1
+a-unlist-appended.md rc=1
+a-unlist-clipped.md rc=1
+a-unlist-dropped.md rc=0
+m-future-clip.md rc=1
+m-modifier-flaglogs.md rc=1
+m-modifier-shaded.md rc=1
+m-nounverbnorel-drop.md rc=1
+m-reduced-clipped.md rc=1
+m-subjadj-green.md rc=1
+m-subjadv-often.md rc=1
+m-verbmid-clipped.md rc=1

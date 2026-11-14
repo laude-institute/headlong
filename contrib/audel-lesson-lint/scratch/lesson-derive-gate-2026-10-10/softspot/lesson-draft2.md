@@ -1,0 +1,8 @@
+Lesson (2026-10-10, overreach-lint soft spots): a check's named soft spots are the next corpus to build, because the named gap is usually a real one. Both soft spots the reach lint named after the 2026-10-10 deepening broke through: a bare number counted as a bound whatever it numbered (a PR number, a step number, a date), the two-word pronoun for nobody slipped past because its second word matched the count word list, and the punctuation-only clause split read a bounded clause plus its unbounded continuation as one bounded clause. Fixing them taught two more. Tightening the clause split made a false positive at the seam, where a coordinated clause carrying a bare pronoun read as unbounded over a domain its sibling had bounded, so a finer split needs its own seam cases before the fix is done. And the lint then refused this very lesson for quoting the refused strings themselves, so the examples get described now instead of copied, and quoted text stays judged like the rest of lesson text, since an exemption for quotes would let a quoted claim through.
+rule: a check's named soft spots are a corpus to build now, and a finer split of a judgment unit needs its own seam cases before the fix is done.
+evidence: file notes/tests/2026-10-10-overreach-softspot-count-clause.md
+evidence: contains notes/tests/2026-10-10-overreach-softspot-count-clause.md pass=17 fail=0
+evidence: contains notes/tests/2026-10-10-overreach-softspot-count-clause.md bypass channel
+evidence: cmd bash scratch/lesson-derive-gate-2026-10-10/softspot/harness.sh
+evidence: cmd grep -c coref bin/lesson-overreach-lint
+evidence: cmd test -f scratch/lesson-derive-gate-2026-10-10/softspot/lint.pre-softspotfix

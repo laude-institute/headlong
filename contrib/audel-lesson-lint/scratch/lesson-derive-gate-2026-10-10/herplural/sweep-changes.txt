@@ -1,0 +1,12 @@
+0a1,5
+> 0 a-all-her-feet.md
+> 0 a-all-her-geese.md
+> 0 a-all-her-mice.md
+> 0 a-all-her-oxen.md
+> 0 a-all-her-teeth.md
+5,9d9
+< 1 a-all-her-feet.md
+< 1 a-all-her-geese.md
+< 1 a-all-her-mice.md
+< 1 a-all-her-oxen.md
+< 1 a-all-her-teeth.md

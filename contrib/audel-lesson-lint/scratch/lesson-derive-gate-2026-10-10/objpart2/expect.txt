@@ -1,0 +1,8 @@
+a-gov-pp.md accept
+a-gov-sing.md accept
+a-phrasal-open.md accept
+a-result-clean.md accept
+g-bare-runners.md refuse
+g-mass-bread.md accept
+g-pron-it.md accept
+g-pron-them.md refuse

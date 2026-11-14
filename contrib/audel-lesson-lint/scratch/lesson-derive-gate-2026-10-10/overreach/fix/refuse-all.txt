@@ -1,0 +1,1 @@
+Lesson: all distilled rules ban untried combinations.

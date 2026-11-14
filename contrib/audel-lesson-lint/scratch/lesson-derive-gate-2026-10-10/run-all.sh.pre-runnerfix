@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Run every reach corpus against bin/lesson-overreach-lint and the fold
+# regression against the folded bin/lesson-derive-gate. Exit 0 only if all
+# recorded expectations hold.
+set -u
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+B="$ROOT/scratch/lesson-derive-gate-2026-10-10"
+L="$ROOT/bin/lesson-overreach-lint"
+G="$ROOT/bin/lesson-derive-gate"
+pass=0; fail=0
+chk() {
+  name=$1; want=$2; shift 2
+  out=$("$@" 2>&1); got=$?
+  if [ "$got" = "$want" ]; then
+    printf 'ok   %-28s want=%s\n' "$name" "$want"; pass=$((pass+1))
+  else
+    printf 'FAIL %-28s want=%s got=%s\n' "$name" "$want" "$got"
+    printf '%s\n' "$out" | head -2 | sed 's/^/     /'
+    fail=$((fail+1))
+  fi
+}
+echo "=== edge corpus (pre-registered 2026-10-10) ==="
+while read -r want name; do
+  [ -z "$want" ] && continue
+  chk "edge/$name" "$want" "$L" "$B/edge/$name.md"
+done < "$B/edge/exp.txt"
+echo "=== reachgap corpus (recorded 10 refused / 6 pass) ==="
+for f in "$B"/reachgap/m-*.md; do chk "reachgap/$(basename "$f" .txt)" 1 "$L" "$f"; done
+for f in "$B"/reachgap/a-*.md; do chk "reachgap/$(basename "$f" .txt)" 0 "$L" "$f"; done
+chk "reachgap/lesson-draft" 0 "$L" "$B/reachgap/lesson-draft.md"
+echo "=== overreach/fix corpus (recorded 11) ==="
+for f in "$B"/overreach/fix/accept-*.txt; do chk "over/$(basename "$f" .txt)" 0 "$L" "$f"; done
+for f in "$B"/overreach/fix/refuse-*.txt; do chk "over/$(basename "$f" .txt)" 1 "$L" "$f"; done
+echo "=== fold regression through the folded gate (recorded 35) ==="
+fold_out=$(bash "$B/fold/harness.sh" "$B/fold" "$G" x 2>&1); fold_rc=$?
+printf '%s\n' "$fold_out" | tail -3 | sed 's/^/     /'
+if [ "$fold_rc" -eq 0 ]; then
+  printf 'ok   fold/harness (35 recorded)\n'; pass=$((pass+1))
+else
+  printf 'FAIL fold/harness\n'; fail=$((fail+1))
+fi
+echo "---"
+echo "pass=$pass fail=$fail"
+[ "$fail" -eq 0 ]

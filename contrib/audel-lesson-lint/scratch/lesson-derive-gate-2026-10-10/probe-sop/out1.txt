@@ -1,0 +1,2 @@
+line 1: unbounded universal (always) in: Lesson: in the 2 cases I checked the gate refused then always holds.
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).

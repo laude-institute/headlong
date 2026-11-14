@@ -1,0 +1,6 @@
+ok   a-bare-all.md (want=accept)
+ok   a-bare-none.md (want=accept)
+ok   a-ofthem.md (want=accept)
+ok   m-adjnoun-both.md (want=refuse)
+ok   m-adjnoun-runs.md (want=refuse)
+ok   m-adjnoun-tests.md (want=refuse)

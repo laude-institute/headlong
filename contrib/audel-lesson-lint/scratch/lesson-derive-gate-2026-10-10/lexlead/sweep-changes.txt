@@ -1,0 +1,15 @@
+82,87d81
+< accept	scratch/lesson-derive-gate-2026-10-10/probe-lexbound/m-all-green-cohorts.md
+< accept	scratch/lesson-derive-gate-2026-10-10/probe-lexbound/m-both-cohorts.md
+< accept	scratch/lesson-derive-gate-2026-10-10/probe-lexbound/m-both-members.md
+< accept	scratch/lesson-derive-gate-2026-10-10/probe-lexbound/m-both-teams.md
+< accept	scratch/lesson-derive-gate-2026-10-10/probe-lexbound/m-threeword-teams.md
+< accept	scratch/lesson-derive-gate-2026-10-10/probe-lexbound/m-threeword.md
+198a193
+> refuse	scratch/lesson-derive-gate-2026-10-10/probe-lexbound/m-all-green-cohorts.md
+199a195,199
+> refuse	scratch/lesson-derive-gate-2026-10-10/probe-lexbound/m-both-cohorts.md
+> refuse	scratch/lesson-derive-gate-2026-10-10/probe-lexbound/m-both-members.md
+> refuse	scratch/lesson-derive-gate-2026-10-10/probe-lexbound/m-both-teams.md
+> refuse	scratch/lesson-derive-gate-2026-10-10/probe-lexbound/m-threeword-teams.md
+> refuse	scratch/lesson-derive-gate-2026-10-10/probe-lexbound/m-threeword.md

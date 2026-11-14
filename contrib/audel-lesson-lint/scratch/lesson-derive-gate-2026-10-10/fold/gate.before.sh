@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# lesson-derive-gate: re-derivation gate for lesson updates (Memento 3 translation).
+# Usage: lesson-derive-gate DRAFT.md
+# The draft must carry one or more evidence lines, one per line, starting at
+# column 0:
+#   evidence: file PATH            PATH must exist and be readable
+#   evidence: contains PATH FRAG   PATH must exist and contain literal FRAG
+#   evidence: absent PATH FRAG     PATH must exist and must NOT contain FRAG
+#   evidence: cmd COMMAND          COMMAND must be non-empty and exit 0
+# Deepened 2026-10-10 after breaking the first version: a line that looks like
+# an evidence line but does not match the schema now REFUSES the update instead
+# of being skipped silently, the FRAG must be non-empty (an empty fragment used
+# to pass contains vacuously), PATH and FRAG must both be present, COMMAND must
+# be non-empty, and a draft whose last line has no trailing newline is no longer
+# dropped. Prose that does not start with the evidence prefix stays free text.
+# Exit 0 only if every evidence line re-derives right now; 1 refusal; 2 unusable.
+set -u
+draft="${1:-}"
+if [ -z "$draft" ] || [ ! -f "$draft" ]; then
+  echo "FAIL no draft file" >&2
+  exit 2
+fi
+rc=0
+n=0
+lineno=0
+while IFS= read -r line || [ -n "$line" ]; do
+  lineno=$((lineno + 1))
+  line="${line%$'\r'}"
+  trimmed="${line#"${line%%[![:space:]]*}"}"
+  case "$trimmed" in
+    evidence:*) ;;
+    *) continue ;;
+  esac
+  n=$((n + 1))
+  if [ "$trimmed" != "$line" ]; then
+    echo "FAIL line $lineno: evidence line must start at column 0"; rc=1; continue
+  fi
+  rest="${trimmed#evidence:}"
+  case "$rest" in
+    " "*) ;;
+    *) echo "FAIL line $lineno: expected evidence prefix then one space"; rc=1; continue ;;
+  esac
+  rest="${rest# }"
+  case "$rest" in
+    *" "*) kind="${rest%% *}"; args="${rest#* }" ;;
+    *)     kind="$rest";      args="" ;;
+  esac
+  case "$kind" in
+    file)
+      if [ -z "$args" ]; then
+        echo "FAIL line $lineno: file needs PATH"; rc=1
+      elif [ -r "$args" ]; then
+        echo "ok   file $args"
+      else
+        echo "FAIL line $lineno: file $args (unreachable)"; rc=1
+      fi ;;
+    cmd)
+      if [ -z "$args" ]; then
+        echo "FAIL line $lineno: cmd needs COMMAND"; rc=1
+      elif bash -c "$args" >/dev/null 2>&1; then
+        echo "ok   cmd"
+      else
+        echo "FAIL line $lineno: cmd (exit nonzero)"; rc=1
+      fi ;;
+    contains|absent)
+      case "$args" in
+        *" "*) path="${args%% *}"; frag="${args#* }" ;;
+        *)     path="";           frag="" ;;
+      esac
+      if [ -z "$path" ] || [ -z "$frag" ]; then
+        echo "FAIL line $lineno: $kind needs PATH and a non-empty FRAG"; rc=1
+      elif [ ! -r "$path" ]; then
+        echo "FAIL line $lineno: $kind $path (unreachable)"; rc=1
+      elif [ "$kind" = "contains" ]; then
+        if grep -qF -- "$frag" "$path"; then
+          echo "ok   contains $path"
+        else
+          echo "FAIL line $lineno: contains $path (fragment absent)"; rc=1
+        fi
+      else
+        if grep -qF -- "$frag" "$path"; then
+          echo "FAIL line $lineno: absent $path (fragment still present)"; rc=1
+        else
+          echo "ok   absent $path"
+        fi
+      fi ;;
+    *)
+      echo "FAIL line $lineno: unknown evidence kind '$kind'"; rc=1 ;;
+  esac
+done < "$draft"
+if [ "$n" -eq 0 ]; then echo "FAIL draft carries no evidence lines"; exit 2; fi
+if [ "$rc" -eq 0 ]; then echo "PASS $n evidence line(s) re-derived"; else echo "REFUSED evidence not re-derivable"; fi
+exit "$rc"

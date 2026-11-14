@@ -1,0 +1,6 @@
+rc=0 a-bare-all.md
+rc=0 a-bare-none.md
+rc=0 a-ofthem.md
+rc=0 m-adjnoun-both.md
+rc=0 m-adjnoun-runs.md
+rc=0 m-adjnoun-tests.md

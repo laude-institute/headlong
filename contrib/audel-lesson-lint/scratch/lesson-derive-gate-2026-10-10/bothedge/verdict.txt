@@ -1,0 +1,7 @@
+ok   a-both-anaphoric.md (want=accept)
+ok   a-both-halfs.md (want=accept)
+ok   a-both-known.md (want=accept)
+ok   a-both-predicate.md (want=accept)
+ok   m-both-nomod.md (want=refuse)
+ok   m-both-noun.md (want=refuse)
+ok   m-both-of.md (want=refuse)

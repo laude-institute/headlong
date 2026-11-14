@@ -1,0 +1,196 @@
++ echo '=== edge corpus (mechanism edges) ==='
+=== edge corpus (mechanism edges) ===
++ bash scratch/lesson-derive-gate-2026-10-10/edge/harness.sh
++ tail -2
+---
+pass=27 gaps=0 fp=0 total=27
++ echo '=== labelbreak corpus (re-break after the label fix) ==='
+=== labelbreak corpus (re-break after the label fix) ===
++ ok=0
++ bad=0
++ for f in $S/edge/labelbreak/r-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/edge/labelbreak/r-label-always.md
++ rc=1
++ '[' 1 = 1 ']'
++ ok=1
++ for f in $S/edge/labelbreak/r-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/edge/labelbreak/r-label-every.md
++ rc=1
++ '[' 1 = 1 ']'
++ ok=2
++ for f in $S/edge/labelbreak/r-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/edge/labelbreak/r-label-never.md
++ rc=1
++ '[' 1 = 1 ']'
++ ok=3
++ for f in $S/edge/labelbreak/r-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/edge/labelbreak/r-label-none.md
++ rc=1
++ '[' 1 = 1 ']'
++ ok=4
++ for f in $S/edge/labelbreak/r-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/edge/labelbreak/r-label-second-clause.md
++ rc=1
++ '[' 1 = 1 ']'
++ ok=5
++ for f in $S/edge/labelbreak/r-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/edge/labelbreak/r-unlisted-label.md
++ rc=1
++ '[' 1 = 1 ']'
++ ok=6
++ for f in $S/edge/labelbreak/a-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/edge/labelbreak/a-label-among.md
++ rc=0
++ '[' 0 = 0 ']'
++ ok=7
++ for f in $S/edge/labelbreak/a-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/edge/labelbreak/a-label-fronted-pronoun.md
++ rc=0
++ '[' 0 = 0 ']'
++ ok=8
++ for f in $S/edge/labelbreak/a-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/edge/labelbreak/a-label-fronted.md
++ rc=0
++ '[' 0 = 0 ']'
++ ok=9
++ for f in $S/edge/labelbreak/a-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/edge/labelbreak/a-label-norm.md
++ rc=0
++ '[' 0 = 0 ']'
++ ok=10
++ echo 'ok=10 bad=0 total=10'
+ok=10 bad=0 total=10
++ echo '=== reachgap corpus (word-list boundary) ==='
+=== reachgap corpus (word-list boundary) ===
++ ref=0
++ acc=0
++ g=0
++ for f in $S/reachgap/m-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/m-allsrc.md
++ rc=1
++ '[' 1 = 1 ']'
++ ref=1
++ for f in $S/reachgap/m-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/m-any.md
++ rc=1
++ '[' 1 = 1 ']'
++ ref=2
++ for f in $S/reachgap/m-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/m-attimes.md
++ rc=1
++ '[' 1 = 1 ']'
++ ref=3
++ for f in $S/reachgap/m-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/m-claim-quant.md
++ rc=1
++ '[' 1 = 1 ']'
++ ref=4
++ for f in $S/reachgap/m-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/m-each.md
++ rc=1
++ '[' 1 = 1 ']'
++ ref=5
++ for f in $S/reachgap/m-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/m-eachand.md
++ rc=1
++ '[' 1 = 1 ']'
++ ref=6
++ for f in $S/reachgap/m-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/m-everyfile.md
++ rc=1
++ '[' 1 = 1 ']'
++ ref=7
++ for f in $S/reachgap/m-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/m-nocase.md
++ rc=1
++ '[' 1 = 1 ']'
++ ref=8
++ for f in $S/reachgap/m-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/m-whenever.md
++ rc=1
++ '[' 1 = 1 ']'
++ ref=9
++ for f in $S/reachgap/m-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/m-without.md
++ rc=1
++ '[' 1 = 1 ']'
++ ref=10
++ for f in $S/reachgap/a-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/a-allthree.md
++ rc=0
++ '[' 0 = 0 ']'
++ acc=1
++ for f in $S/reachgap/a-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/a-eachline-closed.md
++ rc=0
++ '[' 0 = 0 ']'
++ acc=2
++ for f in $S/reachgap/a-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/a-eachofthe.md
++ rc=0
++ '[' 0 = 0 ']'
++ acc=3
++ for f in $S/reachgap/a-*.md
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/reachgap/a-evid-quant.md
++ rc=0
++ '[' 0 = 0 ']'
++ acc=4
++ echo 'mutants_refused=10 accept_pass=4 gaps=0'
+mutants_refused=10 accept_pass=4 gaps=0
++ echo '=== overreach/fix corpus ==='
+=== overreach/fix corpus ===
++ ra=0
++ rr=0
++ for f in $S/overreach/fix/accept-*.txt
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/overreach/fix/accept-evidence-skip.txt
++ ra=1
++ for f in $S/overreach/fix/accept-*.txt
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/overreach/fix/accept-far.txt
++ ra=2
++ for f in $S/overreach/fix/accept-*.txt
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/overreach/fix/accept-norm.txt
++ ra=3
++ for f in $S/overreach/fix/accept-*.txt
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/overreach/fix/accept-plain.txt
++ ra=4
++ for f in $S/overreach/fix/accept-*.txt
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/overreach/fix/accept-scoped.txt
++ ra=5
++ for f in $S/overreach/fix/refuse-*.txt
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/overreach/fix/refuse-all.txt
++ rc=1
++ '[' 1 = 1 ']'
++ rr=1
++ for f in $S/overreach/fix/refuse-*.txt
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/overreach/fix/refuse-always.txt
++ rc=1
++ '[' 1 = 1 ']'
++ rr=2
++ for f in $S/overreach/fix/refuse-*.txt
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/overreach/fix/refuse-double.txt
++ rc=1
++ '[' 1 = 1 ']'
++ rr=3
++ for f in $S/overreach/fix/refuse-*.txt
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/overreach/fix/refuse-never.txt
++ rc=1
++ '[' 1 = 1 ']'
++ rr=4
++ for f in $S/overreach/fix/refuse-*.txt
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/overreach/fix/refuse-nomarker.txt
++ rc=1
++ '[' 1 = 1 ']'
++ rr=5
++ for f in $S/overreach/fix/refuse-*.txt
++ bin/lesson-overreach-lint scratch/lesson-derive-gate-2026-10-10/overreach/fix/refuse-nonewline.txt
++ rc=1
++ '[' 1 = 1 ']'
++ rr=6
++ echo 'accept_ok=5 refuse_ok=6'
+accept_ok=5 refuse_ok=6
++ echo '=== fold regression through the folded gate ==='
+=== fold regression through the folded gate ===
++ bash scratch/lesson-derive-gate-2026-10-10/fold/harness.sh scratch/lesson-derive-gate-2026-10-10/fold /opt/shellm/app/.identities/audel/workdir/bin/lesson-derive-gate scratch/lesson-derive-gate-2026-10-10/deepen
++ tail -2
+---
+pass=35 fail=0

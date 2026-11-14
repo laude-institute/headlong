@@ -1,0 +1,16 @@
+a-control-bound.md accept
+a-control-listed.md accept
+a-coref-unlisted-1.md accept
+a-coref-unlisted-2.md accept
+a-coref-unlisted-3.md accept
+lesson-draft.md accept
+m-own-domain-builds.md refuse
+m-own-domain-unlisted.md refuse
+m-shield-domain.md refuse
+m-widen-afterward.md refuse
+m-widen-eventually.md refuse
+m-widen-ever-ctl.md refuse
+m-widen-fromnow.md refuse
+m-widen-goingforward.md refuse
+m-widen-later.md refuse
+m-widen-thereafter.md refuse

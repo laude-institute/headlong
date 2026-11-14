@@ -1,0 +1,14 @@
+a1.md accept
+a2.md accept
+a3.md accept
+a4.md accept
+a5.md accept
+m1.md refuse
+m2.md refuse
+m3.md refuse
+m4.md refuse
+m5.md refuse
+m6.md refuse
+r1.md refuse
+r2.md accept
+r3.md accept

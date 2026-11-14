@@ -1,0 +1,12 @@
+a-cutloose.md refuse
+a-flungopen.md accept
+a-setinmotion.md accept
+a-sprangaside.md refuse
+a-sprangforward.md refuse
+a-tookroot.md accept
+a-toretogether.md refuse
+a-wentastray.md accept
+m-adjopen.md refuse
+m-flungmetal.md refuse
+m-shapenopast.md refuse
+m-toolsnoun.md refuse

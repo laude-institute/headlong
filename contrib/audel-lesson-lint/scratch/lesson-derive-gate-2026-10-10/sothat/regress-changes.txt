@@ -1,0 +1,2 @@
+sothat/a-sothat-coref-all.md pre=refuse post=accept
+sothat/a-sothat-coref-none.md pre=refuse post=accept

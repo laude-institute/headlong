@@ -1,0 +1,12 @@
+316,320c316,320
+< objpron/g-obj-her.md	accept
+< objpron/g-obj-her2.md	accept
+< objpron/g-obj-him.md	accept
+< objpron/g-obj-them.md	accept
+< objpron/g-obj-us.md	accept
+---
+> objpron/g-obj-her.md	refuse
+> objpron/g-obj-her2.md	refuse
+> objpron/g-obj-him.md	refuse
+> objpron/g-obj-them.md	refuse
+> objpron/g-obj-us.md	refuse

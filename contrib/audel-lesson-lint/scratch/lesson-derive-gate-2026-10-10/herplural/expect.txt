@@ -1,0 +1,11 @@
+a-all-her-feet.md accept
+a-all-her-geese.md accept
+a-all-her-mice.md accept
+a-all-her-oxen.md accept
+a-all-her-teeth.md accept
+a-her-children.md accept
+a-her-gate.md accept
+a-her-logs.md accept
+a-her-mice.md accept
+g-obj-her-bare.md refuse
+g-obj-her.md refuse
