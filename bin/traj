@@ -61,8 +61,10 @@ Commands:
                             trajectory's first step, shows traj metadata.
                             Otherwise shows the step JSON.
 
-  tail [ID] [-n N] [-f] [--filter F] [-r] [--raw]
-                            Show recent steps (formatted by default).
+  tail [ID] [-n N] [-f] [--filter F] [--full-scan] [-r] [--raw]
+                            Filter the last N lines (formatted by default).
+                            --full-scan finds the last N matches across the file.
+                            Full scans can be slow on large trajectories.
                             --filter field=val  Filter steps by field value.
                             Multiple --filter flags are AND'd, comma values OR'd.
                             -r/--recursive includes sub-trajectory steps.
@@ -970,14 +972,11 @@ _filtered_steps() {
     ' "$1" 2>/dev/null || true
 }
 
-# The last $n (cmd_tail's) steps of a file. A filter applies before the count,
-# as it does under -r: `-n 5 --filter type=message` is the five newest
-# messages, not whichever of the file's last five lines are messages, and the
-# `traj tail -n 400 --filter run_id=<id>` that _recent_stream hands the mind
-# prints that run's steps however far back it ended. Unfiltered, tail(1)
-# reads only the end of the file.
+# By default, inspect only the last $n physical lines, then filter in the
+# renderer. --full-scan opts into scanning history for the last $n matches.
+# Recursive reads already scan the tree and count matching steps.
 _tail_steps() {
-    if [[ "$_filter_json" == "[]" || "$n" == "0" ]]; then
+    if [[ "$full_scan" -eq 0 || "$_filter_json" == "[]" || "$n" == "0" ]]; then
         tail -n "$n" "$1"
     else
         _filtered_steps "$1" | tail -n "$n"
@@ -987,7 +986,7 @@ _tail_steps() {
 # Replay a single-file tail. Raw filtered steps can be emitted directly;
 # keep the existing renderer for formatted and unfiltered output.
 _replay_tail() {
-    if [[ "$format" -eq 0 && "$_filter_json" != "[]" ]]; then
+    if [[ "$full_scan" -eq 1 && "$format" -eq 0 && "$_filter_json" != "[]" ]]; then
         _tail_steps "$1" | {
             # Drain after an early-closing reader, as the old raw jq loop
             # did. GNU tail may report EPIPE as 1 rather than SIGPIPE 141.
@@ -1175,7 +1174,7 @@ _format_line() {
 }
 
 cmd_tail() {
-    local n=10 follow=0 raw=0 force_format=0 use_color=-1 traj_dir_opt="" traj_id_opt="" recursive=0 all_fields=0
+    local n=10 follow=0 raw=0 force_format=0 use_color=-1 traj_dir_opt="" traj_id_opt="" recursive=0 all_fields=0 full_scan=0
     local -a filters=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1183,6 +1182,7 @@ cmd_tail() {
             -f)          follow=1; shift ;;
             --traj_dir)  traj_dir_opt="${2:?--traj_dir requires DIR}"; shift 2 ;;
             --raw)       raw=1; shift ;;
+            --full-scan) full_scan=1; shift ;;
             --format)    force_format=1; shift ;;
             --no-color)  use_color=0; shift ;;
             --filter)    filters+=("${2:?--filter requires field=value}"); shift 2 ;;
@@ -1199,10 +1199,14 @@ Usage:
 
 Options:
   [ID]               Trajectory ID (positional)
-  -n N               Last N steps that pass --filter (default: 10)
+  -n N               Inspect the last N lines, then filter (default: 10)
+  --full-scan        Scan the whole file for the last N matching steps.
+                     Can be slow on large files; no effect without a filter.
   -f                 Follow new steps as they arrive
   -a, --all          Show all fields per step (not just type + content)
-  -r, --recursive    Include steps from all sub-trajectories, interleaved
+  -r, --recursive    Include steps from all sub-trajectories, interleaved.
+                     Always scans the tree and counts matches before -n;
+                     --full-scan is redundant with -r.
   --traj_dir DIR     Trajectory directory
   --filter field=val Filter steps (e.g. --filter type=thought,merge).
                      Multiple --filter flags are AND'd.

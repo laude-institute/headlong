@@ -613,7 +613,7 @@ _recent_stream() {
                 | tostring
                 | if length > 1500 then .[0:1500] + "…[truncated]" else . end)
             | if .type == "final" and ((.run_id // "") | tostring) != ""
-              then .details = "traj tail -n 400 --filter run_id=" + (.run_id | tostring) else . end
+              then .details = "traj tail --full-scan -n 400 --filter run_id=" + (.run_id | tostring) else . end
             | with_entries(select(.key | IN("type", "content", "source", "ts", "from", "to", "run_id", "step_id", "request", "person", "resolves", "trigger_step", "reply_to", "follow_up", "decision", "deferred", "rc", "details", "status", "reason")))' \
         2>/dev/null \
         | jq -cs "$_RECENT_STREAM_PAIR_JQ" 2>/dev/null \

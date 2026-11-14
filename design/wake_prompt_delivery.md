@@ -196,7 +196,7 @@ What could go wrong, and how to check.
 Built 2026-09-03: the prompt's "How to write steps" section asks for a
 final that says what was done, what is left, where the work is, and the next
 step, and `_recent_stream` stamps every final that has a run id with a
-`details` field holding `traj tail -n 400 --filter run_id=<id>`. Once the
+`details` field holding `traj tail --full-scan -n 400 --filter run_id=<id>`. Once the
 mind could read its prompt its finals had already started stating
 outcomes on their own; the instruction pins that down.
 
@@ -227,7 +227,7 @@ already prints a run's steps, so the prompt can say that a run's details
 are available with
 
 ```
-traj tail -n 400 --filter run_id=<run_id>
+traj tail --full-scan -n 400 --filter run_id=<run_id>
 ```
 
 and `traj show <step_id> --full` for one step. The hint should be added by

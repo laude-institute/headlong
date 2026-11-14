@@ -1,20 +1,7 @@
 #!/usr/bin/env bash
-# tests/test_traj_tail_filter.sh — `traj tail -n N --filter F` returns the
-# last N steps that match F, the way `traj tail -r` already does.
-#
-# Usage: tests/test_traj_tail_filter.sh
-#
-# Why: the single-file tail cut the file to its last N lines first and filtered
-# what was left, so it returned only the matches among those N lines. On a
-# trajectory ending "thought, message, action", `traj tail -n 2 --filter
-# type=thought` printed nothing and exited 0, while `traj tail -r -n 2 --filter
-# type=thought` printed the two newest thoughts. The harness relies on the -r
-# meaning: _recent_stream (thinkers/_lib/common.sh) stamps each run's final in
-# the wake prompt with `traj tail -n 400 --filter run_id=<id>` as the command
-# that prints the run's steps, and every monolith run writes into the one root
-# trajectory. For a run that ended more than 400 lines back, which the recent
-# stream (read from the last 5000 lines) shows routinely, that command came
-# back empty.
+# Default tail filters a bounded window of physical lines. --full-scan opts
+# into last-N-matches semantics, including on-demand details for older runs.
+# Recursive tail keeps its existing full-tree match counting.
 
 set -uo pipefail
 unset IDENTITY_DIR IDENTITY_NAME MEM_DIR TRAJ_DIR TRAJ_ID ROOT_TRAJ_ID \
@@ -56,34 +43,49 @@ traj append --field type=action  --field content=A2 >/dev/null
 FILE=$(traj path)
 [[ -f "$FILE" ]] || { echo "FAIL could not build the trajectory"; exit 1; }
 
+# The default remains compatible with tail(1)'s bounded physical-line window.
+is "default filtered tail does not reach older matches" "" \
+   "$(traj tail -n 2 --raw --filter type=thought | contents)"
+is "default raw tail still filters its window" "A2" \
+   "$(traj tail -n 2 --raw --filter type=action | contents)"
+is "default formatted tail still filters its window" "A2" \
+   "$(traj tail -n 2 --format --no-color --filter type=action | awk '{print $NF}')"
+is "default all-fields tail still filters its window" "A2" \
+   "$(traj tail -a -n 2 --format --no-color --filter type=action | awk '{print $NF}')"
+is "full-scan has no effect without a filter" "$(tail -n 2 "$FILE")" \
+   "$(traj tail --full-scan -n 2 --raw)"
+is "full-scan is redundant for recursive tail" \
+   "$(traj tail -r -n 2 --raw --filter type=thought)" \
+   "$(traj tail --full-scan -r -n 2 --raw --filter type=thought)"
+
 # --- -n counts the steps that match, not the file's last lines ----------------
-out=$(traj tail -n 2 --raw --filter type=thought); rc=$?
+out=$(traj tail --full-scan -n 2 --raw --filter type=thought); rc=$?
 is "tail -n 2 --filter exits 0" "0" "$rc"
 is "tail -n 2 --filter returns the two newest matches" "T1 T2" \
    "$(printf '%s\n' "$out" | contents)"
 is "tail -n 1 --filter returns the newest match" "T2" \
-   "$(traj tail -n 1 --raw --filter type=thought | contents)"
+   "$(traj tail --full-scan -n 1 --raw --filter type=thought | contents)"
 is "fewer matches than -n returns all of them" "T1 T2" \
-   "$(traj tail -n 3 --raw --filter type=thought | contents)"
+   "$(traj tail --full-scan -n 3 --raw --filter type=thought | contents)"
 is "two --filter flags are AND-ed before the count" "T2" \
-   "$(traj tail -n 1 --raw --filter type=thought --filter content=T2 | contents)"
+   "$(traj tail --full-scan -n 1 --raw --filter type=thought --filter content=T2 | contents)"
 is "comma values are OR-ed before the count" "T2 M1" \
-   "$(traj tail -n 2 --raw --filter type=thought,message | contents)"
+   "$(traj tail --full-scan -n 2 --raw --filter type=thought,message | contents)"
 is "the formatted view counts the same way" "T1 T2" \
-   "$(traj tail -n 2 --format --no-color --filter type=thought | awk '{print $NF}' | tr '\n' ' ' | sed 's/ $//')"
+   "$(traj tail --full-scan -n 2 --format --no-color --filter type=thought | awk '{print $NF}' | tr '\n' ' ' | sed 's/ $//')"
 
 # --- the single-file tail agrees with -r and with cat --------------------------
 is "tail and tail -r agree on a one-file tree" \
    "$(traj tail -r -n 2 --raw --filter type=thought | contents)" \
-   "$(traj tail -n 2 --raw --filter type=thought | contents)"
+   "$(traj tail --full-scan -n 2 --raw --filter type=thought | contents)"
 is "tail -n N --filter F is the last N lines of cat --filter F" \
    "$(traj cat --raw --filter type=thought,action | tail -n 3)" \
-   "$(traj tail -n 3 --raw --filter type=thought,action)"
+   "$(traj tail --full-scan -n 3 --raw --filter type=thought,action)"
 
 is "the OR filter keeps the three newest matching contents" "A1 T2 A2" \
-   "$(traj tail -n 3 --raw --filter type=thought,action | contents)"
+   "$(traj tail --full-scan -n 3 --raw --filter type=thought,action | contents)"
 is "the all-fields view counts the same way" "T1 T2" \
-   "$(traj tail -a -n 2 --format --no-color --filter type=thought | awk '{print $NF}' | tr '\n' ' ' | sed 's/ $//')"
+   "$(traj tail --full-scan -a -n 2 --format --no-color --filter type=thought | awk '{print $NF}' | tr '\n' ' ' | sed 's/ $//')"
 
 # A zero-count read must not run the full-file JSON parser. Instrument file
 # reads rather than use a wall-clock threshold that depends on CI speed.
@@ -99,9 +101,18 @@ exec "$REAL_JQ" "$@"
 JQ
 chmod +x "$WORK/bin/jq"
 : > "$SCAN_LOG"
-out=$(PATH="$WORK/bin:$PATH" traj tail -n 0 --raw --filter type=thought); rc=$?
+out=$(PATH="$WORK/bin:$PATH" traj tail --full-scan -n 0 --raw --filter type=thought); rc=$?
 is "filtered zero-count tail exits successfully with no output" "0:" "$rc:$out"
 is "filtered zero-count tail does not parse trajectory history" "" "$(cat "$SCAN_LOG")"
+
+# A positive default count must not invoke the full-file parser either.
+: > "$SCAN_LOG"
+out=$(PATH="$WORK/bin:$PATH" traj tail -n 2 --raw --filter type=thought)
+is "default positive-count tail does not parse trajectory history" "" "$(cat "$SCAN_LOG")"
+is "instrumented default tail keeps bounded semantics" "" "$out"
+out=$(PATH="$WORK/bin:$PATH" traj tail --full-scan -n 2 --raw --filter type=thought)
+is "full-scan explicitly invokes the history parser" "scan" "$(cat "$SCAN_LOG")"
+is "instrumented full-scan reaches older matches" "T1 T2" "$(printf '%s\n' "$out" | contents)"
 
 # --- without a filter, tail is untouched ---------------------------------------
 is "unfiltered tail -n 2 is the file's last two lines, byte for byte" \
@@ -111,7 +122,7 @@ is "unfiltered tail -n 2 is the file's last two lines, byte for byte" \
 # Job control gives the follower a process group of its own, so the kill takes
 # its tail -F pipeline down with it.
 set -m
-traj tail -f -n 2 --raw --filter type=thought > "$WORK/follow.out" 2>/dev/null &
+traj tail --full-scan -f -n 2 --raw --filter type=thought > "$WORK/follow.out" 2>/dev/null &
 follower=$!
 set +m
 for _ in $(seq 1 100); do
@@ -137,9 +148,9 @@ is "tail -f filters newly appended steps after replay" "T1 T2 T3" \
 printf 'not valid json\n' >> "$FILE"
 traj append --field type=thought --field content=T4 >/dev/null
 is "malformed lines do not consume the filtered count" "T3 T4" \
-   "$(traj tail -n 2 --raw --filter type=thought | contents)"
+   "$(traj tail --full-scan -n 2 --raw --filter type=thought | contents)"
 is "all-fields filtered output skips malformed lines" "T3 T4" \
-   "$(traj tail -a -n 2 --format --no-color --filter type=thought | awk '{print $NF}' | tr '\n' ' ' | sed 's/ $//')"
+   "$(traj tail --full-scan -a -n 2 --format --no-color --filter type=thought | awk '{print $NF}' | tr '\n' ' ' | sed 's/ $//')"
 
 # --- the run details command the wake prompt hands the mind ---------------------
 # One root trajectory, as the monolith writes it: an earlier run, then a later
@@ -168,21 +179,21 @@ details=$(
     _recent_stream 20 | jq -r 'select(.step_id == "af") | .details // empty'
 )
 case "$details" in
-    "traj tail "*"--filter run_id=run-a")
-        ok "the earlier run's final carries a traj tail --filter command" ;;
-    *)  bad "the earlier run's final carries a traj tail --filter command" "got [$details]" ;;
+    "traj tail --full-scan "*"--filter run_id=run-a")
+        ok "the earlier run's final carries a traj tail --full-scan --filter command" ;;
+    *)  bad "the earlier run's final carries a traj tail --full-scan --filter command" "got [$details]" ;;
 esac
-cmd=(traj tail -n 400 --filter run_id=run-a)
+cmd=(traj tail --full-scan -n 400 --filter run_id=run-a)
 [[ -n "$details" ]] && read -r -a cmd <<< "$details"
 is "that command prints the whole earlier run" "a-one a-two a-done" \
    "$("${cmd[@]}" --raw | contents)"
 is "-n still bounds a run longer than N, keeping its newest steps" "b-449 b-450 b-done" \
-   "$(traj tail -n 3 --raw --filter run_id=run-b | contents)"
+   "$(traj tail --full-scan -n 3 --raw --filter run_id=run-b | contents)"
 
 # A raw filtered reader may stop early without turning a successful read
 # into SIGPIPE failure. Enough output fills the pipe on both Linux and macOS.
 jq -nc 'range(0;1000) | {type:"thought",content:("x" * 1024)}' >> "$RFILE"
-traj tail -n 1000 --raw --filter type=thought | head -1 > /dev/null
+traj tail --full-scan -n 1000 --raw --filter type=thought | head -1 > /dev/null
 is "raw filtered tail tolerates a reader that closes early" "0" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
