@@ -11,7 +11,8 @@ set -euo pipefail
 # fixed (commit 80cbb1e), ported to the bundled thinker layout.
 #
 # Cheap by design: a word index over $MEM_DIR (build-index.sh, rebuilt here
-# whenever a memory is newer than the index) and no LLM call, unless
+# whenever a memory is newer than the index or the memory count changed)
+# and no LLM call, unless
 # RETRIEVAL_SEMANTIC=1 adds a `mem search` (one llm call) on each hit.
 #
 # Ships DISABLED. To turn it on for one identity, use the dashboard or delete
@@ -40,10 +41,15 @@ step_source=$(printf '%s' "$step_json" | jq -r '.source // empty' 2>/dev/null) |
 step_id=$(printf '%s' "$step_json" | jq -r '.step_id // empty' 2>/dev/null) || true
 [[ -z "$content" || "$step_source" == "$THINKER_NAME" ]] && exit 0
 
-# Index missing or older than the newest memory: rebuild (a few ms per memory).
-newest=$(ls -t "$MEM_DIR"/*.md 2>/dev/null | head -1) || true
-[[ -n "$newest" ]] || exit 0
-if [[ ! -s "$INDEX" || "$newest" -nt "$INDEX" ]]; then
+# Index missing, older than the newest memory, or out of step with the store
+# (a mem forget deletes a file without touching the newest mtime, so the index
+# keeps rows for a memory that is gone): rebuild (a few ms per memory).
+newest_list=$(ls -t "$MEM_DIR"/*.md 2>/dev/null) || true
+[[ -n "$newest_list" ]] || exit 0
+newest=$(head -1 <<<"$newest_list")
+count=$(grep -c '' <<<"$newest_list")
+indexed=$(cat "${INDEX}.count" 2>/dev/null) || indexed=""
+if [[ ! -s "$INDEX" || "$newest" -nt "$INDEX" || "$count" != "$indexed" ]]; then
     "$SCRIPT_DIR/build-index.sh" "$MEM_DIR" "$INDEX" >/dev/null 2>&1 || exit 0
 fi
 
