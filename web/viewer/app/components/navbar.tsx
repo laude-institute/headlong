@@ -70,6 +70,7 @@ const LAST_CALL_LABEL: Record<string, string> = {
   credit: "out of credit",
   auth: "key rejected",
   rate: "rate limited",
+  budget: "spend limit reached",
   other: "last call failed",
 };
 const LAST_CALL_HINT: Record<string, string> = {
@@ -100,8 +101,12 @@ function LlmHealthChip() {
   });
   if (!health || (health.status === "unknown" && !health.last_call)) return null;
   const last = health.last_call ?? null;
-  const hardFail = !!last && !last.ok && (last.kind === "credit" || last.kind === "auth");
+  // budget is not the provider failing, but the mind is just as stopped.
+  const hardFail =
+    !!last && !last.ok && (last.kind === "credit" || last.kind === "auth" || last.kind === "budget");
   const failLabel = last && !last.ok ? LAST_CALL_LABEL[last.kind ?? "other"] : null;
+  const budgetIdentity =
+    last?.kind === "budget" ? health.identities.find((i) => i.name === last.identity) : undefined;
 
   const runProbe = async () => {
     setProbing(true);
@@ -169,6 +174,26 @@ function LlmHealthChip() {
                 )}
                 {last.kind === "auth" && (
                   <div className="mt-1 text-[11px]">Put a working key in ~/.headlong/.env, then restart the mind.</div>
+                )}
+                {last.kind === "budget" && (
+                  <div className="mt-1 text-[11px]">
+                    {last.identity ? <span className="font-mono">{last.identity}</span> : "An identity"} reached
+                    its own spend limit (LLM_SPEND_LIMIT_USD), so llm refuses its model calls before
+                    sending anything; the provider is fine. Raise the limit in its .env to continue.
+                    {budgetIdentity && (
+                      <>
+                        {" "}
+                        <Link
+                          className="underline"
+                          to={`/i/${encodeURIComponent(budgetIdentity.id)}/usage`}
+                          onClick={() => setOpen(false)}
+                        >
+                          See what it spent
+                        </Link>
+                        .
+                      </>
+                    )}
+                  </div>
                 )}
                 {last.ts && <div className="mt-1 text-[10px] text-muted-foreground">last tried {last.ts}</div>}
               </div>

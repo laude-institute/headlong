@@ -79,6 +79,39 @@ ada bugreport        # bundle logs + trajectory (keys scrubbed) for a bug report
 Use a dedicated, spend-capped API key: the agent executes real shell
 commands and calls the LLM continuously.
 
+### Optional spend limit
+
+With OpenRouter, Headlong can also stop an identity's own spending. Put a
+dollar amount in the identity's `.env` (or the state home's):
+
+```bash
+LLM_SPEND_LIMIT_USD=25
+LLM_SPEND_WINDOW=month     # optional: total (default), day or month, in UTC
+```
+
+Every model call counts what OpenRouter reports it cost in the identity's
+usage ledger (`usage/llm.jsonl`). At the limit, `llm` sends nothing and exits
+3. `ada status` says "spend limit reached", and the mind's trajectory records
+why it stopped. When the `contrib/opencode` package is installed, its
+delegations count against the same limit. `llm --spend` prints spent, limit
+and remaining, and the dash's Usage page shows them with cost per day. The running total is cached next to the ledger
+(`usage/llm.jsonl.spend.json`) so each check reads only new lines; deleting the
+cache is safe.
+
+- **It can overshoot slightly.** The check runs before each call, so a call
+  already in flight finishes: each concurrent caller can go over by up to one
+  call, and an OpenCode delegation by up to one model step.
+- **OpenRouter only.** It is the provider that reports cost. With a limit set,
+  calls to any other provider are refused rather than left uncounted.
+- **One identity at a time.** Each identity has its own ledger and limit, so
+  three identities with a $25 limit on one key can spend $75 together.
+- OpenRouter sends a reply's cost at its very end. Under a limit, shellm's
+  replies still end at their first code block, but `llm` reads the rest in
+  silence to get the cost, for at most 20 seconds. A reply still going after
+  that is cut and goes uncounted, with a warning.
+
+Keep the spend cap on the key as well: it is the backstop this limit is not.
+
 Re-running the one-liner updates everything in place. The installer never
 uses sudo, and the piped script only clones the repo and re-runs the
 installer from the checkout, so what executes is the same code you can

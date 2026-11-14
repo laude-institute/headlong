@@ -74,6 +74,12 @@ still honored.
   cards with frontmatter summaries and dates, plus the full Markdown reader.
 - **Health** (`/i/<identity>/health`) — reply latency, stalls, and LLM
   provider health inferred from the mind log.
+- **Usage** (`/i/<identity>/usage`) — messages, model calls, tokens and
+  cost per UTC day and per model, counted from the mind log and the usage
+  ledger (`usage/llm.jsonl`); OpenCode delegations' cost is shown apart.
+  With `LLM_SPEND_LIMIT_USD` set, the identity's spend limit, live from
+  `llm --spend`; the navbar's `llm` chip turns red when a call is refused
+  by it.
 - **Config** (`/i/<identity>/config`) — the identity's `.env` (model,
   effort, keys redacted) with an OpenRouter model picker.
 

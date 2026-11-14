@@ -22,6 +22,7 @@ import type {
   Recap,
   Usage,
   SelfUpdateResult,
+  SpendStatus,
   StepDetail,
   SubTrajectory,
   ThinkerSyncResult,
@@ -213,6 +214,10 @@ export function refreshRecap(
 
 export function fetchUsage(identityId: string): Promise<Usage> {
   return getJson(`/api/identities/${encodeURIComponent(identityId)}/usage`);
+}
+
+export function fetchSpend(identityId: string): Promise<SpendStatus> {
+  return getJson(`/api/identities/${encodeURIComponent(identityId)}/spend`);
 }
 
 export function refreshUsage(

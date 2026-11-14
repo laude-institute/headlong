@@ -29,7 +29,10 @@ export interface LlmLastCall {
   ts: string | null;
   provider: string | null;
   model: string | null;
-  kind: "credit" | "auth" | "rate" | "other" | null;
+  /** Whose call it was, when bin/llm knew (the marker is shared). */
+  identity: string | null;
+  /** budget: the identity's own spend limit (LLM_SPEND_LIMIT_USD), not the provider. */
+  kind: "credit" | "auth" | "rate" | "budget" | "other" | null;
   http_code: number | string | null;
   message: string | null;
 }
@@ -259,6 +262,10 @@ export interface UsageDay {
   in: number;
   out: number;
   think: number;
+  /** USD from the ledger (whichever source the tokens came from): calls
+   * through bin/llm, and contrib/opencode delegation steps. */
+  cost_llm: number;
+  cost_opencode: number;
   /** Where calls/tokens came from: the bin/llm ledger (every call) or the
    * mind log's reasoning-step stamps (shellm runs only, older days). */
   source: "ledger" | "mindlog";
@@ -269,6 +276,7 @@ export interface UsageModel {
   in: number;
   out: number;
   think: number;
+  cost: number;
 }
 
 export interface Usage {
@@ -280,9 +288,10 @@ export interface Usage {
   generated?: string;
   rows?: number;
   skipped?: number;
-  /** The bin/llm usage ledger: lines read, lines without usable usage, and
-   * the first day it covers (null when it has no calls yet). */
-  ledger?: { rows: number; skipped: number; since: string | null };
+  /** The bin/llm usage ledger: lines read, lines without usable usage, the
+   * first day it covers (null when it has no calls yet), and how many of its
+   * calls carried a cost. */
+  ledger?: { rows: number; skipped: number; since: string | null; calls: number; priced: number };
   daily?: [string, UsageDay][];
   by_model?: Record<string, UsageModel>;
   totals?: {
@@ -293,8 +302,24 @@ export interface Usage {
     in_msg: number;
     out_msg: number;
     runs: number;
+    cost_llm: number;
+    cost_opencode: number;
   };
 }
+
+/** `llm --spend` for one identity (GET .../spend): live, unlike Usage.
+ * limit is null when LLM_SPEND_LIMIT_USD is unset; ok is false when llm
+ * rejects the settings (it then refuses every call too). */
+export type SpendStatus =
+  | {
+      ok: true;
+      spent: number;
+      limit: number | null;
+      remaining: number | null;
+      window: "total" | "day" | "month";
+      since: string | null;
+    }
+  | { ok: false; error: string };
 
 export interface IdentityStatus {
   live: boolean;
