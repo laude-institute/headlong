@@ -135,6 +135,17 @@ three concrete steps:
    bash consumers through traj" is satisfied without touching the good Python/
    Rust citizens.
 
+Current implementation: single-file `traj tail -n N --filter F` filters only
+its last N physical lines, preserving bounded reads by default. Adding
+`--full-scan` returns the last N matching steps by scanning the file forward.
+The on-demand run details command explicitly opts into that scan so older
+runs remain accessible. Large trajectories can make that command slow.
+Recursive tail already scans the tree and counts matching steps, with or
+without the flag. `_recent_stream` still reads a bounded 5000-line window,
+and the TUI history load still uses filtered `cat`. A3 step 2 remains a
+proposal: measure a backward reader before migrating frequent callers.
+Unfiltered tail and zero-count replay keep their direct tail path.
+
 Note A2 and A3 are complementary, not redundant: A3 bounds the *number of lines*
 a read touches; A2 bounds the *bytes per line*. `tail -n 5000` over 16 KB/line
 steps still reads ~80 MB; blobbed, ~1 MB. Every reader wants both.
