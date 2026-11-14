@@ -536,6 +536,9 @@ commitments with dates, and facts they stated. Rules: facts and stated
 preferences only. Never turn one incident into a rule, a stance, or a policy
 about the person, and do not record refusals or things $IDENTITY_NAME declined,
 not even in neutral words: leave any declined request out entirely.
+A conversation line ending in "(+N more: full message in the raw log)" is a
+cut message: the sender's text continues in the raw log, so treat it as
+partial and never quote its ending as the whole message.
 No secrets, keys, or credentials. Keep what is still true from the previous
 notes and drop what the conversation shows is stale. At most 12 short lines of
 plain text, no headers, no bullet syntax. Output only the notes.
@@ -594,7 +597,7 @@ _update_person_notes() {
     prev_body=""; [[ -n "$prev_file" ]] && prev_body=$(_notes_body "$prev_file")
     system=$(_person_notes_system)
     user=$(printf '%s' "$hist" | jq -r --arg me "$IDENTITY_NAME" '
-        .[] | "\(.ts // "?" | .[0:16]) \(if .from == $me then $me else "them" end): \(.content | tostring | .[0:600])"')
+        .[] | "\(.ts // "?" | .[0:16]) \(if .from == $me then $me else "them" end): \(.content | tostring | if length > 600 then .[0:600] + " (+" + ((length - 600) | tostring) + " more: full message in the raw log)" else . end)"')
     user="Previous notes:
 ${prev_body:-(none yet)}
 
