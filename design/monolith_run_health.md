@@ -135,6 +135,13 @@ three concrete steps:
    bash consumers through traj" is satisfied without touching the good Python/
    Rust citizens.
 
+Current implementation: filtered `traj tail -n N` counts matching steps,
+but scans the file forward when N is positive. That fixes the on-demand run
+details command without completing A3 step 2. `_recent_stream` still reads a
+bounded 5000-line window, and the TUI history load still uses filtered `cat`.
+Keep those hot paths separate until a backward reader is implemented and
+measured. Unfiltered tail and zero-count replay keep their direct tail path.
+
 Note A2 and A3 are complementary, not redundant: A3 bounds the *number of lines*
 a read touches; A2 bounds the *bytes per line*. `tail -n 5000` over 16 KB/line
 steps still reads ~80 MB; blobbed, ~1 MB. Every reader wants both.

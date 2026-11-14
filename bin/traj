@@ -977,10 +977,26 @@ _filtered_steps() {
 # prints that run's steps however far back it ended. Unfiltered, tail(1)
 # reads only the end of the file.
 _tail_steps() {
-    if [[ "$_filter_json" == "[]" ]]; then
+    if [[ "$_filter_json" == "[]" || "$n" == "0" ]]; then
         tail -n "$n" "$1"
     else
         _filtered_steps "$1" | tail -n "$n"
+    fi
+}
+
+# Replay a single-file tail. Raw filtered steps can be emitted directly;
+# keep the existing renderer for formatted and unfiltered output.
+_replay_tail() {
+    if [[ "$format" -eq 0 && "$_filter_json" != "[]" ]]; then
+        _tail_steps "$1" || {
+            local rc=$?
+            # The old raw filter loop tolerated an early-closing reader.
+            [[ "$rc" -eq 141 ]] || return "$rc"
+        }
+    else
+        _tail_steps "$1" | while IFS= read -r line; do
+            _process_line "$line"
+        done
     fi
 }
 
@@ -1261,9 +1277,7 @@ TAILHELP
     elif [[ "$follow" -eq 1 ]]; then
         # Replay then follow (single file)
         if [[ -f "$traj_file" ]] && [[ "$n" -gt 0 ]]; then
-            _tail_steps "$traj_file" | while IFS= read -r line; do
-                _process_line "$line"
-            done
+            _replay_tail "$traj_file"
         fi
         # Wait for file to exist
         while [[ ! -f "$traj_file" ]]; do
@@ -1274,9 +1288,7 @@ TAILHELP
         done
     else
         [[ -f "$traj_file" ]] || die "tail: trajectory file not found: $traj_file"
-        _tail_steps "$traj_file" | while IFS= read -r line; do
-            _process_line "$line"
-        done
+        _replay_tail "$traj_file"
     fi
 }
 

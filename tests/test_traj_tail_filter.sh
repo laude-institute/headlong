@@ -80,6 +80,29 @@ is "tail -n N --filter F is the last N lines of cat --filter F" \
    "$(traj cat --raw --filter type=thought,action | tail -n 3)" \
    "$(traj tail -n 3 --raw --filter type=thought,action)"
 
+is "the OR filter keeps the three newest matching contents" "A1 T2 A2" \
+   "$(traj tail -n 3 --raw --filter type=thought,action | contents)"
+is "the all-fields view counts the same way" "T1 T2" \
+   "$(traj tail -a -n 2 --format --no-color --filter type=thought | awk '{print $NF}' | tr '\n' ' ' | sed 's/ $//')"
+
+# A zero-count read must not run the full-file JSON parser. Instrument file
+# reads rather than use a wall-clock threshold that depends on CI speed.
+mkdir -p "$WORK/bin"
+REAL_JQ=$(command -v jq)
+export REAL_JQ SCAN_FILE="$FILE" SCAN_LOG="$WORK/scans"
+cat > "$WORK/bin/jq" <<'JQ'
+#!/usr/bin/env bash
+for arg in "$@"; do
+    [[ "$arg" != "$SCAN_FILE" ]] || printf 'scan\n' >> "$SCAN_LOG"
+done
+exec "$REAL_JQ" "$@"
+JQ
+chmod +x "$WORK/bin/jq"
+: > "$SCAN_LOG"
+out=$(PATH="$WORK/bin:$PATH" traj tail -n 0 --raw --filter type=thought); rc=$?
+is "filtered zero-count tail exits successfully with no output" "0:" "$rc:$out"
+is "filtered zero-count tail does not parse trajectory history" "" "$(cat "$SCAN_LOG")"
+
 # --- without a filter, tail is untouched ---------------------------------------
 is "unfiltered tail -n 2 is the file's last two lines, byte for byte" \
    "$(tail -n 2 "$FILE")" "$(traj tail -n 2 --raw)"
@@ -95,11 +118,28 @@ for _ in $(seq 1 100); do
     [[ "$(grep -c . "$WORK/follow.out" 2>/dev/null)" -ge 2 ]] && break
     sleep 0.1
 done
+is "tail -f -n 2 --filter replays the two newest matches" "T1 T2" \
+   "$(contents < "$WORK/follow.out")"
+# Allow tail -F to start after replay, then exercise its live filter too.
+sleep 1
+traj append --field type=action --field content=ignored >/dev/null
+traj append --field type=thought --field content=T3 >/dev/null
+for _ in $(seq 1 100); do
+    [[ "$(grep -c . "$WORK/follow.out" 2>/dev/null)" -ge 3 ]] && break
+    sleep 0.1
+done
 kill -- "-$follower" 2>/dev/null || true
 wait "$follower" 2>/dev/null || true
 follower=""
-is "tail -f -n 2 --filter replays the two newest matches" "T1 T2" \
+is "tail -f filters newly appended steps after replay" "T1 T2 T3" \
    "$(contents < "$WORK/follow.out")"
+
+printf 'not valid json\n' >> "$FILE"
+traj append --field type=thought --field content=T4 >/dev/null
+is "malformed lines do not consume the filtered count" "T3 T4" \
+   "$(traj tail -n 2 --raw --filter type=thought | contents)"
+is "all-fields filtered output skips malformed lines" "T3 T4" \
+   "$(traj tail -a -n 2 --format --no-color --filter type=thought | awk '{print $NF}' | tr '\n' ' ' | sed 's/ $//')"
 
 # --- the run details command the wake prompt hands the mind ---------------------
 # One root trajectory, as the monolith writes it: an earlier run, then a later
@@ -138,6 +178,12 @@ is "that command prints the whole earlier run" "a-one a-two a-done" \
    "$("${cmd[@]}" --raw | contents)"
 is "-n still bounds a run longer than N, keeping its newest steps" "b-449 b-450 b-done" \
    "$(traj tail -n 3 --raw --filter run_id=run-b | contents)"
+
+# A raw filtered reader may stop early without turning a successful read
+# into SIGPIPE failure. Enough output fills the pipe on both Linux and macOS.
+jq -nc 'range(0;1000) | {type:"thought",content:("x" * 1024)}' >> "$RFILE"
+traj tail -n 1000 --raw --filter type=thought | head -1 > /dev/null
+is "raw filtered tail tolerates a reader that closes early" "0" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
