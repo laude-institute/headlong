@@ -320,6 +320,18 @@ class Inbound:
             ):
                 thread_ts = event["thread_ts"]
             else:
+                # Un-mentioned, and no thread we are watching: the one
+                # silent drop besides the PeerGuard caps. Named so a post
+                # the author sees as delivered is distinguishable from
+                # quiet in the bridge log. Measured on a live pair of
+                # these bridges: 75 of 127 peer posts in five weeks were
+                # dropped here dark (2026-11-10 sweep).
+                logger.log(
+                    logging.WARNING if is_peer else logging.INFO,
+                    "%s %s in %s/%s not forwarded: no mention and no active thread",
+                    "peer" if is_peer else "person",
+                    user, channel, event.get("thread_ts") or ts,
+                )
                 return
             if is_peer:
                 ok, reason = self.peers.allow(channel, thread_ts)

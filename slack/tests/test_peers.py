@@ -284,3 +284,56 @@ def test_person_messages_never_guarded(bridge):
     b = bridge(max_turns=0, hourly_cap=0)
     b.send(_event(user=NICK, text="hi audel"), True)
     b.send(_event(user=NICK, text="still here"), True)
+
+
+# -- un-mentioned gate drops are named (2026-11-10 finding) -----------------
+#
+# The mention/active-thread gate is the bridge's one silent filter besides
+# the PeerGuard caps: a channel post with no mention and no watched thread
+# is dropped before the mind ever sees it, with no log line anywhere, so
+# the author reads the post as delivered while the mind reads silence.
+# Measured on a live pair of these bridges: 75 of 127 peer posts in five
+# weeks dropped here dark, 8 more by the caps (which log each block once).
+# Every drop now names itself.
+
+
+def test_unmentioned_channel_post_logs_the_drop(bridge, caplog):
+    peer_post = _event(user=PEER, text="peer chatter", bot=True, mention=False)
+    reply_post = _event(user=NICK, text="reply chatter", mention=False)
+    top_post = _event(user=NICK, text="top-level chatter", mention=False, thread_ts=None)
+    b = bridge()
+    with caplog.at_level(logging.INFO, logger="test-peers"):
+        b.send(peer_post, False)
+        b.send(reply_post, False)
+        b.send(top_post, False)
+    drops = [r for r in caplog.records if "not forwarded" in r.getMessage()]
+    assert len(drops) == 3, [r.getMessage() for r in caplog.records]
+    assert any(
+        r.levelno == logging.WARNING
+        and r.getMessage() == (
+            f"peer {PEER} in {CHAN}/{PARENT} "
+            "not forwarded: no mention and no active thread"
+        )
+        for r in drops
+    ), [r.getMessage() for r in drops]
+    person_drops = [
+        r
+        for r in drops
+        if r.levelno == logging.INFO
+        and r.getMessage().startswith(f"person {NICK} in {CHAN}/")
+        and r.getMessage().endswith("not forwarded: no mention and no active thread")
+    ]
+    assert len(person_drops) == 2, [r.getMessage() for r in caplog.records]
+    # A top-level post has no thread, so the drop line anchors at its own ts.
+    assert any(
+        f"person {NICK} in {CHAN}/{top_post['ts']} " in r.getMessage()
+        for r in person_drops
+    ), [r.getMessage() for r in caplog.records]
+
+
+def test_mentioned_and_followup_posts_log_no_drop(bridge, caplog):
+    b = bridge()
+    with caplog.at_level(logging.INFO, logger="test-peers"):
+        b.send(_event(user=NICK, text="hello"), True)
+        b.send(_event(user=NICK, text="still here", mention=False), True)
+    assert not [r for r in caplog.records if "not forwarded" in r.getMessage()]
