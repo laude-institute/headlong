@@ -55,6 +55,11 @@ export ANTHROPIC_API_KEY="test-key"
 export SHELLM_MODEL="test-model"
 export SHELLM_ENV=local
 export LLM_STUB_DIR="$WORK/msgs"
+# An ambient trajectory variable (any run inside shellm leaves these set:
+# SHELLM_TRAJ_DIR outranks TRAJ_DIR, which outranks HEADLONG_HOME) would
+# send the stub runs into the caller's real log — the --resume arms would
+# resume it, too. Neutralize all three before any nested exec.
+unset TRAJ_DIR TRAJ_ID SHELLM_TRAJ_DIR
 
 run_shellm() {
     ( cd "$WORK/wd" && "$WORK/toolbin/shellm" --workdir "$WORK/wd" --max-iterations 1 "$@" ) \
