@@ -582,6 +582,27 @@ _RECENT_STREAM_PAIR_JQ='
     else . + [$s] end)
   | .[]'
 
+# Dedup by turn (2026-11-14): a wake's text fault can mint one turn several
+# times inside one run — the 06:54:47Z burst tripled a thought with fresh step
+# ids and a 380ms drifting ts but byte-identical content, and every wake that
+# read the stream saw one turn as three. Adjacent rows of one run sharing
+# (run_id, type, content) are one event and render once. step_id cannot key
+# the dedup (the fault mints it fresh per copy) and ts cannot either (it
+# drifts). Identical content in a different run is legitimate repetition and
+# stays, rows with no run id are untouched, and copies separated by another
+# row stay: the scope is consecutive rows of one run, the measured fault
+# shape. Runs before pairing and the window cut so N still means N distinct
+# events. bin/traj reads and the recap fold read rows through their own
+# paths and owe the same rule; those seams are named, not widened here.
+_RECENT_STREAM_DEDUP_JQ='
+  reduce .[] as $s ([];
+    if (($s.run_id // "") | tostring) != "" and length > 0
+       and (((.[-1].run_id // "") | tostring) == (($s.run_id) | tostring))
+       and ((.[-1].type // "") == ($s.type // ""))
+       and (((.[-1].content // "") | tostring) == (($s.content // "") | tostring))
+    then . else . + [$s] end)
+  | .[]'
+
 # A run's final is all the next wake sees of that run (the mind's render is
 # run scoped, so earlier runs' commands and outputs are not in its context),
 # so each final carries a `details` command that prints the run's raw steps.
@@ -616,6 +637,7 @@ _recent_stream() {
               then .details = "traj tail -n 400 --filter run_id=" + (.run_id | tostring) else . end
             | with_entries(select(.key | IN("type", "content", "source", "ts", "from", "to", "run_id", "step_id", "request", "person", "resolves", "trigger_step", "reply_to", "follow_up", "decision", "deferred", "rc", "details", "status", "reason")))' \
         2>/dev/null \
+        | jq -cs "$_RECENT_STREAM_DEDUP_JQ" 2>/dev/null \
         | jq -cs "$_RECENT_STREAM_PAIR_JQ" 2>/dev/null \
         | jq -cs "$_RECENT_STREAM_COLLAPSE_JQ" 2>/dev/null \
         | tail -n "$n" \
