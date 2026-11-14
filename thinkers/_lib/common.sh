@@ -331,14 +331,22 @@ get_goals() {
     return 0   # the step runs under set -e; a false arithmetic test must not be the exit status
 }
 
-# Age of a memory as "3h", "5d", or "3w": from its created field, else the
-# file's mtime. Empty when neither parses.
-_mem_age() {
-    local created="$1" file="$2" now="$3" t="" d
+# Creation dates written by mem are local time without a zone. Fall back to
+# mtime when a creation date is absent or cannot be parsed.
+_mem_epoch() {
+    local created="$1" file="$2" t=""
     if [[ -n "$created" ]]; then
-        t=$(date -u -d "$created" +%s 2>/dev/null) || t=$(date -j -u -f '%Y-%m-%d %H:%M:%S' "$created" +%s 2>/dev/null) || t=""
+        t=$(date -d "$created" +%s 2>/dev/null) || t=$(date -j -f '%Y-%m-%d %H:%M:%S' "$created" +%s 2>/dev/null) || t=""
     fi
     [[ -n "$t" ]] || t=$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null) || t=""
+    printf '%s' "$t"
+}
+
+# Age of a memory as "3h", "5d", or "3w". An optional fourth argument
+# supplies an already parsed epoch so callers can reuse it for filtering.
+_mem_age() {
+    local created="$1" file="$2" now="$3" t="${4-}" d
+    if (( $# < 4 )); then t=$(_mem_epoch "$created" "$file"); fi
     [[ -n "$t" ]] || return 0
     d=$(( now - t )); (( d < 0 )) && d=0
     if (( d < 86400 )); then printf '%sh' $(( d / 3600 ))
@@ -350,7 +358,7 @@ _mem_age() {
 # wake's own material (routing signals plus the last few stream steps) with
 # mem's keyword stage (`mem prefilter`, BM25, no model call) and prints up to
 # N lines: name, type, age, first sentence. Skipped: memories written in the
-# last RELATED_FRESH_S (a day; they are already in the stream) and the names
+# last RELATED_FRESH_S (a day; 0 disables age exclusion) and the names
 # in $2 (what the previous wake showed, so an open thread does not repeat
 # the same three lines every wake). Words the prompt template itself
 # contributes are stripped first, or every timer wake matches the same hub
@@ -365,18 +373,26 @@ _related_memories() {  # _related_memories <query> [prev-names, one per line] [n
     (( n > 0 )) || return 0
     [[ -d "${MEM_DIR:-}" ]] || return 0
     command -v mem >/dev/null 2>&1 || return 0
-    local cleaned now fresh f name ftype created body age shown=0
+    local cleaned now fresh f name ftype created body age born elapsed shown=0
     cleaned=$(printf '%s' "$query" | tr -c 'A-Za-z0-9_#@.-' '\n' | grep -vxiE "$_RELATED_STOPWORDS" | tr '\n' ' ')
     [[ -n "${cleaned// /}" ]] || return 0
     now=$(date -u +%s); fresh="${RELATED_FRESH_S:-86400}"
+    if ! [[ "$fresh" =~ ^[0-9]+$ ]]; then
+        printf 'related memories: RELATED_FRESH_S must be nonnegative integer seconds; using 86400\n' >&2
+        fresh=86400
+    fi
+    fresh=$((10#$fresh))
     while IFS= read -r f; do
         [[ -f "$f" ]] || continue
         name=$(basename "$f" .md)
         case "$prev" in *"$name"*) continue ;; esac
         created=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^created:/{sub(/^created:[[:space:]]*/, ""); print}' "$f")
-        age=$(_mem_age "$created" "$f" "$now")
-        case "$age" in *h) continue ;; esac
-        if [[ "$fresh" -gt 86400 && "$age" == *d ]]; then (( ${age%d} * 86400 < fresh )) && continue; fi
+        born=$(_mem_epoch "$created" "$f")
+        age=$(_mem_age "$created" "$f" "$now" "$born")
+        if (( fresh > 0 )) && [[ -n "$born" ]]; then
+            elapsed=$(( now - born ))
+            (( elapsed < fresh )) && continue
+        fi
         ftype=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^type:/{sub(/^type:[[:space:]]*/, ""); print}' "$f")
         body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" | sed '/./,$!d' | head -1 | sed 's/^# *//' | cut -c1-140)
         [[ -n "$body" ]] || continue
