@@ -581,10 +581,15 @@ _ctx_rollup_body() {
     esac
 }
 
+# A staged writer must produce a valid complete block before publication.
+_ctx_valid_block() {
+    [[ -s "$1" ]] && jq -e 'type == "object" and (.tier | type == "number") and (.summary | type == "string")' "$1" >/dev/null 2>&1
+}
+
 # Write one sealed tier-1 block over filtered-step indices [s,e) (TSV lines s+1..e).
 _ctx_seal_tier1() {
-    local s=$1 e=$2 file rows text fid lid body
-    file=$(_ctx_blockfile 1 "$s" "$e"); [[ -f "$file" ]] && return 0
+    local s=$1 e=$2 file rows text fid lid body staged
+    file=$(_ctx_blockfile 1 "$s" "$e"); [[ -s "$file" ]] && return 0
     # Keepalive: _ctx_run breaks locks idle >30min as stale, but a --backfill
     # legitimately seals for hours. Refresh the lock before each seal so a
     # LIVE builder never looks stale — a second concurrent builder would
@@ -596,6 +601,7 @@ _ctx_seal_tier1() {
     note "rollup t1 [$s,$e)"
     body=$(_ctx_rollup_body 1 "$s" "$e" "$text") || return 1
     mkdir -p "$(dirname "$file")"
+    staged=$(mktemp "$file.tmp.XXXXXX") || return 1
     jq -n -c --argjson tier 1 --argjson start "$s" --argjson stop "$e" --argjson n "$((e - s))" \
         --argjson body "$body" --arg fid "$fid" --arg lid "$lid" \
         --arg model "$MAP_MODEL" --argjson pv "$ROLLUP_PROMPT_VERSION" --arg created "$(date +%Y-%m-%dT%H:%M:%S)" '
@@ -603,14 +609,18 @@ _ctx_seal_tier1() {
          summary:($body.summary // ""), themes:($body.themes // []),
          step_ids:(($body.step_ids // []) | if length==0 then [$fid,$lid] else . end),
          model:$model, prompt_version:$pv, created:$created}
-        + (if $body.refused then {refused:true} else {} end)' > "$file"
+        + (if $body.refused then {refused:true} else {} end)' > "$staged" && _ctx_valid_block "$staged" && mv "$staged" "$file" || {
+        rm -f "$staged"
+        note "rollup t1 [$s,$e): could not publish block, stopping the build here"
+        return 1
+    }
     _CTX_SEALED=$((_CTX_SEALED + 1))
 }
 
 # Write one sealed tier-k block (k>1) over indices [s,e), rolled up from tier k-1.
 _ctx_seal_tierk() {
-    local tier=$1 s=$2 e=$3 file childblk c cf lines fallback body
-    file=$(_ctx_blockfile "$tier" "$s" "$e"); [[ -f "$file" ]] && return 0
+    local tier=$1 s=$2 e=$3 file childblk c cf lines fallback body staged
+    file=$(_ctx_blockfile "$tier" "$s" "$e"); [[ -s "$file" ]] && return 0
     touch "$ROLLUP_LOCK" 2>/dev/null || true   # keepalive, see _ctx_seal_tier1
     childblk=$(_ctx_pow "$FANOUT" $((tier - 1)))
     lines=""; fallback=""; c=$s
@@ -628,6 +638,7 @@ _ctx_seal_tierk() {
     # once the payload outgrows the pipe buffer (large --fanout).
     fb_json=$(printf '%s' "$fallback" | awk 'NF && ++c <= 4' | jq -R . | jq -sc .)
     mkdir -p "$(dirname "$file")"
+    staged=$(mktemp "$file.tmp.XXXXXX") || return 1
     jq -n -c --argjson tier "$tier" --argjson start "$s" --argjson stop "$e" --argjson n "$((e - s))" \
         --argjson body "$body" --argjson fb "$fb_json" \
         --arg model "$MAP_MODEL" --argjson pv "$ROLLUP_PROMPT_VERSION" --arg created "$(date +%Y-%m-%dT%H:%M:%S)" '
@@ -635,7 +646,11 @@ _ctx_seal_tierk() {
          summary:($body.summary // ""), themes:($body.themes // []),
          step_ids:(($body.step_ids // []) | if length==0 then $fb else . end),
          model:$model, prompt_version:$pv, created:$created}
-        + (if $body.refused then {refused:true} else {} end)' > "$file"
+        + (if $body.refused then {refused:true} else {} end)' > "$staged" && _ctx_valid_block "$staged" && mv "$staged" "$file" || {
+        rm -f "$staged"
+        note "rollup t$tier [$s,$e): could not publish block, stopping the build here"
+        return 1
+    }
     _CTX_SEALED=$((_CTX_SEALED + 1))
 }
 
@@ -674,7 +689,7 @@ _ctx_build() {
         for (( b = 0; b < nblocks; b++ )); do
             s=$(( b * blk )); e=$(( (b + 1) * blk ))
             (( s < start )) && continue
-            [[ -f "$(_ctx_blockfile "$tier" "$s" "$e")" ]] && continue
+            [[ -s "$(_ctx_blockfile "$tier" "$s" "$e")" ]] && continue
             if (( max > 0 && _CTX_SEALED >= max )); then
                 note "sealed $_CTX_SEALED blocks, the cap for one call; the rest waits"
                 return 0
