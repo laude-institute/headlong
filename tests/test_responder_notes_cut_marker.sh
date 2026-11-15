@@ -94,12 +94,14 @@ if grep -q ' (+200 more: full message in the raw log)' "$STUB_NOTES_USER"; then
 else
     bad "an 800-char row carries the cut marker with the dropped count" "$(grep -oE 'them: A+[^(]*' "$STUB_NOTES_USER" | head -1 | cut -c1-100)"
 fi
-if grep -qE 'A{600} \(\+200 more' "$STUB_NOTES_USER"; then
+# BSD grep caps repetition bounds at 255, so the long-run assertions
+# decompose each bound into chunks under that cap.
+if grep -qE 'A{200}A{200}A{200} \(\+200 more' "$STUB_NOTES_USER"; then
     ok "the marked row keeps a 600-char prefix before the marker"
 else
-    bad "the marked row keeps a 600-char prefix before the marker" "$(grep -oE 'A{595,}' "$STUB_NOTES_USER" | awk '{print length($0)}')"
+    bad "the marked row keeps a 600-char prefix before the marker" "$(grep -oE 'A{250}A{250}A{95}A*' "$STUB_NOTES_USER" | awk '{print length($0)}')"
 fi
-if ! grep -qE 'A{601}' "$STUB_NOTES_USER"; then
+if ! grep -qE 'A{250}A{250}A{101}' "$STUB_NOTES_USER"; then
     ok "the notes prompt shows at most 600 chars of the cut row"
 else
     bad "the notes prompt shows at most 600 chars of the cut row" "prefix runs past 600"
@@ -135,10 +137,10 @@ else
 fi
 
 # --- 5. the reply path renders content whole, no 600 cap ------------------
-if grep -qE 'A{800}' "$STUB_REPLY_USER"; then
+if grep -qE 'A{200}A{200}A{200}A{200}' "$STUB_REPLY_USER"; then
     ok "the reply prompt carries all 800 chars of the long message"
 else
-    bad "the reply prompt carries the whole long message" "$(grep -oE 'A{590,}' "$STUB_REPLY_USER" | awk '{print length($0)}' | head -1)"
+    bad "the reply prompt carries the whole long message" "$(grep -oE 'A{250}A{250}A{90}A*' "$STUB_REPLY_USER" | awk '{print length($0)}' | head -1)"
 fi
 if ! grep -q 'more: full message in the raw log' "$STUB_REPLY_USER"; then
     ok "the reply path takes no marker route"
