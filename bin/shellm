@@ -2420,7 +2420,7 @@ generate_run_summary() {
     for f in "${file_paths[@]+"${file_paths[@]}"}"; do
         if [[ -f "$f" ]]; then
             local fbytes
-            fbytes=$(wc -c < "$f" 2>/dev/null || echo 0)
+            fbytes=$( { wc -c < "$f" 2>/dev/null || echo 0; } | tr -d ' ')
             local avail=$((max_ctx - ${#combined}))
             if [[ $avail -le 0 ]]; then
                 combined+=$'\n\nFile '"$f"$':\n(+'"$fbytes"$' bytes more: full file at '"$f"$')'
