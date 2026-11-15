@@ -332,7 +332,7 @@ ${runtime_line:+$runtime_line
 
 }${workspace_section:+$workspace_section
 
-}${life_section}Recent stream (last $THINK_CONTEXT_TAIL durable steps; \`traj tail -n 200\` shows more, verbatim):
+}${life_section}Recent stream (last $THINK_CONTEXT_TAIL durable steps; \`traj tail -n 200\` shows more, verbatim; a \`collapsed\` field names how many raw rows a line stands in for, stuttered copies of one step or idle and error runs merged, so a marked line is a compression, never the whole record):
 $recent_context
 
 ${outbound_section:+$outbound_section

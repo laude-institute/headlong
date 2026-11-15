@@ -526,6 +526,10 @@ _responder_scan() {
 #     reads as elapsed time without eating the whole window.
 #   - `error` steps (a run that died with no durable step) are IN, collapsed
 #     the same way, so the mind can see its own failed runs.
+# A row may already carry a dedup copy count (stuttered copies of one
+# step); the two counters compose — the content keeps naming runs, the
+# `collapsed` field names the raw-row sum, runs and copies together — so
+# the marker never lies about what the line stands for.
 # The window is the last N lines AFTER collapsing. It used to be cut first, so
 # 20 idle wakes filled the window and collapsed into one "idle x20" line: on
 # 2026-09-18 that was the whole stream on three of the four wakes that re-sent
@@ -544,17 +548,19 @@ _RECENT_STREAM_COLLAPSE_JQ='
   def collapsible: .type == "idle" or .type == "error";
   reduce .[] as $s ([];
     if ($s | collapsible) and length > 0 and .[-1].type == $s.type
-    then .[:-1] + [ .[-1] | .n += 1 | .last_ts = ($s.ts // .last_ts)
+    then .[:-1] + [ .[-1] | .n += 1
+                    | .raw = ((.raw // 1) + (($s.collapsed // 1)))
+                    | .last_ts = ($s.ts // .last_ts)
                     | .step_id = ($s.step_id // .step_id) | .rc = ($s.rc // .rc) ]
-    else . + [ $s + {n: 1, first_ts: ($s.ts // ""), last_ts: ($s.ts // "")} ] end)
+    else . + [ $s + {n: 1, raw: (($s.collapsed // 1)), first_ts: ($s.ts // ""), last_ts: ($s.ts // "")} ] end)
   | map(if (. | collapsible) and .n > 1
         then (dur(.first_ts; .last_ts)) as $d
              | .content = (if .type == "idle" then "idle" else "run failed" end)
                           + " x\(.n)" + (if $d == "" then "" else " over \($d)" end)
                           + (if .type == "error" and .rc != null then " (rc=\(.rc))" else "" end)
-             | .collapsed = .n
+             | .collapsed = .raw
         else . end
-        | del(.n, .first_ts, .last_ts))
+        | del(.n, .raw, .first_ts, .last_ts))
   | .[]'
 
 # An idle run writes an idle step and then a final that says the same thing
@@ -594,13 +600,23 @@ _RECENT_STREAM_PAIR_JQ='
 # shape. Runs before pairing and the window cut so N still means N distinct
 # events. bin/traj reads and the recap fold read rows through their own
 # paths and owe the same rule; those seams are named, not widened here.
+# The collapse is never silent (keep the cap, mark the cut): the surviving
+# row carries the copy count in the same `collapsed` field the idle family
+# uses, added as a field so content is never rewritten, and absent when
+# nothing was deduped. The raw log keeps every copy: citation readers are
+# the whole-text route. The marker pays for itself in the budget the render
+# serves: it adds no lines (the window cut follows the collapse) and its
+# bytes ride inside a line whose dropped copies already paid for them; the
+# PR 240 recap divisor move is the family precedent for counting a marker
+# into a render budget.
 _RECENT_STREAM_DEDUP_JQ='
   reduce .[] as $s ([];
     if (($s.run_id // "") | tostring) != "" and length > 0
        and (((.[-1].run_id // "") | tostring) == (($s.run_id) | tostring))
        and ((.[-1].type // "") == ($s.type // ""))
        and (((.[-1].content // "") | tostring) == (($s.content // "") | tostring))
-    then . else . + [$s] end)
+    then .[:-1] + [ .[-1] | .collapsed = ((.collapsed // 1) + 1) ]
+    else . + [$s] end)
   | .[]'
 
 # A run's final is all the next wake sees of that run (the mind's render is

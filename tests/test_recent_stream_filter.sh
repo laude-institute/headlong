@@ -215,6 +215,59 @@ case "$ids" in *" b4 mid b5 "*) ok "same-run copies separated by another row bot
 ids3=$(stream 4 | jq -r .step_id | tr '\n' ' ')
 [[ "$ids3" == "n2 b4 mid b5 " ]] && ok "dedup runs before the window cut (N=4 -> n2 b4 mid b5)" || bad "dedup before the window cut" "got $ids3"
 
+# Visible marker (2026-11-15): the collapse must never be silent. The
+# surviving row carries the number of raw copies it stands for in the same
+# `collapsed` field the idle family uses, so a stutter is seen and never
+# passes as one clean turn (keep the cap, mark the cut). Rows outside a
+# burst render with no marker, the marker adds a field and never rewrites
+# content, and the raw log keeps every copy: citation readers are the
+# whole-text route.
+mk=$(stream 40)
+mark=$(printf '%s\n' "$mk" | jq -c 'select(.step_id == "b1")')
+printf '%s\n' "$mark" | jq -e '.collapsed == 3' >/dev/null && ok "the collapsed burst carries a visible copy count (collapsed=3)" || bad "visible copy count" "got $mark"
+printf '%s\n' "$mark" | jq -e '.content == "one turn minted three times"' >/dev/null && ok "the marker adds a field, content stays untouched" || bad "content rewritten by marker" "got $mark"
+printf '%s\n' "$mk" | jq -e 'select(.step_id == "rr" or .step_id == "mid" or .step_id == "n1") | has("collapsed") | not' >/dev/null && ok "rows outside a burst render with no marker" || bad "marker on an untouched row" "$(printf '%s\n' "$mk" | jq -c 'select(.step_id == "rr" or .step_id == "mid" or .step_id == "n1")')"
+raw_ids=$(traj cat "$TRAJ_ID" --raw | jq -r 'select(.run_id == "run-burst" and .type == "thought") | .step_id' | tr '\n' ' ')
+[[ "$raw_ids" == "b1 b2 b3 " ]] && ok "citation readers stay raw: traj cat --raw lists all three copies" || bad "citation path collapsed" "got $raw_ids"
+
+# Composed collapse (2026-11-15): a stuttered idle inside one run can also
+# run-collapse with the next run's idle line. The marker must survive the
+# compose and name the true raw-row count, never be overwritten by the
+# run count; the content keeps naming the run count.
+step i9a idle idle 80 ',"run_id":"run-ia"'
+step i9b idle idle 79 ',"run_id":"run-ia"'
+step fia final "Idle, one run, its idle stuttered" 78 ',"run_id":"run-ia"'
+step i10 idle idle 70 ',"run_id":"run-ib"'
+step fib final "Idle, plain" 69 ',"run_id":"run-ib"'
+mk2=$(stream 40)
+merged=$(printf '%s\n' "$mk2" | jq -c 'select(.type == "idle" and .run_id == "run-ia")')
+printf '%s\n' "$merged" | jq -e '.collapsed == 3' >/dev/null && ok "a stuttered idle composing with a run collapse keeps the true raw count (collapsed=3: two copies plus one plain idle)" || bad "composed marker lost or wrong" "got $merged"
+printf '%s\n' "$merged" | jq -r .content | grep -q '^idle x2' && ok "the composed line still names the run count in its content" || bad "composed content" "got $merged"
+
+# A stuttered idle pair inside one run, alone (no later idle run to compose
+# with), keeps its marker through the run-collapse's untouched arm.
+# The separator matters, and its type does too: the run collapse merges
+# consecutive idle rows across runs, and the base filter drops types it
+# does not render, so the separator must be a rendered type (thought) or
+# run-ic's idles are absorbed into the previous test's idle line.
+step sep1 thought "separator" 41 ',"run_id":"run-sep"'
+step i11a idle idle 40 ',"run_id":"run-ic"'
+step i11b idle idle 39 ',"run_id":"run-ic"'
+step fi11 final "Idle, lone stuttered pair" 38 ',"run_id":"run-ic"'
+step wk2 work "work after" 37 ',"run_id":"run-id"'
+mk3=$(stream 40)
+lone=$(printf '%s\n' "$mk3" | jq -c 'select(.type == "idle" and .run_id == "run-ic")')
+printf '%s\n' "$lone" | jq -e '.collapsed == 2' >/dev/null && ok "a lone stuttered idle pair keeps collapsed=2" || bad "lone stutter marker" "got $lone"
+
+# The wake prompt header carries the consumer rule: a marked line is a
+# compression of N raw rows, never the whole record (the raw log and
+# traj tail are the whole-text route). Born red on the PR head, whose
+# header predates the marker.
+grep -q 'field names how many raw rows a line stands in for' "$REPO/thinkers/monolith/step" \
+  && ok "wake prompt header names the collapsed marker contract" \
+  || bad "header contract missing" "thinkers/monolith/step"
+
+
 echo
 echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]
