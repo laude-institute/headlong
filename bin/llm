@@ -218,7 +218,7 @@ _fs_line() {   # one complete line of emitted text; returns 0 when the first blo
         if [[ "$line" =~ $_fs_close_re ]]; then return 0; fi
         if [[ "$line" =~ $_fs_glued_re ]]; then
             local pre="${line%"${BASH_REMATCH[0]}"}"
-            if [[ -n "$pre" && "$pre" != *'`'* ]]; then return 0; fi
+            if [[ "$pre" =~ [^[:space:]] && "$pre" != *'`'* ]]; then return 0; fi
         fi
     fi
     _fs_try_open_heredoc "$line"
