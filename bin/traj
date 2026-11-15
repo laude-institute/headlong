@@ -1060,11 +1060,14 @@ _format_line() {
             (.source // "-"),
             ((.ts // .timestamp // "0") | tostring),
             (.step_id // "-"),
-            (._traj_hex // "-")
+            (._traj_hex // "-"),
+            # The dedup copy count: "-" when nothing collapsed (see
+            # _dedup_tail_jq), so the trailing read never sees empty.
+            (.collapsed // "-")
         ' 2>/dev/null) || return 0
     [[ -n "$_fields" ]] || return 0
 
-    local entry_type content source ts step_id traj_hex
+    local entry_type content source ts step_id traj_hex collapsed
     # The capture drops trailing newlines, so a record whose last field is the
     # empty string arrives one line short. The process substitution this
     # replaces kept that newline and read the field as empty; keep doing so
@@ -1075,6 +1078,7 @@ _format_line() {
       read -r ts
       read -r step_id
       read -r traj_hex
+      read -r collapsed
     } <<< "$_fields" || true
     [[ -n "$entry_type" ]] || return 0
 
@@ -1083,6 +1087,7 @@ _format_line() {
     [[ "$source" == "-" ]] && source=""
     [[ "$step_id" == "-" ]] && step_id=""
     [[ "$traj_hex" == "-" ]] && traj_hex=""
+    [[ "$collapsed" == "-" ]] && collapsed=""
 
     # Extract date + time from timestamp
     local time_display="----/--/-- --:--:--"
@@ -1110,6 +1115,10 @@ _format_line() {
 
     local type_tag="$entry_type"
     [[ -n "$source" ]] && type_tag="$entry_type, $source"
+    # Visible copy count (keep the cap, mark the cut): a collapsed line
+    # names how many raw rows it stands in for, so one turn minted several
+    # times inside one run never passes as one clean step.
+    [[ -n "${collapsed:-}" ]] && type_tag="$type_tag (x${collapsed} copies)"
 
     local short_id="${step_id:0:8}"
     local traj_tag=""
@@ -1125,6 +1134,9 @@ _format_line() {
 
 cmd_tail() {
     local n=10 follow=0 raw=0 force_format=0 use_color=-1 traj_dir_opt="" traj_id_opt="" recursive=0 all_fields=0
+    # Read slack: the dedup runs before the -n cut (see _dedup_tail_jq), so
+    # the read pulls past n raw rows to bring a burst whole into the window.
+    local slack="${TRAJ_TAIL_DEDUP_SLACK:-256}"
     local -a filters=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1190,7 +1202,32 @@ TAILHELP
     local c_reset c_dim c_thought c_action c_observation c_human c_agent c_tp c_shell c_meta
     _setup_stream_format
 
-    # Exit cleanly on SIGINT/SIGPIPE
+    # Collapses one turn minted several times inside one run (the 2026-11-14
+# stutter: byte-identical content, fresh step ids, ~380ms apart) to a single
+# rendered line, the survivor carrying the copy count. Key matches the
+# prompt-side dedup (PR 252): run_id + type + content — step_id is minted
+# fresh per copy and ts drifts, so neither can key the fault away. Adjacent
+# rows of the same run sharing the key collapse onto the first copy; a
+# different run's identical text stays (cross-run repetition is legitimate),
+# rows without run_id stay, and copies separated by another row stay. Runs
+# before the -n window cut so the cut counts events, never phantom copies.
+# Only the formatted, unfiltered render collapses: raw output, --filter
+# reads and cat keep every copy as the citation view. Stage one tolerates
+# malformed lines the way the formatted path always has; stage two slurps
+# the parsed rows, so no window edge can drop the first row.
+_dedup_tail_jq() {
+    jq -cR 'fromjson? // empty' | jq -cs '
+      reduce .[] as $s ([];
+        if (($s.run_id // "") | tostring) != "" and length > 0
+           and (((.[-1].run_id // "") | tostring) == (($s.run_id) | tostring))
+           and ((.[-1].type // "") == ($s.type // ""))
+           and (((.[-1].content // "") | tostring) == (($s.content // "") | tostring))
+        then .[:-1] + [ .[-1] | .collapsed = ((.collapsed // 1) + 1) ]
+        else . + [$s] end)
+      | .[]'
+}
+
+# Exit cleanly on SIGINT/SIGPIPE
     trap 'exit 0' INT PIPE
 
     if [[ "$recursive" -eq 1 ]]; then
@@ -1201,12 +1238,23 @@ TAILHELP
         [[ -z "$_all_files" ]] && return 0
 
         local f hex  # also used by the follow block below
-        _sorted_tree_steps \
-            | tail -n "$n" \
-            | cut -f2- \
-            | while IFS= read -r line; do
-                _process_line "$line"
-            done
+        if [[ "$format" -eq 1 && "${#filters[@]}" -eq 0 ]]; then
+            _sorted_tree_steps \
+                | tail -n "$((n + slack))" \
+                | cut -f2- \
+                | _dedup_tail_jq \
+                | tail -n "$n" \
+                | while IFS= read -r line; do
+                    _process_line "$line"
+                done
+        else
+            _sorted_tree_steps \
+                | tail -n "$n" \
+                | cut -f2- \
+                | while IFS= read -r line; do
+                    _process_line "$line"
+                done
+        fi
 
         # Follow all files in the tree
         if [[ "$follow" -eq 1 ]]; then
@@ -1229,9 +1277,19 @@ TAILHELP
     elif [[ "$follow" -eq 1 ]]; then
         # Replay then follow (single file)
         if [[ -f "$traj_file" ]] && [[ "$n" -gt 0 ]]; then
-            tail -n "$n" "$traj_file" | while IFS= read -r line; do
-                _process_line "$line"
-            done
+            # Replay collapses (it renders the recent past); the live -F
+            # portion below stays raw: each arrival renders as it comes, and
+            # a live stutter shows as copies until the next replay collapses.
+            if [[ "$format" -eq 1 && "${#filters[@]}" -eq 0 ]]; then
+                tail -n "$((n + slack))" "$traj_file" | _dedup_tail_jq | tail -n "$n" \
+                    | while IFS= read -r line; do
+                        _process_line "$line"
+                    done
+            else
+                tail -n "$n" "$traj_file" | while IFS= read -r line; do
+                    _process_line "$line"
+                done
+            fi
         fi
         # Wait for file to exist
         while [[ ! -f "$traj_file" ]]; do
@@ -1242,9 +1300,16 @@ TAILHELP
         done
     else
         [[ -f "$traj_file" ]] || die "tail: trajectory file not found: $traj_file"
-        tail -n "$n" "$traj_file" | while IFS= read -r line; do
-            _process_line "$line"
-        done
+        if [[ "$format" -eq 1 && "${#filters[@]}" -eq 0 ]]; then
+            tail -n "$((n + slack))" "$traj_file" | _dedup_tail_jq | tail -n "$n" \
+                | while IFS= read -r line; do
+                    _process_line "$line"
+                done
+        else
+            tail -n "$n" "$traj_file" | while IFS= read -r line; do
+                _process_line "$line"
+            done
+        fi
     fi
 }
 
