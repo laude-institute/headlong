@@ -282,7 +282,7 @@ _window_ranges() {
 
 _llm_json() {
     # _llm_json <model> <system_prompt> <user_text> [max_tokens]
-    # Returns validated JSON or fails. The cap must leave room for
+    # Returns exactly one validated JSON object or fails. The cap must leave room for
     # reasoning-channel tokens on models that bill them against max_tokens.
     # Returns 2 when the model refused the input: that is decided by the
     # content, so a retry gets the same answer.
@@ -293,12 +293,12 @@ _llm_json() {
         cat "$errf" >&2
         if grep -q 'refused:' "$errf"; then rm -f "$errf"; return 2; fi
         cleaned=$(printf '%s\n' "$raw" | sed '/^```/d')
-        if printf '%s' "$cleaned" | jq -e . >/dev/null 2>&1; then
+        if printf '%s' "$cleaned" | jq -se 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1; then
             rm -f "$errf"
             printf '%s' "$cleaned"
             return 0
         fi
-        note "model returned invalid JSON (attempt $attempt), retrying"
+        note "model did not return a single JSON object (attempt $attempt), retrying"
     done
     rm -f "$errf"
     return 1
