@@ -43,7 +43,7 @@ KEEP_TYPES='["thought","action","observation","message","feedback","final","shel
 # Cached-render format version: bump when the TSV row format changes, so a
 # stale rendered.tsv is rebuilt instead of mixing formats. (A KEEP_TYPES
 # change is detected independently — the keep set is stored in the meta.)
-RENDER_VERSION=1
+RENDER_VERSION=2
 
 # --- Tiered rollups / --context (see design/tiered_memory.md) ---
 CONTEXT=0
@@ -51,7 +51,7 @@ BACKFILL=0                             # --backfill: also summarize pre-enable h
 FANOUT="${ROLLUP_FANOUT:-10}"          # F: children per tier; tier k covers F^k steps
 CTX_BUDGET="${MONOLITH_CONTEXT_BUDGET:-auto}"   # token budget; auto = fraction of model window
 CTX_RAW_TAIL="${ROLLUP_RAW_TAIL:-auto}"         # R: verbatim recent steps; auto = from budget
-ROLLUP_PROMPT_VERSION=5                 # stamped into sealed blocks for honest determinism (v2: first-person voice; v3: outcomes, not temperament; v5: supersession citations)
+ROLLUP_PROMPT_VERSION=6                 # stamped into sealed blocks for honest determinism (v2: first-person voice; v3: outcomes, not temperament; v5: supersession citations; v6: collapsed-copy markers explained)
 # Output cap for one rollup call. Thinking tokens count against it on
 # reasoning models: at 1024, Sonnet 5 spent about 700 thinking and was cut
 # off mid-JSON on a quarter of Audel's rollups (42 of 166, 2026-10-12).
@@ -245,10 +245,50 @@ _render_steps() {
                         | gsub("[\\t\\n\\r]+"; " ") | .[0:500])
                    end)
             ),
-            ((.ts // "") | epoch_min)
+            ((.ts // "") | epoch_min),
+            # Column 6, the dedup key (render format v2): run_id + type +
+            # text, the PR 252 fault key. Step_id cannot key the fault (it
+            # is minted fresh per copy) and ts cannot (it drifts); the same
+            # run byte-identical text is the turn identity. Empty when
+            # there is no run_id: rows without a run never merge. The text
+            # basis matches the render fallback (content/command/tldr)
+            # so two rows that render differently never key together.
+            (if ((.run_id // "") | tostring) == "" then ""
+             else (((.run_id // "") | tostring) + "\u0001"
+                   + ((.type // "") | tostring) + "\u0001"
+                   + (((.content // .command // .tldr // "") // "") | tostring)) end)
         ] | @tsv
     ' 2>/dev/null || true
 }
+
+# Collapses one turn minted several times inside one run (the 2026-11-14
+# stutter: byte-identical content, fresh step ids, ~380ms apart) as a
+# rendered-rows transform for the fold consumers, keeping the stored TSV
+# whole: the TSV is the resume key, the raw-line positions and the citable
+# record, and a model reads it only through the three cuts that pipe through
+# here (episode windows, tier-1 seals, the context raw tail). Adjacent rows
+# of one run sharing the key (column 6) collapse onto the first copy, whose
+# rendered text gains the visible marker naming the copy count, so a
+# stutter is seen and never passes as one clean step (keep the cap, mark
+# the cut). Rows without run_id never merge; another run's identical text is
+# legitimate repetition and stays; copies separated by another row stay.
+_FOLD_DEDUP_AWK='
+    {
+        if ($6 != "" && $6 == key) { copies++; next }
+        if (have) flush()
+        key = $6; first = $0
+        f1 = $1; f2 = $2; f3 = $3; f4 = $4; f5 = $5
+        copies = 1; have = 1
+    }
+    END { if (have) flush() }
+    function flush() {
+        if (copies > 1)
+            print f1 "\t" f2 "\t" f3 "\t" f4 " [(x" copies " copies of this step collapsed)]" "\t" f5 "\t" key
+        else
+            print first
+    }
+'
+_fold_dedup() { awk -F'\t' "$_FOLD_DEDUP_AWK"; }
 
 # Emit "start end reason" window ranges over the rendered TSV. A window
 # closes at the first of: a time gap >= GAP_MINUTES before the next step
@@ -309,7 +349,8 @@ _WINDOW_SYSTEM='You summarize one window of an AI agent'\''s mind log. Lines loo
  "summary": "2-4 sentences on outcomes: what the agent did, decided, learned, and left open, naming people, artifacts, and threads. Events, not character: no words for its habits or temperament (not disciplined, restrained, patient, waiting mode); if it idled, say once what it was waiting for",
  "themes": ["1-4 short kebab-case topics"],
  "notable_steps": [{"step": "8-char id from the window", "note": "why it matters (<=15 words)"}]}
-Pick 3-6 notable steps. Use only step ids that literally appear in the window.'
+Pick 3-6 notable steps. Use only step ids that literally appear in the window.
+A line marked "(xN copies of this step collapsed)" stands for N adjacent identical raw rows of one turn: summarize that turn once, never as N separate events.'
 
 _REDUCE_SYSTEM='You are given numbered episode summaries covering an AI agent'\''s life log in chronological order. Reply with ONLY a JSON object, no markdown fences:
 {"arc": "1-2 paragraphs narrating the overall arc: what this agent has been up to, how its focus evolved, where it stands now",
@@ -333,8 +374,8 @@ _summarize_window() {
     last_step=$(tail -1 <<<"$rows" | cut -f2)
     first_ts=$(head -1 <<<"$rows" | cut -f3)
     last_ts=$(tail -1 <<<"$rows" | cut -f3)
-    n=$(wc -l <<<"$rows" | tr -d ' ')
-    window_text=$(cut -f4 <<<"$rows")
+    window_text=$(_fold_dedup <<<"$rows" | cut -f4)
+    n=$(wc -l <<<"$window_text" | tr -d ' ')
 
     note "summarizing episode $idx ($n steps, $first_ts → $last_ts)"
     local body
@@ -519,7 +560,8 @@ _print_json() {
 _ROLLUP_SYSTEM='You are the AI agent whose life log this is. Summarize this one slice of your own history in the FIRST PERSON — say "I", never "the agent". The input is a chronological list of lines: either raw steps "[id] type: content", or child rollup summaries (already first person). Child rollup summaries arrive prefixed by their step-id list, e.g. "[id1,id2] I did X"; when your summary corrects or supersedes a claim stated in an earlier child window supplied in this same input, and the correcting evidence is also present in this input, name that child by quoting its "[id,...]" prefix verbatim in your summary text, e.g. "this corrects [old-ids]: the earlier claim of X is superseded because Y". Cite only prefixes actually supplied here; do not invent or infer a prefix for an unseen window. This names a correction target in the new parent summary; it does not rewrite or link separately sealed siblings that are absent from this input. Reply with ONLY a JSON object, no markdown fences:
 {"summary": "2-3 first-person sentences on outcomes: what I did, decided, learned, and left open, naming people, artifacts, and threads. Events, not my character: no words for my habits or temperament (not disciplined, restrained, patient, waiting mode); if I idled, say once what I was waiting for",
  "themes": ["1-4 short kebab-case topics"],
- "step_ids": ["up to 4 of the most important 8-char step ids that literally appear in the input"]}'
+ "step_ids": ["up to 4 of the most important 8-char step ids that literally appear in the input"]}
+A line marked "(xN copies of this step collapsed)" stands for N adjacent identical raw rows of one turn: summarize that turn once, never as N separate events.'
 
 _ctx_pow() { local b=$1 e=$2 r=1 i=0; while [ "$i" -lt "$e" ]; do r=$((r * b)); i=$((i + 1)); done; printf '%s' "$r"; }
 
@@ -591,7 +633,7 @@ _ctx_seal_tier1() {
     # corrupt the shared rendered.tsv.
     touch "$ROLLUP_LOCK" 2>/dev/null || true
     rows=$(sed -n "$((s + 1)),${e}p" "$RENDERED_TSV")
-    text=$(cut -f4 <<<"$rows")
+    text=$(_fold_dedup <<<"$rows" | cut -f4)
     fid=$(head -1 <<<"$rows" | cut -f2); lid=$(tail -1 <<<"$rows" | cut -f2)
     note "rollup t1 [$s,$e)"
     body=$(_ctx_rollup_body 1 "$s" "$e" "$text") || return 1
@@ -735,7 +777,7 @@ _ctx_assemble_base() {
     # remainder": the caller (the monolith) shows recent steps itself.
     [[ "$CTX_RAW_TAIL" == "0" ]] && return 0
     printf '=== RIGHT NOW — the last %s steps, verbatim ===\n' "$(( n - cut0 ))"
-    sed -n "$(( cut0 + 1 )),${n}p" "$RENDERED_TSV" | cut -f4
+    sed -n "$(( cut0 + 1 )),${n}p" "$RENDERED_TSV" | _fold_dedup | cut -f4
 }
 
 # Correction lookup is deliberately partial: at most 128 deterministic paths,

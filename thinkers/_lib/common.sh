@@ -542,6 +542,10 @@ _responder_scan() {
 #     reads as elapsed time without eating the whole window.
 #   - `error` steps (a run that died with no durable step) are IN, collapsed
 #     the same way, so the mind can see its own failed runs.
+# A row may already carry a dedup copy count (stuttered copies of one
+# step); the two counters compose — the content keeps naming runs, the
+# `collapsed` field names the raw-row sum, runs and copies together — so
+# the marker never lies about what the line stands for.
 # The window is the last N lines AFTER collapsing. It used to be cut first, so
 # 20 idle wakes filled the window and collapsed into one "idle x20" line: on
 # 2026-09-18 that was the whole stream on three of the four wakes that re-sent
@@ -560,17 +564,19 @@ _RECENT_STREAM_COLLAPSE_JQ='
   def collapsible: .type == "idle" or .type == "error";
   reduce .[] as $s ([];
     if ($s | collapsible) and length > 0 and .[-1].type == $s.type
-    then .[:-1] + [ .[-1] | .n += 1 | .last_ts = ($s.ts // .last_ts)
+    then .[:-1] + [ .[-1] | .n += 1
+                    | .raw = ((.raw // 1) + (($s.collapsed // 1)))
+                    | .last_ts = ($s.ts // .last_ts)
                     | .step_id = ($s.step_id // .step_id) | .rc = ($s.rc // .rc) ]
-    else . + [ $s + {n: 1, first_ts: ($s.ts // ""), last_ts: ($s.ts // "")} ] end)
+    else . + [ $s + {n: 1, raw: (($s.collapsed // 1)), first_ts: ($s.ts // ""), last_ts: ($s.ts // "")} ] end)
   | map(if (. | collapsible) and .n > 1
         then (dur(.first_ts; .last_ts)) as $d
              | .content = (if .type == "idle" then "idle" else "run failed" end)
                           + " x\(.n)" + (if $d == "" then "" else " over \($d)" end)
                           + (if .type == "error" and .rc != null then " (rc=\(.rc))" else "" end)
-             | .collapsed = .n
+             | .collapsed = .raw
         else . end
-        | del(.n, .first_ts, .last_ts))
+        | del(.n, .raw, .first_ts, .last_ts))
   | .[]'
 
 # An idle run writes an idle step and then a final that says the same thing
@@ -595,6 +601,37 @@ _RECENT_STREAM_PAIR_JQ='
          | if $j != null then del(.[$j]) + [$s]
            elif (map(select(.type == "idle" and ((.run_id // "") | tostring) == $r)) | length) > 0 then .
            else . + [$s] end
+    else . + [$s] end)
+  | .[]'
+
+# Dedup by turn (2026-11-14): a wake's text fault can mint one turn several
+# times inside one run — the 06:54:47Z burst tripled a thought with fresh step
+# ids and a 380ms drifting ts but byte-identical content, and every wake that
+# read the stream saw one turn as three. Adjacent rows of one run sharing
+# (run_id, type, content) are one event and render once. step_id cannot key
+# the dedup (the fault mints it fresh per copy) and ts cannot either (it
+# drifts). Identical content in a different run is legitimate repetition and
+# stays, rows with no run id are untouched, and copies separated by another
+# row stay: the scope is consecutive rows of one run, the measured fault
+# shape. Runs before pairing and the window cut so N still means N distinct
+# events. bin/traj reads and the recap fold read rows through their own
+# paths and owe the same rule; those seams are named, not widened here.
+# The collapse is never silent (keep the cap, mark the cut): the surviving
+# row carries the copy count in the same `collapsed` field the idle family
+# uses, added as a field so content is never rewritten, and absent when
+# nothing was deduped. The raw log keeps every copy: citation readers are
+# the whole-text route. The marker pays for itself in the budget the render
+# serves: it adds no lines (the window cut follows the collapse) and its
+# bytes ride inside a line whose dropped copies already paid for them; the
+# PR 240 recap divisor move is the family precedent for counting a marker
+# into a render budget.
+_RECENT_STREAM_DEDUP_JQ='
+  reduce .[] as $s ([];
+    if (($s.run_id // "") | tostring) != "" and length > 0
+       and (((.[-1].run_id // "") | tostring) == (($s.run_id) | tostring))
+       and ((.[-1].type // "") == ($s.type // ""))
+       and (((.[-1].content // "") | tostring) == (($s.content // "") | tostring))
+    then .[:-1] + [ .[-1] | .collapsed = ((.collapsed // 1) + 1) ]
     else . + [$s] end)
   | .[]'
 
@@ -632,6 +669,7 @@ _recent_stream() {
               then .details = "traj tail -n 400 --filter run_id=" + (.run_id | tostring) else . end
             | with_entries(select(.key | IN("type", "content", "source", "ts", "from", "to", "run_id", "step_id", "request", "person", "resolves", "trigger_step", "reply_to", "follow_up", "decision", "deferred", "rc", "details", "status", "reason")))' \
         2>/dev/null \
+        | jq -cs "$_RECENT_STREAM_DEDUP_JQ" 2>/dev/null \
         | jq -cs "$_RECENT_STREAM_PAIR_JQ" 2>/dev/null \
         | jq -cs "$_RECENT_STREAM_COLLAPSE_JQ" 2>/dev/null \
         | tail -n "$n" \
