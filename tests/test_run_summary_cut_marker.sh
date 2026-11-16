@@ -130,6 +130,11 @@ PC="$WORK/prompt-c.txt"
 { printf '%s ' "$HEAD_C"; head -c 20470 /dev/zero | tr '\0' z; } > "$PC"
 SC="$WORK/stdin-c.txt"; printf '%s' "$STDTOK_C filler text for arm C stdin" > "$SC"
 FC="$WORK/file-c.txt"; printf '%s' "$FILETOK_C filler text for arm C file" > "$FC"
+# bin/shellm realpath-resolves each -f path before the summary renders the
+# marker (Docker mount compatibility), and macOS puts mktemp dirs behind the
+# /var -> /private/var symlink, so the marker names the canonical path. The
+# assertions below grep that canonical form so they hold on macOS too.
+FC=$(realpath "$FC")
 STDIN_FILE="$SC" run_shellm --prompt-file "$PC" -f "$FC"
 SUMC=$(summary_line "$HEAD_C")
 SLEN_C=$(wc -c < "$SC" | tr -d ' ')
@@ -146,6 +151,9 @@ PD="$HEAD_D small prompt"
 SD="armD small stdin"
 FD="$WORK/file-d.txt"
 { head -c 20460 /dev/zero | tr '\0' w; printf '%s' "$TAIL_D"; } > "$FD"
+# Same as arm C: the marker path is realpath-resolved, so the assertion
+# expects the canonical form.
+FD=$(realpath "$FD")
 FLEN_D=$(wc -c < "$FD" | tr -d ' ')
 CB_D="CLI argument: $PD"$'\n\nstdin:\n'"$SD"
 AVAIL_D=$((20000 - ${#CB_D}))
