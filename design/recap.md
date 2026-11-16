@@ -124,8 +124,10 @@ Sonnet-class model.
 - No other tool can mistake `recap/` for a trajectory: child-trajectory
   discovery follows `fork` steps and requires a `trajectory.jsonl`
   inside, and identity discovery prunes `trajectories/` entirely.
-- Model output is validated as JSON (fence-stripped, one retry) before
-  anything is written.
+- Model output must be exactly one JSON object before a summary is written.
+  Markdown fences are stripped, and an unusable response is retried once.
+  Empty responses, arrays, scalars, malformed JSON, and multiple documents
+  are rejected. Model refusals retain their separate handling.
 
 ## Web dash integration
 
@@ -162,6 +164,9 @@ Standard shape: the CLI owns the logic, the web layer moves bytes.
 
 ## Testing
 
+- `tests/test_recap_response_validation.sh` checks response shape, returned
+  content, retries, and refusal status. CLI cases cover episode and theme
+  failures and recovery, plus partial context when a rollup cannot be built.
 - `tests/test_recap.sh` (25 checks) stubs `llm` with canned JSON and
   exercises the real filtering/windowing/caching machinery: idle+seed
   exclusion, window math, partial-tail lifecycle, incremental no-op, JSON
