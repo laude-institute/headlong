@@ -82,7 +82,7 @@ printf '%s\n' "$out" | jq -e 'select(.step_id == "f1")' >/dev/null 2>&1 && ok "f
 # A final is all the next wake sees of its run, so it carries a command that
 # prints the run's raw steps; a final without a run id (old rows) carries none.
 details=$(printf '%s\n' "$out" | jq -r 'select(.step_id == "f1") | .details // "none"')
-[[ "$details" == "traj tail -n 400 --filter run_id=run-0001" ]] && ok "finals carry a details command for their run" || bad "finals carry a details command for their run" "got: $details"
+[[ "$details" == "traj tail --full-scan -n 400 --filter run_id=run-0001" ]] && ok "finals carry a details command for their run" || bad "finals carry a details command for their run" "got: $details"
 
 
 idle_lines=$(printf '%s\n' "$out" | jq -c 'select(.type == "idle")')

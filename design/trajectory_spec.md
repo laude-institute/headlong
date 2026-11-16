@@ -553,7 +553,7 @@ All commands accept `[ID]` as an optional positional argument (trajectory ID, UU
 | `fork` | `fork [ID] [--child CHILD_ID] [--slug TEXT] [--step-id UUID]` | Append a fork step. Auto-creates child traj if `--child` omitted. |
 | `merge` | `merge <child_id> [ID] [--field key=val ...]` | Append a merge step from a completed child. |
 | `show` | `show <id> [--full] [--field F]` | Show a trajectory or step by ID. Searches all files in traj_dir. |
-| `tail` | `tail [ID] [-n N] [-f] [--type T1,T2]` | Stream recent steps (like `tail` for JSONL). |
+| `tail` | `tail [ID] [-n N] [-f] [--filter F] [--full-scan] [-r]` | Filter the last N physical lines. `--full-scan` scans the file for the last N matches and can be slow on large files. Recursive tail already scans the tree and counts matches. |
 | `search` | `search <pattern> [ID] [--field F] [-i] [-C N] [-E]` | Search step fields for a pattern. |
 | `count` | `count [ID]` | Print step count. |
 | `last` | `last [ID] [--field KEY]` | Print the last step. `--field` extracts one field. |
