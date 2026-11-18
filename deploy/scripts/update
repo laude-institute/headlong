@@ -71,4 +71,4 @@ run_script_on_box '
     if [ -f /opt/shellm/app/deploy/check-deploy.sh ]; then
         bash /opt/shellm/app/deploy/check-deploy.sh --warnings-only /opt/shellm/app
     fi'
-info "Dashboard: $(tf output -raw url)"
+info "Dashboard: $(stack_url)"

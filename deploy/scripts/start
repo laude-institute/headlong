@@ -19,4 +19,4 @@ aws ec2 start-instances --region "$(region)" --instance-ids "$(instance_id)" \
     --query 'StartingInstances[0].CurrentState.Name' --output text
 info "Waiting for the instance to be running"
 aws ec2 wait instance-running --region "$(region)" --instance-ids "$(instance_id)"
-info "Running. Tunnel + dashboard follow shortly: $(tf output -raw url)"
+info "Running. Tunnel + dashboard follow shortly: $(stack_url)"

@@ -44,9 +44,23 @@ require_tools() {
     done
 }
 
+# Terraform state lives in S3 (backend.tf in each stack dir), so there is
+# no local state file to look for. Check that this machine has run
+# `terraform init` for the stack, then read the instance id once: one
+# `terraform output` against S3 takes seconds, and the scripts ask for the
+# id many times (run_script_on_box asks on every poll). The dashboard URL
+# comes along in the same read.
+HEADLONG_INSTANCE_ID=""
+HEADLONG_STACK_URL=""
 require_state() {
-    [[ -f "$TF_DIR/terraform.tfstate" ]] \
-        || die "no terraform state in $TF_DIR — provision first (see the README there)"
+    [[ -d "$TF_DIR/.terraform" ]] \
+        || die "stack not initialized on this machine — run: terraform -chdir=$TF_DIR init (state is in S3; see deploy/terraform/README.md 'State and operator files')"
+    require_tools jq
+    local outputs
+    outputs=$(tf output -json | jq -r '[.instance_id.value // "", .url.value // ""] | join(" ")') \
+        || die "cannot read terraform state for $TF_DIR — is the AWS login live (aws sso login)?"
+    HEADLONG_INSTANCE_ID="${outputs%% *}"
+    HEADLONG_STACK_URL="${outputs#* }"
 }
 
 require_aws() {
@@ -65,7 +79,20 @@ tfvar() {
 }
 
 region()      { tfvar aws_region; }
-instance_id() { tf output -raw instance_id; }
+# The id cached by require_state, else a fresh read. After an apply that
+# replaces the instance, call refresh_instance_id.
+instance_id() {
+    if [[ -n "$HEADLONG_INSTANCE_ID" ]]; then printf '%s' "$HEADLONG_INSTANCE_ID"
+    else tf output -raw instance_id
+    fi
+}
+refresh_instance_id() { HEADLONG_INSTANCE_ID=$(tf output -raw instance_id); }
+
+stack_url() {
+    if [[ -n "$HEADLONG_STACK_URL" ]]; then printf '%s' "$HEADLONG_STACK_URL"
+    else tf output -raw url
+    fi
+}
 
 instance_state() {
     aws ec2 describe-instances --region "$(region)" --instance-ids "$(instance_id)" \

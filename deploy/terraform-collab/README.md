@@ -42,6 +42,12 @@ and the instance role is SSM plus read access to parameters under
 Prerequisites: terraform, the AWS CLI with a live SSO login (`aws sso
 login`), and the collaborator's OpenSSH public key. No Cloudflare token.
 
+State is in S3 and `terraform.tfvars` is shared through the same bucket
+(`deploy/scripts/stack-config`; see "State and operator files" in
+`deploy/terraform/README.md`). If the stack already exists, run
+`SHELLM_TF_STACK=terraform-collab deploy/scripts/stack-config pull`
+instead of the `cp` below, and `stack-config push` after you edit the file.
+
 ```bash
 cd deploy/terraform-collab
 cp terraform.tfvars.example terraform.tfvars   # gitignored

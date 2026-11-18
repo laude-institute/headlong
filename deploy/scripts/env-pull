@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# deploy/scripts/env-pull — fetch this stack's SSM env parameter to a local file.
+#
+# Usage: deploy/scripts/env-pull [-f] [FILE]
+# The reverse of env-push. The SSM parameter is the source of truth for a
+# rebuild; the local file is only a working copy, so a second laptop gets
+# it with this instead of a copy from the first. FILE defaults as in
+# env-push (~/.env.slack for terraform-slack, ~/.env.harris for
+# terraform-harris). Shows which keys differ, never their values. Refuses
+# to replace a local file that differs unless -f, which keeps the old file
+# as FILE.bak-<time>.
+
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+force=0
+case "${1:-}" in
+    -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -f) force=1; shift ;;
+esac
+
+file="${1:-}"
+if [[ -z "$file" ]]; then
+    is_persona_stack \
+        || die "no FILE given and no default for this stack — pass the env file path"
+    file="$HOME/.env.${SHELLM_TF_STACK#terraform-}"
+fi
+
+require_tools aws
+require_aws
+
+param=$(tfvar env_parameter)
+[[ -n "$param" ]] || die "no env_parameter in $TF_DIR/terraform.tfvars (stack-config pull fetches that file)"
+
+remote=$(aws ssm get-parameter --region "$(region)" --name "$param" --with-decryption \
+    --query Parameter.Value --output text) || die "cannot read $param"
+version=$(aws ssm get-parameter --region "$(region)" --name "$param" \
+    --query Parameter.Version --output text)
+info "Parameter: $param ($(region)), version $version"
+
+sha() { shasum -a 256 2>/dev/null || sha256sum; }
+# "KEY <hash of value>" per KEY=VALUE line, so two files can be compared
+# without a value ever reaching the terminal.
+key_hashes() {
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+            [A-Za-z_]*=*) printf '%s %s\n' "${line%%=*}" "$(printf '%s' "${line#*=}" | sha | cut -c1-16)" ;;
+        esac
+    done | sort
+}
+
+write_file() {
+    ( umask 077; printf '%s\n' "$remote" > "$file" )
+    chmod 600 "$file"
+    info "Wrote $file ($(grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' "$file") keys)"
+}
+
+if [[ ! -e "$file" ]]; then
+    write_file
+    exit 0
+fi
+
+# env-push sends the file without its trailing newlines, so compare that way.
+if [[ "$(cat "$file")" == "$remote" ]]; then
+    info "$file already matches the parameter"
+    exit 0
+fi
+
+local_keys=$(key_hashes < "$file")
+remote_keys=$(printf '%s\n' "$remote" | key_hashes)
+info "Keys that differ (local file vs parameter, values hidden):"
+{
+    comm -23 <(printf '%s\n' "$local_keys") <(printf '%s\n' "$remote_keys") | sed 's/ .*/ local/'
+    comm -13 <(printf '%s\n' "$local_keys") <(printf '%s\n' "$remote_keys") | sed 's/ .*/ parameter/'
+} | sort | awk '
+    { side[$1] = side[$1] " " $2 }
+    END {
+        for (k in side) {
+            if (side[k] == " local parameter") print "  " k ": value differs"
+            else if (side[k] == " local")      print "  " k ": only in the local file"
+            else                               print "  " k ": only in the parameter"
+        }
+    }' | sort
+if [[ "$local_keys" == "$remote_keys" ]]; then
+    echo "  (same keys and values; only comments, order, or blank lines differ)"
+fi
+
+[[ "$force" -eq 1 ]] || die "$file differs from the parameter — rerun with -f to replace it (the old file is kept as a backup), or env-push to send the local file instead"
+backup="$file.bak-$(date +%Y%m%dT%H%M%S)"
+cp -p "$file" "$backup"
+info "Kept the old file as $backup"
+write_file

@@ -477,8 +477,11 @@ resource "aws_instance" "shellm" {
   # deploy/scripts/rebuild passes -replace=aws_instance.shellm, which still
   # replaces the box and renders the current AMI and user_data into the new
   # one. Everything else applies around a running instance.
+  # The root volume's headlong-backup tag is owned by aws_ec2_tag.backup
+  # (backup.tf). Without the third entry this resource sees that tag as
+  # drift and plans to remove it, which would stop the nightly snapshots.
   lifecycle {
-    ignore_changes = [ami, user_data]
+    ignore_changes = [ami, user_data, root_block_device[0].tags]
   }
 
   tags = {

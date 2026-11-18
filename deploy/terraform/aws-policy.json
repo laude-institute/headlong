@@ -58,6 +58,18 @@
       "Effect": "Allow",
       "Action": ["ssm:DescribeSessions", "ssm:DescribeInstanceInformation"],
       "Resource": "*"
+    },
+    {
+      "Sid": "TerraformStateBucket",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::laude-headlong-tfstate"
+    },
+    {
+      "Sid": "TerraformStateObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::laude-headlong-tfstate/*"
     }
   ]
 }

@@ -1,9 +1,10 @@
 .envrc
+.envrc.*
 env.sh
 .terraform/
-.terraform.lock.hcl
 terraform.tfstate
 terraform.tfstate.*
 terraform.tfvars
+terraform.tfvars.*
 *.auto.tfvars
 crash.log

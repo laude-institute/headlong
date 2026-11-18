@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# deploy/scripts/stack-config — share a stack's gitignored operator files.
+#
+# Usage: deploy/scripts/stack-config status [--all]
+#        deploy/scripts/stack-config pull [-f] [--all]
+#        deploy/scripts/stack-config push [-y] [--all]
+#
+# Terraform state is in S3 (backend.tf), but each stack also needs files
+# that git must not hold: terraform.tfvars, any *.auto.tfvars, and .envrc.
+# This keeps a copy of them beside the state, under config/<stack>/ in the
+# same private, versioned bucket, so a second laptop can fetch them.
+#
+#   status  compare the local files with the stored copies
+#   pull    fetch the stored copies; refuses to overwrite a local file that
+#           differs unless -f (the old file is kept as <file>.bak-<time>)
+#   push    store the local files that are new or changed (-y skips the
+#           prompt); the bucket keeps every earlier version
+#
+# The stack is SHELLM_TF_STACK as in the other scripts; --all walks every
+# stack that has a backend.tf. File contents are never printed.
+
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+usage() { sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+cmd="${1:-}"
+[[ $# -gt 0 ]] && shift
+force=0; yes=0; all=0
+for arg in "$@"; do
+    case "$arg" in
+        -f) force=1 ;;
+        -y) yes=1 ;;
+        --all) all=1 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+done
+case "$cmd" in
+    status|pull|push) ;;
+    -h|--help|"") usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+esac
+
+require_tools aws
+require_aws
+
+sha() { shasum -a 256 2>/dev/null || sha256sum; }
+file_sha()   { sha < "$1" | cut -d' ' -f1; }
+remote_sha() { aws s3 cp --only-show-errors "$1" - | sha | cut -d' ' -f1; }
+
+# Read one setting from the stack's backend "s3" block.
+backend_setting() {
+    sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*\"\\(.*\\)\".*/\\1/p" "$1/backend.tf" | head -1
+}
+
+# The operator files a stack dir holds right now, one name per line.
+local_files() {
+    local f
+    for f in "$1"/terraform.tfvars "$1"/*.auto.tfvars "$1"/.envrc; do
+        [[ -f "$f" ]] && basename "$f"
+    done
+    return 0
+}
+
+one_stack() {
+    local dir="$1" stack bucket region prefix remote names name l r changed=""
+    stack=$(basename "$dir")
+    [[ -f "$dir/backend.tf" ]] || die "$stack has no backend.tf, so no bucket to use"
+    bucket=$(backend_setting "$dir" bucket)
+    region=$(backend_setting "$dir" region)
+    [[ -n "$bucket" && -n "$region" ]] || die "cannot read bucket and region from $dir/backend.tf"
+    prefix="s3://$bucket/config/$stack"
+    export AWS_DEFAULT_REGION="$region"
+
+    remote=$(aws s3 ls "$prefix/" | awk '{print $4}') || true
+    names=$(printf '%s\n%s\n' "$(local_files "$dir")" "$remote" | grep . | sort -u) || true
+    info "$stack  ($prefix)"
+    [[ -n "$names" ]] || { echo "  nothing here and nothing stored"; return 0; }
+
+    while IFS= read -r name; do
+        l=""; r=""
+        [[ -f "$dir/$name" ]] && l=$(file_sha "$dir/$name")
+        grep -qxF "$name" <<<"$remote" && r=$(remote_sha "$prefix/$name")
+        if   [[ -z "$r" ]];      then echo "  $name: local only";  changed="$changed $name"
+        elif [[ -z "$l" ]];      then echo "  $name: stored only"; changed="$changed $name"
+        elif [[ "$l" == "$r" ]]; then echo "  $name: same"
+        else                          echo "  $name: differs";     changed="$changed $name"
+        fi
+    done <<<"$names"
+    [[ "$cmd" == status || -z "$changed" ]] && return 0
+
+    local stamp answer
+    stamp=$(date +%Y%m%dT%H%M%S)
+    if [[ "$cmd" == push ]]; then
+        if [[ "$yes" -ne 1 ]]; then
+            read -r -p "  Store the local copies of:$changed ? [y/N] " answer
+            [[ "$answer" == y || "$answer" == Y ]] || { echo "  skipped"; return 0; }
+        fi
+        for name in $changed; do
+            [[ -f "$dir/$name" ]] || { echo "  $name: no local file, left as stored"; continue; }
+            aws s3 cp --only-show-errors --sse AES256 "$dir/$name" "$prefix/$name"
+            echo "  $name: stored"
+        done
+    else
+        for name in $changed; do
+            grep -qxF "$name" <<<"$remote" || { echo "  $name: not stored, local file kept"; continue; }
+            if [[ -f "$dir/$name" ]]; then
+                if [[ "$force" -ne 1 ]]; then
+                    echo "  $name: local file differs, kept (use -f to replace it)"
+                    continue
+                fi
+                cp -p "$dir/$name" "$dir/$name.bak-$stamp"
+            fi
+            aws s3 cp --only-show-errors "$prefix/$name" "$dir/$name"
+            chmod 600 "$dir/$name"
+            echo "  $name: fetched"
+        done
+    fi
+}
+
+if [[ "$all" -eq 1 ]]; then
+    for backend in "$REPO_ROOT"/deploy/terraform*/backend.tf; do
+        one_stack "$(dirname "$backend")"
+    done
+else
+    one_stack "$TF_DIR"
+fi

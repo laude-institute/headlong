@@ -20,6 +20,12 @@ Harris has its own Slack app (`slack/manifest.harris.json`), its own
 Telegram bot, and its own LLM key, so a runaway on one persona cannot spend
 the other's budget or post as the other's bot.
 
+State is in S3 under its own key (`backend.tf` here is a real file, not a
+link). On a laptop that did not create this stack, fetch the operator
+files with `SHELLM_TF_STACK=terraform-harris deploy/scripts/stack-config
+pull` and run `terraform init`; see "State and operator files" in
+`deploy/terraform/README.md`.
+
 Before the first apply:
 
 ```bash

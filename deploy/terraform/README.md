@@ -180,10 +180,55 @@ Whatever the provider: use a **dedicated key with a hard spend limit**
 The agent executes arbitrary bash on this box; the cap is the real
 safety net.
 
+## State and operator files
+
+Terraform state for every stack lives in one private S3 bucket
+(`laude-headlong-tfstate`, versioned and encrypted), one key per stack.
+Each stack directory has its own `backend.tf` that names the key. Any
+laptop with the AWS login can plan and apply, and an S3 lock file stops
+two applies from running at once. Nothing about a stack lives on only one
+machine.
+
+`backend.tf` must stay a real file in each stack directory, never a
+symlink: `terraform-harris` links its other `.tf` files to
+`terraform-slack`, and a shared backend file would point both stacks at
+one state.
+
+The files git must not hold travel through the same bucket and SSM:
+
+| File | Where the shared copy is | Fetch | Store |
+|---|---|---|---|
+| `terraform.tfvars`, `.envrc` | `config/<stack>/` in the bucket | `deploy/scripts/stack-config pull` | `deploy/scripts/stack-config push` |
+| `~/.env.slack`, `~/.env.harris` | the stack's SSM env parameter | `deploy/scripts/env-pull` | `deploy/scripts/env-push` |
+
+Run `stack-config push` after you edit `terraform.tfvars`, or the other
+laptop plans against old values. `stack-config status --all` shows which
+files differ.
+
+Setting up a second laptop:
+
+```bash
+aws sso login                                # or however you sign in to the account
+git pull
+deploy/scripts/stack-config pull --all       # tfvars and .envrc for every stack
+for s in terraform terraform-slack terraform-harris terraform-collab; do
+    terraform -chdir=deploy/$s init
+done
+SHELLM_TF_STACK=terraform-slack  deploy/scripts/env-pull
+SHELLM_TF_STACK=terraform-harris deploy/scripts/env-pull
+SHELLM_TF_STACK=terraform-slack  deploy/scripts/status   # proves state and login work
+```
+
+If an apply is killed and leaves the lock behind, Terraform prints the
+lock id; clear it with `terraform force-unlock <id>` once you are sure no
+other apply is running. Earlier versions of a state file are in the
+bucket's version history. The local state files from before the move
+(2026-11-18) are archived under `archive/pre-s3-20261118/`.
+
 ## Day-2 operations
 
 The common ones are wrapped as scripts in `deploy/scripts/` (they need AWS
-creds + this directory's terraform state, but not the Cloudflare token):
+creds and a `terraform init` of this directory, but not the Cloudflare token):
 
 | Script | Does |
 |---|---|
@@ -191,6 +236,8 @@ creds + this directory's terraform state, but not the Cloudflare token):
 | `deploy/scripts/status` | Instance state + service health + deployed commit |
 | `deploy/scripts/shell` | Interactive SSM shell on the box |
 | `deploy/scripts/stop` / `start` | Pause/resume billing (disk + identities survive) |
+| `deploy/scripts/stack-config` | Fetch or store the stack's gitignored `terraform.tfvars` and `.envrc` (see "State and operator files") |
+| `deploy/scripts/env-push` / `env-pull` | Send a local `.env` file to the stack's SSM parameter, or fetch it |
 
 There's also an in-dash path: click the **build stamp** in the navbar →
 "Pull latest & restart" (the server pulls its repo and restarts itself via
@@ -226,9 +273,9 @@ systemd; enabled by `HEADLONG_WEB_SELF_UPDATE=1` in the unit).
 
 ## Notes & caveats
 
-- **State contains secrets** (the tunnel token). State and
-  `terraform.tfvars` are gitignored — keep it that way, or move state to
-  a private S3 bucket once this outlives the demo.
+- **State contains secrets** (the tunnel token). It lives in a private S3
+  bucket, never in git; see "State and operator files". `terraform.tfvars`
+  is gitignored and shared through the same bucket.
 - The Cloudflare provider is **pinned to v4** (`~> 4.52`). v5 renamed and
   reshaped the tunnel/Access resource schemas; upgrading means rewriting
   those ~5 resources, so don't bump the pin casually.

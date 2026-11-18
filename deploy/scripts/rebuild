@@ -32,6 +32,7 @@ fi
 apply_args=(-replace=aws_instance.shellm)
 [[ "$yes" -eq 1 ]] && apply_args+=(-auto-approve)
 tf apply "${apply_args[@]}"
+refresh_instance_id   # the apply replaced the instance
 
 info "Waiting for the new box to come healthy (first boot takes a few minutes)"
 tries=0

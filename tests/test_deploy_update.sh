@@ -207,6 +207,7 @@ instance_id() { echo test-instance; }
 region() { echo test-region; }
 info() { printf '%s\\n' "$*"; }
 tf() { echo http://localhost:8080; }
+stack_url() { echo http://localhost:8080; }
 tfvar() { echo main; }
 is_persona_stack() { return 1; }
 run_script_on_box() { bash -c "$1"; }

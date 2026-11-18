@@ -15,7 +15,7 @@ require_aws
 
 state=$(instance_state)
 info "Instance:  $(instance_id) ($(region)) — $state"
-info "Dashboard: $(tf output -raw url)"
+info "Dashboard: $(stack_url)"
 
 if [[ "$state" == "running" ]]; then
     # Telegram is enabled post-hoc via /etc/shellm/telegram.env, which does
