@@ -51,6 +51,29 @@ for i in $(seq 1 15); do mkdir -p "$W/wd/d$i"; printf 'x\n' > "$W/wd/d$i/f"; don
 out=$(WORKSPACE_DIRS=5 run "_workspace_section '$W/wd'")
 [[ "$(grep -c '^- .*/ ' <<<"$out")" -eq 5 ]] && grep -q '^- and 12 more directories' <<<"$out" && ok "directory list is capped with a remainder line" || bad "dir cap" "$out"
 
+
+# SIGPIPE: the per-directory count (find | head -n cap) and the directory
+# list (sort | head -n max) are early-exiting readers. Under pipefail the
+# writer takes SIGPIPE once its remaining output crosses the 64KB pipe
+# buffer, so a bare call on a big enough workspace died every trial before
+# printing a line (10 of 10 on a 28612-file workdir, both shapes). The
+# monolith call shape `... || ""` suppresses errexit inside the command
+# substitution, which is why the wake prompt kept its section; any caller
+# outside that shape dies. Both readers must drain to EOF.
+i=0; while [ $i -lt 600 ]; do
+    mkdir "$W/dir-count-sample-name-$i-$(printf 'p%.0s' $(seq 1 120))"
+    i=$((i+1))
+done
+ndirs=$(find "$W" -mindepth 1 -maxdepth 1 -type d ! -name '.*' ! -name '__pycache__' | wc -l | tr -d ' ')
+out=$(WORKSPACE_DIRS=12 run "_workspace_section '$W'; echo RC=\$?")
+[[ "$out" == *"RC=0"* ]] && grep -q "and $((ndirs-12)) more directories" <<<"$out" \
+    && ok "many directories: sort drained, list capped, rc 0" || bad "many directories" "$out"
+mkdir "$W/big"
+( cd "$W/big" && seq 1 20000 | sed 's/^/filename-/' | tr '\n' '\0' | xargs -0 touch )
+out=$(run "_workspace_section '$W'; echo RC=\$?")
+[[ "$out" == *"RC=0"* ]] && grep -q '^- big/ 5000+ files' <<<"$out" \
+    && ok "many files: find drained, count capped at 5000+, rc 0" || bad "many files" "$out"
+
 echo
 echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]
