@@ -156,6 +156,11 @@ _llm_health_warn() {
         rate)
             echo "!! LLM: RATE LIMITED by ${provider:-the provider}${code:+ (HTTP $code)}, last tried $ts. Usually clears on its own."
             ;;
+        budget)
+            echo "!! LLM: SPEND LIMIT REACHED — LLM_SPEND_LIMIT_USD stopped $NAME's model calls (last tried $ts)."
+            echo "   ${msg:-spend limit reached}. Nothing is sent until the limit is raised or its window rolls over."
+            msg=""   # our own message, not the provider's
+            ;;
         *)
             echo "!! LLM: the last call failed (${provider:-provider}${code:+, HTTP $code}, last tried $ts)."
             ;;

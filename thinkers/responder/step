@@ -49,6 +49,7 @@ t_start_ms=$(_now_ms)
 _llm_meta='{}'
 _llm_timed_out=0
 _llm_truncated=0
+_llm_spend_limited=0
 _llm_calls=0
 # _reply_llm runs inside a command substitution (its stdout is the reply),
 # so its record travels through a file (_rl_meta_file, made right before the
@@ -64,20 +65,23 @@ _reply_llm() {   # _reply_llm <llm args...>; stdout = the reply, rc = llm's rc
         llm -t "$RESPONDER_MAX_TOKENS" "$@" 2>"$err" || rc=$?
     ms=$(( $(_now_ms) - t0 ))
     cat "$err" >&2
-    local truncated=0 timed_out=0
+    local truncated=0 timed_out=0 spend_limited=0
     grep -q 'output truncated at max_tokens' "$err" 2>/dev/null && truncated=1
     grep -qE 'timed out|curl: \(28\)' "$err" 2>/dev/null && timed_out=1
+    # llm exits 3 at LLM_SPEND_LIMIT_USD, before sending anything.
+    [[ "$rc" -eq 3 ]] && spend_limited=1
     rec=""
     [[ -s "$usage" ]] && rec=$(jq -c 'select(type == "object")' "$usage" 2>/dev/null | head -1)
     [[ -n "$rec" ]] || rec='{}'
     prev=$(cat "$_rl_meta_file" 2>/dev/null); [[ -n "$prev" ]] || prev='{}'
     jq -nc --argjson prev "$prev" --argjson rec "$rec" --argjson ms "$ms" \
-        --argjson tr "$truncated" --argjson to "$timed_out" '
+        --argjson tr "$truncated" --argjson to "$timed_out" --argjson sl "$spend_limited" '
         $prev
         + {llm_ms: (($prev.llm_ms // 0) + $ms), llm_calls: (($prev.llm_calls // 0) + 1)}
         + ($rec | {out_tok, think_tok, served_by} | with_entries(select(.value != null)))
         + (if $tr == 1 or ($rec.truncated == true) then {truncated: true} else {} end)
-        + (if $to == 1 then {timed_out: true} else {} end)' > "$_rl_meta_file" 2>/dev/null \
+        + (if $to == 1 then {timed_out: true} else {} end)
+        + (if $sl == 1 then {spend_limited: true} else {} end)' > "$_rl_meta_file" 2>/dev/null \
         || printf '%s' "$prev" > "$_rl_meta_file"
     rm -f "$usage" "$err"
     return "$rc"
@@ -86,6 +90,7 @@ _rl_sync() {   # after each _reply_llm: its record into this shell's variables
     _llm_meta=$(cat "$_rl_meta_file" 2>/dev/null); [[ -n "$_llm_meta" ]] || _llm_meta='{}'
     _llm_timed_out=$(printf '%s' "$_llm_meta" | jq -r 'if .timed_out == true then 1 else 0 end' 2>/dev/null) || _llm_timed_out=0
     _llm_truncated=$(printf '%s' "$_llm_meta" | jq -r 'if .truncated == true then 1 else 0 end' 2>/dev/null) || _llm_truncated=0
+    _llm_spend_limited=$(printf '%s' "$_llm_meta" | jq -r 'if .spend_limited == true then 1 else 0 end' 2>/dev/null) || _llm_spend_limited=0
     _llm_calls=$(printf '%s' "$_llm_meta" | jq -r '.llm_calls // 0' 2>/dev/null) || _llm_calls=0
 }
 
@@ -664,10 +669,11 @@ if [[ "$structured" -eq 1 ]]; then
     _parse="structured"
     if ! reply=$(_reply_llm -m "$REPLY_MODEL" -M "$convo_json" -s "$reply_system" --json-schema "$_schema_file"); then
         _rl_sync
-        if [[ "$_llm_timed_out" -eq 1 || "$_llm_truncated" -eq 1 ]]; then
-            # The budget is spent (the wall clock, or the whole token cap on
-            # nothing visible); a second attempt would only double the wait.
-            printf '  structured reply call spent its budget (timed out: %s, truncated: %s) — not retrying\n' "$_llm_timed_out" "$_llm_truncated" >&2
+        if [[ "$_llm_timed_out" -eq 1 || "$_llm_truncated" -eq 1 || "$_llm_spend_limited" -eq 1 ]]; then
+            # The budget is spent (the wall clock, the whole token cap on
+            # nothing visible, or the spend limit); a second attempt would
+            # only double the wait, or be refused the same way.
+            printf '  structured reply call spent its budget (timed out: %s, truncated: %s, spend limit: %s) — not retrying\n' "$_llm_timed_out" "$_llm_truncated" "$_llm_spend_limited" >&2
             reply=""
         else
             # The provider refused the schema (or the call failed fast): once
@@ -690,6 +696,11 @@ rm -f "$_rl_meta_file"
 
 # Nothing came back and the call itself was the reason: say which.
 if [[ -z "$(printf '%s' "$reply" | tr -d '[:space:]')" ]]; then
+    if [[ "$_llm_spend_limited" -eq 1 ]]; then
+        printf '  spend limit reached — appending failure observation\n' >&2
+        _obs "reply failed: the spend limit (LLM_SPEND_LIMIT_USD) is reached, so no model call was made and nothing was sent to $msg_from. Their message was: $trigger_excerpt" reply-failed "$(_fail_metrics spend-limit)"
+        exit 0
+    fi
     if [[ "$_llm_timed_out" -eq 1 ]]; then
         printf '  reply call timed out — appending failure observation\n' >&2
         _obs "reply failed: the model took longer than ${RESPONDER_MAX_TIME}s to answer $msg_from, so nothing was sent. Reply to them yourself. Their message was: $trigger_excerpt" reply-failed "$(_fail_metrics timeout)"

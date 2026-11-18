@@ -92,7 +92,9 @@ in their artifacts. `sanitization_exit_status` records whether every pass succee
 
 Dependencies are Bash 3.2+, Git, jq, Python 3, and Perl for log redaction (plus
 OpenCode for live runs). Worktrees, branches, and transcripts are retained;
-cleanup is manual. The wrapper has no spending cap or automatic retry policy.
+cleanup is manual. The wrapper has no automatic retry policy. Its only
+spending cap is the identity's optional `LLM_SPEND_LIMIT_USD` (see the README),
+which can be overshot by up to one model step.
 
 ## Reproduce rejection and revision without model calls
 
