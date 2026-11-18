@@ -184,6 +184,9 @@ _fs_ident='^[A-Za-z_][A-Za-z_0-9]*'
 _fs_open_re='<<-?'
 _fs_tagged_re='```(bash|shell|sh)[[:space:]]*$'
 _fs_close_re='^```[[:space:]]*$'
+# A closing fence glued to the end of a code line, next opener tag
+# possibly fused on ('cmd```bash'). Mid-line ``` is never valid bash.
+_fs_glued_re='```(bash|shell|sh)?[[:space:]]*$'
 _fs_try_open_heredoc() {
     local line="$1" rest
     [[ "$line" =~ $_fs_open_re ]] || return 0
@@ -211,7 +214,13 @@ _fs_line() {   # one complete line of emitted text; returns 0 when the first blo
             n=$((n - 1))
         fi
     fi
-    if [[ "$n" -eq 0 && "$line" =~ $_fs_close_re ]]; then return 0; fi
+    if [[ "$n" -eq 0 ]]; then
+        if [[ "$line" =~ $_fs_close_re ]]; then return 0; fi
+        if [[ "$line" =~ $_fs_glued_re ]]; then
+            local pre="${line%"${BASH_REMATCH[0]}"}"
+            if [[ "$pre" =~ [^[:space:]] && "$pre" != *'`'* ]]; then return 0; fi
+        fi
+    fi
     _fs_try_open_heredoc "$line"
     return 1
 }
