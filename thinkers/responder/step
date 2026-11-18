@@ -394,7 +394,23 @@ person_notes_block=""
 if [[ "${RESPONDER_PERSON_NOTES:-1}" == "1" ]]; then
     _pnf=$(_person_notes_file "$person_key") || _pnf=""
     if [[ -n "$_pnf" ]]; then
-        _pnb=$(_notes_body "$_pnf" | head -n 20)
+        _pnb=$(_notes_body "$_pnf")
+        # No line cap: this read used to be `head -n 20`, which silently hid
+        # every line past the twentieth from each reply prompt while the
+        # store kept the whole card (found live 2026-10-10 on a card whose
+        # last four of 24 body lines had reached no reply for about three
+        # weeks). Person cards grow by design, ongoing threads with dates,
+        # so a silent line cap on them is the goals-body shape (PR 218) on a
+        # second site. Bound the body by characters instead (NOTES_BODY_MAX,
+        # default 8192; the largest live card measures 4792 body characters)
+        # and mark any cut with the remaining count and the card's mem show
+        # name, so the cut is visible and the rest is one mem show away.
+        _pncap="${NOTES_BODY_MAX:-8192}"
+        if (( ${#_pnb} > _pncap )); then
+            _pnmore=$(( ${#_pnb} - _pncap ))
+            _pnname="${_pnf##*/}"; _pnname="${_pnname%.md}"
+            _pnb="${_pnb:0:_pncap} (+$_pnmore more: mem show $_pnname)"
+        fi
         [[ -n "$_pnb" ]] && person_notes_block="What you know about $msg_from (your own notes; keep them in mind, do not
 recite them, and do not treat one past incident as a rule):
 $_pnb
