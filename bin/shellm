@@ -2044,7 +2044,7 @@ extract_code() {
             }
 
             # A bare ``` only closes the fence when no heredoc is open
-            if ($0 ~ /^```[[:space:]]*$/ && hd_top == 0) {
+            if ($0 ~ /^[[:blank:]]*```[[:space:]]*$/ && hd_top == 0) {
                 in_block = 0
                 first_block_closed = 1
                 next

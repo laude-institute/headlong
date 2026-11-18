@@ -183,7 +183,7 @@ _fs_buf="" _fs_in=0 _fs_hd=() _fs_bytes=0
 _fs_ident='^[A-Za-z_][A-Za-z_0-9]*'
 _fs_open_re='<<-?'
 _fs_tagged_re='```(bash|shell|sh)[[:space:]]*$'
-_fs_close_re='^```[[:space:]]*$'
+_fs_close_re='^[[:blank:]]*```[[:space:]]*$'
 _fs_try_open_heredoc() {
     local line="$1" rest
     [[ "$line" =~ $_fs_open_re ]] || return 0
