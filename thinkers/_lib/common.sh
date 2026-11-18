@@ -293,8 +293,10 @@ _build_system_prompt() {
 # ---------------------------------------------------------------------------
 
 # The active-goals section of the wake prompt. Every goal-family memory
-# (goal, intention, objective, todo) is shown, newest first, with its type
-# and age, capped at GOALS_MAX lines plus a count of the rest. A memory
+# (goal, intention, objective, todo) is shown in owed order — `until`
+# ascending, records with no `until` after every dated one, `created`
+# ascending as the tiebreak — with its type and age, capped at GOALS_MAX
+# lines plus a count of the rest. A memory
 # with `until: YYYY-MM-DD` in its frontmatter drops out after that date
 # (`mem add --until`). Before 2026-09-04 only goal and intention were read,
 # so 10 of Audel's 13 goal memories were invisible, three were duplicates
@@ -304,8 +306,21 @@ get_goals() {
     [[ -d "$mem_dir" ]] || return 0
     local today now f ftype until created body age shown=0 hidden=0 goals=""
     today=$(date -u +%Y-%m-%d); now=$(date -u +%s)
-    local -a files=("$mem_dir"/*.md)
+    # The array is named sortkeys, not order: tests that source this file
+    # hold local string variables named order, and shellcheck reading across
+    # the source flags the name collision (SC2178/SC2128) in those tests.
+    local -a files=("$mem_dir"/*.md) sortkeys=()
     local i
+    # Owed order before the cap. The window used to visit the store
+    # newest-minted first, so a floor due tonight sank one position per
+    # mint and fell out of the window while a watch due three weeks later
+    # minted minutes ago rendered in its place: recency of minting is
+    # orthogonal to owed-ness. The sort keys carry `until` ascending,
+    # records with no `until` after every dated one (the sentinel is a
+    # sort key only, never rendered), `created` ascending as the
+    # tiebreak, so the record owed soonest is the record rendered first.
+    # The expired filter and the empty-body skip stay here, before the
+    # sort, so the and-N-more count remains a count of live records.
     for (( i = ${#files[@]} - 1; i >= 0; i-- )); do
         f="${files[$i]}"
         [[ -f "$f" ]] || continue
@@ -315,8 +330,27 @@ get_goals() {
         [[ -n "$until" && "$until" < "$today" ]] && continue
         body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" | sed '/./,$!d' | head -3)
         [[ -n "$body" ]] || continue
-        if (( shown >= max )); then hidden=$((hidden + 1)); continue; fi
         created=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^created:/{sub(/^created:[[:space:]]*/, ""); print}' "$f")
+        sortkeys+=("${until:-9999-99-99}|$created|$f")
+    done
+    if (( ${#sortkeys[@]} > 0 )); then
+        # bash 3.2 (macOS) has no mapfile: read the sorted keys back with the
+        # portable while-read, which every bash in support has.
+        local sorted="" line=""
+        sorted=$(printf '%s\n' "${sortkeys[@]}" | LC_ALL=C sort)
+        sortkeys=()
+        while IFS= read -r line; do
+            sortkeys+=("$line")
+        done <<<"$sorted"
+    fi
+    for (( i = 0; i < ${#sortkeys[@]}; i++ )); do
+        f="${sortkeys[$i]##*|}"
+        if (( shown >= max )); then hidden=$((hidden + 1)); continue; fi
+        ftype=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^type:/{sub(/^type:[[:space:]]*/, ""); print}' "$f")
+        until=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^until:/{sub(/^until:[[:space:]]*/, ""); print}' "$f")
+        created=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^created:/{sub(/^created:[[:space:]]*/, ""); print}' "$f")
+        body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" | sed '/./,$!d' | head -3)
+        [[ -n "$body" ]] || continue
         age=$(_mem_age "$created" "$f" "$now")
         goals="${goals}- [${ftype}${age:+, $age}${until:+, until $until}] ${body}
 "
