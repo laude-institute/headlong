@@ -85,6 +85,11 @@ chmod +x "$WORK/toolbin/llm"
 export PATH="$WORK/toolbin:$PATH"
 export HOME="$WORK/home"
 export HEADLONG_HOME="$WORK/home/.headlong"
+# An ambient trajectory variable (any run inside shellm leaves these set:
+# SHELLM_TRAJ_DIR outranks TRAJ_DIR, which outranks HEADLONG_HOME) would
+# send the stub runs into the caller's real log. Neutralize all three
+# before any nested exec.
+unset TRAJ_DIR TRAJ_ID SHELLM_TRAJ_DIR
 export ANTHROPIC_API_KEY="test-key"
 export SHELLM_MODEL="test-model"
 export SHELLM_ENV=local
