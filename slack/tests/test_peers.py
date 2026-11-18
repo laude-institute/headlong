@@ -208,6 +208,18 @@ class _Bridge:
         )
         return self.posted.items[-1] if delivered else None
 
+    def deliver(self, event, count: int):
+        """Send one event and wait for exactly `count` deliveries."""
+        before = len(self.posted.items)
+        self.ib._on_event(event, self.logger)
+        deadline = time.time() + 2
+        while time.time() < deadline and len(self.posted.items) - before < count:
+            time.sleep(0.02)
+        time.sleep(0.05)
+        got = len(self.posted.items) - before
+        assert got == count, f"expected {count} deliveries, got {got}"
+        return self.posted.items[before:]
+
     def close(self):
         self.ib.stop()
         self.ib._worker.join(timeout=1)
@@ -265,11 +277,22 @@ def test_loop_guard_stops_peer_after_max_turns_and_person_resets(bridge):
     b = bridge(max_turns=2)
     b.send(_event(user=PEER, text="one", bot=True), True)
     b.send(_event(user=PEER, text="two", bot=True), True)
+    # Blocked at the cap: held, not dropped.
     b.send(_event(user=PEER, text="three", bot=True), False)
     b.send(_event(user=PEER, text="four", bot=True), False)
-    # A person speaking in the thread, even without mentioning us, resets.
-    b.send(_event(user=NICK, text="carry on you two", mention=False), True)
-    b.send(_event(user=PEER, text="five", bot=True), True)
+    # A person speaking in the thread, even without mentioning us, resets,
+    # and the held messages flow first, oldest first, inside the fresh
+    # allowance: two held peer messages plus the person's own.
+    bodies = b.deliver(_event(user=NICK, text="carry on you two", mention=False), 3)
+    assert bodies[0]["content"].endswith("three")
+    assert bodies[1]["content"].endswith("four")
+    assert bodies[2]["content"].endswith("carry on you two")
+    # The held pair spent the fresh allowance, so a new peer message is
+    # held until the next person speaks, then flows with it.
+    b.send(_event(user=PEER, text="five", bot=True), False)
+    bodies = b.deliver(_event(user=NICK, text="and again", mention=False), 2)
+    assert bodies[0]["content"].endswith("five")
+    assert bodies[1]["content"].endswith("and again")
 
 
 def test_person_in_unrelated_thread_does_not_reset(bridge):
@@ -284,3 +307,61 @@ def test_person_messages_never_guarded(bridge):
     b = bridge(max_turns=0, hourly_cap=0)
     b.send(_event(user=NICK, text="hi audel"), True)
     b.send(_event(user=NICK, text="still here"), True)
+
+
+# -- the cap pauses, it does not delete -------------------------------------
+
+
+def test_held_peer_message_flows_when_a_person_speaks(bridge):
+    b = bridge(max_turns=1)
+    b.send(_event(user=PEER, text="one", bot=True), True)
+    # Blocked at the cap: held, not dropped.
+    b.send(_event(user=PEER, text="two", bot=True), False)
+    # The person's followup releases the held message ahead of itself,
+    # oldest first: it was posted before the person spoke.
+    bodies = b.deliver(_event(user=NICK, text="carry on", mention=False), 2)
+    assert bodies[0]["content"].endswith("two")
+    assert bodies[1]["content"].endswith("carry on")
+
+
+def test_person_in_another_thread_does_not_release_a_hold(bridge):
+    b = bridge(max_turns=1)
+    b.send(_event(user=PEER, text="one", bot=True), True)
+    b.send(_event(user=PEER, text="two", bot=True), False)
+    # A person in an unrelated thread does not touch our hold.
+    b.send(_event(user=NICK, text="elsewhere", thread_ts="555.666"), True)
+    b.send(_event(user=PEER, text="three", bot=True), False)
+    bodies = b.deliver(_event(user=NICK, text="back here", mention=False), 2)
+    assert bodies[0]["content"].endswith("two")
+    assert bodies[1]["content"].endswith("back here")
+
+
+def test_hourly_cap_refusal_is_held_and_flows_after_the_hour(monkeypatch):
+    # Guard-level, like the hourly-cap test above: the bridge fixture's
+    # wait loops read the same patched clock, so freezing time with a
+    # live bridge would spin forever.
+    now = [1_000_000.0]
+    monkeypatch.setattr("headlong_slack.state.time.time", lambda: now[0])
+    g = PeerGuard(max_turns=10, hourly_cap=2)
+    assert g.allow(CHAN, "1")[0]
+    assert g.allow(CHAN, "2")[0]
+    g.hold(CHAN, PARENT, "late")
+    # A person speaking inside the same hour cannot release it: the
+    # hourly cap still refuses, so the message stays paused.
+    assert g.human_spoke(CHAN, PARENT) == []
+    now[0] += 3601
+    assert g.human_spoke(CHAN, PARENT) == ["late"]
+
+
+def test_hold_is_bounded_and_keeps_the_oldest_first():
+    g = PeerGuard(max_turns=4, hourly_cap=100)
+    for _ in range(4):
+        assert g.allow(CHAN, PARENT)[0]
+    payloads = [f"p{i}" for i in range(10)]
+    for p in payloads:
+        g.hold(CHAN, PARENT, p)
+    # Overflow dropped the newest, so the oldest eight are kept, and each
+    # person speech releases at most the fresh allowance of them.
+    assert g.human_spoke(CHAN, PARENT) == payloads[:4]
+    assert g.human_spoke(CHAN, PARENT) == payloads[4:8]
+    assert g.human_spoke(CHAN, PARENT) == []

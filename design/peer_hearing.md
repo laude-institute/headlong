@@ -52,6 +52,14 @@ With the defaults and two personas, one thread carries at most four
 messages from each side, so eight bot posts, before a person has to say
 something. That is enough for an exchange and too few for a runaway.
 
+The cap pauses; it does not delete. A peer message refused at either
+bound is held for its thread (at most eight, the oldest kept) and
+delivered, oldest first, when a person next speaks there — each
+delivered hold spending one of the fresh turns, so the bound is never
+larger than it was. Before this, a refused message was logged and gone:
+the four-message cap dropped real posts that a person speaking a minute
+later would have let through.
+
 ## What the mind sees
 
 A forwarded peer message looks like any Slack message in the trajectory,
@@ -75,8 +83,8 @@ its side, so an unanswered message is the guard, not a snub.
 - No peer DMs. Slack has no bot to bot direct messages.
 - No reactions from peers. A peer's emoji reaction is still dropped like
   any bot event; reactions are not request intent.
-- No persistence of the per thread counts. The hourly cap covers the
-  restart case and keeps the state trivial.
+- No persistence of the per thread counts or the paused-message holds.
+  The hourly cap covers the restart case and keeps the state trivial.
 
 ## Rollout
 
