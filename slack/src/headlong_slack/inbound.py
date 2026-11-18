@@ -308,8 +308,14 @@ class Inbound:
         else:
             if not is_peer:
                 # Any person speaking in a thread lets the peers take turns
-                # again, whether or not this message is for us.
-                self.peers.human_spoke(channel, event.get("thread_ts") or ts)
+                # again, whether or not this message is for us. Messages the
+                # cap paused in that thread flow first, oldest first, each
+                # spending the fresh allowance; what does not fit stays
+                # paused, not lost.
+                for held in self.peers.human_spoke(
+                    channel, event.get("thread_ts") or ts
+                ):
+                    self.queue.put(held)
             mentioned = event.get("type") == "app_mention" or self.bot_mention in text
             if mentioned:
                 # Anchor the conversation at the existing thread, or start
@@ -321,15 +327,6 @@ class Inbound:
                 thread_ts = event["thread_ts"]
             else:
                 return
-            if is_peer:
-                ok, reason = self.peers.allow(channel, thread_ts)
-                if not ok:
-                    if reason:
-                        logger.warning(
-                            "peer %s in %s/%s not forwarded: %s",
-                            user, channel, thread_ts, reason,
-                        )
-                    return
             from_name = naming.encode(user, channel, thread_ts)
             # First @mention in an existing thread: fetch prior lines on
             # the drain worker. Already-active threads have been fed
@@ -340,6 +337,25 @@ class Inbound:
                 and not self.threads.is_active(channel, thread_ts)
                 and self.cfg.thread_join_backfill > 0
             )
+            if is_peer:
+                ok, reason = self.peers.allow(channel, thread_ts)
+                if not ok:
+                    if reason:
+                        logger.warning(
+                            "peer %s in %s/%s not forwarded: %s",
+                            user, channel, thread_ts, reason,
+                        )
+                    # A spent cap pauses the message rather than dropping
+                    # it: the next person speaking in this thread re-enters
+                    # it into the same bounded allowance.
+                    self.peers.hold(
+                        channel, thread_ts,
+                        InboundMessage(
+                            from_name, user, channel, thread_ts, ts, text,
+                            backfill=first_join, is_peer=True,
+                        ),
+                    )
+                    return
             self.threads.touch(channel, thread_ts)
 
         self.queue.put(
