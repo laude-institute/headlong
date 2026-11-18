@@ -107,7 +107,17 @@ mkfifo "$TMP/successor-fifo"
 printf 'successor' > "$RUN/dispatcher.token"
 printf '%s\n' "$TMP/successor-fifo" > "$RUN/fifo_path"
 printf 'keep' > "$RUN/pending/successor"
-sleep 3
+# The old owner notices the token swap on its next heartbeat tick (the
+# dispatch loop's 1s read timeout), so on a quiet machine its cleanup lands
+# within a second or two. A loaded CI runner can starve that tick far past
+# any fixed wait, which is how the macOS leg lost this race on PR 257
+# (run 44241713411, attempt 1). Poll for the cleanup instead of guessing
+# a sleep, bounded at 30s so a dead owner still fails the assertion
+# instead of hanging the leg.
+for _ in $(seq 1 60); do
+    [[ -e "$old_fifo" || -e "${old_fifo%/dispatch.fifo}" ]] || break
+    sleep 0.5
+done
 if [[ ! -e "$old_fifo" && ! -e "${old_fifo%/dispatch.fifo}" &&
       -p "$TMP/successor-fifo" && -f "$RUN/pending/successor" &&
       "$(cat "$RUN/fifo_path")" == "$TMP/successor-fifo" ]]; then
