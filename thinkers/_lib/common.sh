@@ -300,9 +300,9 @@ _build_system_prompt() {
 # so 10 of Audel's 13 goal memories were invisible, three were duplicates
 # of a finished objective, and two todos had expired weeks earlier.
 get_goals() {
-    local mem_dir="${1:-$MEM_DIR}" max="${GOALS_MAX:-8}"
+    local mem_dir="${1:-$MEM_DIR}" max="${GOALS_MAX:-8}" cap="${GOALS_BODY_MAX:-16384}"
     [[ -d "$mem_dir" ]] || return 0
-    local today now f ftype until created body age shown=0 hidden=0 goals=""
+    local today now f ftype until created body age shown=0 hidden=0 goals="" name more
     today=$(date -u +%Y-%m-%d); now=$(date -u +%s)
     local -a files=("$mem_dir"/*.md)
     local i
@@ -313,9 +313,18 @@ get_goals() {
         case "$ftype" in goal|intention|objective|todo) ;; *) continue ;; esac
         until=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^until:/{sub(/^until:[[:space:]]*/, ""); print}' "$f")
         [[ -n "$until" && "$until" < "$today" ]] && continue
-        body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" | sed '/./,$!d' | head -3)
+        body=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{f=0; next} !f{print}' "$f" | sed '/./,$!d')
         [[ -n "$body" ]] || continue
         if (( shown >= max )); then hidden=$((hidden + 1)); continue; fi
+        # No line cap: a goal's amendment paragraphs after the third line were
+        # silently dropped from every wake prompt. Bound the body by characters
+        # (GOALS_BODY_MAX) and mark any cut, so the cut is visible and the rest
+        # of the body stays one mem show away.
+        if (( ${#body} > cap )); then
+            more=$(( ${#body} - cap ))
+            name="${f##*/}"; name="${name%.md}"
+            body="${body:0:cap} (+$more more: mem show $name)"
+        fi
         created=$(awk 'NR==1 && /^---$/{f=1; next} f && /^---$/{exit} f && /^created:/{sub(/^created:[[:space:]]*/, ""); print}' "$f")
         age=$(_mem_age "$created" "$f" "$now")
         goals="${goals}- [${ftype}${age:+, $age}${until:+, until $until}] ${body}
