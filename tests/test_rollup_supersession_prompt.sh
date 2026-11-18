@@ -69,11 +69,11 @@ check "prompt: correction requires shared input" \
 check "prompt: unseen prefixes forbidden" \
     grep -q 'do not invent or infer a prefix for an unseen window' "$LLM_LOG"
 
-# 4. Sealed blocks are stamped with prompt_version 5.
+# 4. Sealed blocks are stamped with prompt_version 6.
 blk="$TRAJ_ROOT/supe0001/rollups/t1/000000000000-000000000010.json"
 check "sealed block exists" test -f "$blk"
-check "sealed block stamped prompt_version 5" \
-    jq -e '.prompt_version == 5' "$blk"
+check "sealed block stamped prompt_version 6" \
+    jq -e '.prompt_version == 6' "$blk"
 
 # 5. The stub was actually called (log has at least one CALL/SYSTEM record).
 check "rollup model invoked" grep -q '^SYSTEM$' "$LLM_LOG"
