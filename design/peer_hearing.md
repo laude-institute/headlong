@@ -60,6 +60,11 @@ larger than it was. Before this, a refused message was logged and gone:
 the four-message cap dropped real posts that a person speaking a minute
 later would have let through.
 
+Both edges of the hold are logged, so the delay is observable without a
+sweep: overflow past eight drops the newest message with a warning that
+names it, and a person's speech logs how many of the held messages the
+fresh turns carried.
+
 ## What the mind sees
 
 A forwarded peer message looks like any Slack message in the trajectory,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from collections import OrderedDict, deque
@@ -14,6 +15,24 @@ ACTIVE_THREAD_TTL = 7 * 24 * 3600
 # The most cap-paused peer messages one thread holds. Overflow drops the
 # newest, so what a person reading the thread would see first survives.
 PEER_PAUSE_LIMIT = 8
+
+log = logging.getLogger(__name__)
+
+
+def _held_tag(payload: Any) -> str:
+    """A log-safe tag for a held payload: its ts, never its text.
+
+    The bridge logs identity (user, channel, ts), not message content,
+    so the tag names the message and never echoes what it says.
+    """
+    ts = getattr(payload, "message_ts", None)
+    if ts is None:
+        ts = getattr(payload, "ts", None)
+    if ts is None and isinstance(payload, dict):
+        ts = payload.get("ts") or payload.get("message_ts")
+    if ts:
+        return str(ts)
+    return type(payload).__name__
 
 
 class Deduper:
@@ -131,11 +150,18 @@ class PeerGuard:
         PEER_PAUSE_LIMIT messages are held per thread, the oldest first.
         """
         key = self._key(channel, thread_ts)
+        dropped: list[Any] = []
         with self._lock:
             paused = self._held.setdefault(key, [])
             paused.append(payload)
             while len(paused) > PEER_PAUSE_LIMIT:
-                paused.pop()
+                dropped.append(paused.pop())
+        for item in dropped:
+            log.warning(
+                "peer hold overflow for %s: dropped the newest "
+                "message (%s)",
+                key, _held_tag(item),
+            )
 
     def human_spoke(self, channel: str, thread_ts: str | None) -> list[Any]:
         """A person posted in this thread: peers may take turns again.
@@ -149,6 +175,8 @@ class PeerGuard:
             self._runs.pop(key, None)
             self._blocked.discard(key)
             paused = self._held.pop(key, [])
+        if not paused:
+            return []
         released: list[Any] = []
         for index, payload in enumerate(paused):
             ok, _reason = self.allow(channel, thread_ts)
@@ -157,6 +185,11 @@ class PeerGuard:
                     self.hold(channel, thread_ts, later)
                 break
             released.append(payload)
+        log.info(
+            "person speech released %d of %d cap-paused peer "
+            "message(s) for %s",
+            len(released), len(paused), key,
+        )
         return released
 
     def allow(self, channel: str, thread_ts: str | None) -> tuple[bool, str]:

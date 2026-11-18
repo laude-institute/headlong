@@ -365,3 +365,33 @@ def test_hold_is_bounded_and_keeps_the_oldest_first():
     assert g.human_spoke(CHAN, PARENT) == payloads[:4]
     assert g.human_spoke(CHAN, PARENT) == payloads[4:8]
     assert g.human_spoke(CHAN, PARENT) == []
+
+
+def test_hold_overflow_drop_is_logged(caplog):
+    g = PeerGuard(max_turns=4, hourly_cap=100)
+    with caplog.at_level(logging.WARNING, logger="headlong_slack.state"):
+        for i in range(10):
+            g.hold(CHAN, PARENT, {"ts": f"1700.000{i}", "text": f"p{i}"})
+    drops = [r.getMessage() for r in caplog.records
+             if "overflow" in r.getMessage()]
+    # Ten into eight: the 9th and 10th appends each dropped the newest.
+    assert len(drops) == 2
+    assert "1700.0008" in drops[0]
+    assert "1700.0009" in drops[1]
+    # The oldest eight survived, so a person speech releases them.
+    assert g.human_spoke(CHAN, PARENT)[0]["ts"] == "1700.0000"
+
+
+def test_person_speech_releases_are_logged(caplog):
+    g = PeerGuard(max_turns=2, hourly_cap=100)
+    assert g.allow(CHAN, PARENT)[0]
+    assert g.allow(CHAN, PARENT)[0]
+    assert not g.allow(CHAN, PARENT)[0]
+    for text in ("late1", "late2", "late3"):
+        g.hold(CHAN, PARENT, text)
+    with caplog.at_level(logging.INFO, logger="headlong_slack.state"):
+        assert g.human_spoke(CHAN, PARENT) == ["late1", "late2"]
+    rel = [r.getMessage() for r in caplog.records
+           if "released" in r.getMessage()]
+    # The fresh allowance fits two of the three; the log names both numbers.
+    assert rel and "2 of 3" in rel[0]
