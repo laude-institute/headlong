@@ -325,6 +325,34 @@ def llm_probe(root: Path) -> dict:
     }
 
 
+# The usage page polls the spend limit; a few seconds' staleness is fine.
+_SPEND_TTL_S = 10
+_spend_cache: dict[str, tuple[float, dict]] = {}
+
+
+def llm_spend(root: Path, identity: IdentityInfo) -> dict:
+    """The identity's spend limit as its own llm calls see it: `llm --spend`
+    in the env the dash starts its thinkers with, so the numbers are bin/llm's
+    arithmetic, not a second copy of it. No model call is made: llm reads the
+    ledger lines appended since its last check. ok is false when llm rejects
+    the limit's settings, which also stops every call it would make."""
+    key = str(identity.path)
+    hit = _spend_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _SPEND_TTL_S:
+        return hit[1]
+    proc = run_cli(_wrap("llm", "--spend"), identity_env(identity, root), root, timeout=15)
+    stderr_lines = [l for l in (proc.stderr or "").splitlines() if l.strip()]
+    result: dict = {"ok": False, "error": stderr_lines[-1] if stderr_lines else f"exit {proc.returncode}"}
+    if proc.returncode == 0:
+        try:
+            spend = json.loads(proc.stdout)
+            result = {"ok": True, **{k: spend.get(k) for k in ("spent", "limit", "remaining", "window", "since")}}
+        except (ValueError, AttributeError):
+            result = {"ok": False, "error": "llm --spend printed no JSON"}
+    _spend_cache[key] = (time.monotonic(), result)
+    return result
+
+
 def recap_refresh(root: Path, identity: IdentityInfo, rebuild: bool = False) -> dict:
     """Fire-and-forget: recap makes one LLM call per window and can run for
     minutes; its own .lock serializes concurrent refreshes."""

@@ -17,7 +17,11 @@ is() { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "want [$2], got [$3]";
 
 WORK=$(mktemp -d)
 trap 'cd /; rm -rf "$WORK"' EXIT
-mkdir -p "$WORK/bin"
+mkdir -p "$WORK/bin" "$WORK/home"
+# coding-agent asks bin/llm for the spend limit; keep the developer's own
+# state home (and any LLM_SPEND_LIMIT_USD in it) out of these runs.
+export HEADLONG_HOME="$WORK/home"
+unset SHELLM_HOME IDENTITY_DIR IDENTITY_NAME LLM_SPEND_LIMIT_USD LLM_SPEND_WINDOW LLM_USAGE_LEDGER
 
 cat > "$WORK/bin/opencode-fake" <<'FAKE'
 #!/usr/bin/env bash
@@ -101,6 +105,19 @@ PY_CHILD
             source-index) git -C "$FAKE_SOURCE_REPO" add original.txt ;;
             source-branch) git -C "$FAKE_SOURCE_REPO" checkout -qb another-branch ;;
         esac
+        ;;
+    spend-steps)
+        # One step_finish event per entry of FAKE_STEP_COSTS, as OpenCode's
+        # --format json prints them; "none" is a step with tokens but no cost.
+        for step_cost in ${FAKE_STEP_COSTS:-}; do
+            if [[ "$step_cost" == none ]]; then
+                printf '{"type":"step_finish","part":{"type":"step-finish","tokens":{"input":100,"output":10,"reasoning":5,"cache":{"read":40,"write":0}}}}\n'
+            else
+                printf '{"type":"step_finish","part":{"type":"step-finish","cost":%s,"tokens":{"input":100,"output":10,"reasoning":5,"cache":{"read":40,"write":0}}}}\n' "$step_cost"
+            fi
+            sleep 0.7
+        done
+        printf 'implemented\n' > delegated.txt
         ;;
     executor-fail)
         printf 'partial\n' > delegated.txt
@@ -549,6 +566,59 @@ for selection in default environment argument secret_path inline_secret_path; do
     check "$selection backend: notice contains no key" bash -c '! grep -qF test-secret-value "$1"' _ "$WORK/backend-$selection.stderr"
     check "$selection backend: records contain no key" bash -c '! grep -RqF test-secret-value "$1"' _ "$WORK/backend-$selection/trajectories"
 done
+
+# L. Spend limit (bin/llm's LLM_SPEND_LIMIT_USD): delegations count against the
+# identity's limit, through the same usage ledger as the mind's own calls.
+spend_case() {   # spend_case NAME MODEL COSTS [VAR=VALUE ...]
+    local name="$1" model="$2" costs="$3"
+    shift 3
+    new_fixture "$name"
+    SPEND_LEDGER="$WORK/$name/ledger.jsonl"
+    SPEND_JSON=$(env ${1+"$@"} FAKE_OPENCODE_MODE=spend-steps FAKE_STEP_COSTS="$costs" LLM_USAGE_LEDGER="$SPEND_LEDGER" \
+        coding-agent --repo "$FIXTURE_REPO" --task 'Create delegated.txt containing exactly implemented.' \
+        --verify 'test -f delegated.txt' --backend-bin "$WORK/bin/opencode-fake" --model "$model" \
+        --out "$WORK/$name/artifacts" --traj-dir "$FIXTURE_TRAJ_DIR" --parent-traj "$FIXTURE_PARENT" \
+        2>"$WORK/$name/cli.stderr")
+    SPEND_RC=$?
+    SPEND_STDERR="$WORK/$name/cli.stderr"
+}
+field() { printf '%s' "$SPEND_JSON" | jq -c "$@"; }
+
+spend_case spend_unlimited fake/provider "0.25 0.25"
+is "no limit: the delegation runs to a candidate" "0 candidate" "$SPEND_RC $(field -r .status)"
+is "no limit: each step's cost lands in the ledger, marked opencode" '[0.25,0.25]' \
+    "$(jq -sc 'map(select(.source == "opencode") | .cost)' "$SPEND_LEDGER")"
+is "no limit: ledger lines carry provider, model, tokens and the delegation" '["fake","provider",140,15,5,40,true]' \
+    "$(head -n 1 "$SPEND_LEDGER" | jq -c --arg d "$(field -r .child_traj)" '[.provider, .model, .in_tok, .out_tok, .think_tok, .cache_tok, .delegation == $d]')"
+is "no limit: the result records what the run cost" '{"cost":0.5,"steps":2,"stopped":null}' "$(field .spend)"
+
+spend_case spend_stopped openrouter/vendor/model "0.4 0.4 0.4 0.4 0.4 0.4" LLM_SPEND_LIMIT_USD=1
+is "limit crossed mid-run: budget_exhausted, exit 3" "3 budget_exhausted" "$SPEND_RC $(field -r .status)"
+is "limit crossed mid-run: supervisor exit 122" 122 "$(field .executor_exit_status)"
+is "limit crossed mid-run: stopped for the spend limit" '"spend limit reached"' "$(field .spend.stopped)"
+check "limit crossed mid-run: stopped within a step of the limit, not after every step" \
+    test "$(field '.spend.steps >= 3 and .spend.steps < 6 and .spend.cost >= 1')" = true
+check "limit crossed mid-run: the executor log says why" \
+    grep -q 'stopped OpenCode at the spend limit' "$WORK/spend_stopped/artifacts/executor.stderr"
+is "limit crossed mid-run: the ledger holds every counted step" "$(field .spend.steps)" "$(grep -c '"source": "opencode"' "$SPEND_LEDGER")"
+is "limit crossed mid-run: bin/llm now sees nothing left" 0 \
+    "$(LLM_USAGE_LEDGER="$SPEND_LEDGER" LLM_SPEND_LIMIT_USD=1 llm --spend | jq -r .remaining)"
+
+mkdir -p "$WORK/spend_refused"
+printf '{"ts":"%s","provider":"openrouter","model":"vendor/model","cost":2}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$WORK/spend_refused/ledger.jsonl"
+spend_case spend_refused openrouter/vendor/model "0.1" LLM_SPEND_LIMIT_USD=1
+is "limit already reached: refused, exit 3" 3 "$SPEND_RC"
+check "limit already reached: stderr says so" grep -q 'spend limit reached: \$2 of \$1; not starting' "$SPEND_STDERR"
+check "limit already reached: nothing was created" test ! -e "$WORK/spend_refused/artifacts"
+
+spend_case spend_other_model fake/provider "0.1" LLM_SPEND_LIMIT_USD=1
+is "limit with a non-OpenRouter model: refused" 2 "$SPEND_RC"
+check "limit with a non-OpenRouter model: names the fix" grep -q 'counts OpenRouter only' "$SPEND_STDERR"
+
+spend_case spend_no_cost openrouter/vendor/model "none 0.1 0.1" LLM_SPEND_LIMIT_USD=5
+is "limit, step with tokens but no cost: stopped" "3 budget_exhausted" "$SPEND_RC $(field -r .status)"
+is "limit, step with tokens but no cost: says why" '"a step reported tokens but no cost"' "$(field .spend.stopped)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

@@ -213,10 +213,27 @@ def test_last_call_ok_keeps_passive_status(tmp_path: Path, monkeypatch):
         "ts": "2026-08-22T09:00:00Z",
         "provider": "anthropic",
         "model": "m",
+        "identity": None,
         "kind": None,
         "http_code": None,
         "message": None,
     }
+
+
+def test_last_call_budget_names_the_identity_and_keeps_passive_status(tmp_path: Path, monkeypatch):
+    # The spend limit stopping a call is not the provider failing: the
+    # marker says whose limit it was, and the provider status stays passive.
+    home = tmp_path / "home"
+    monkeypatch.setenv("HEADLONG_HOME", str(home))
+    _write_marker(home, {"ok": False, "ts": "2026-08-22T09:00:00Z", "provider": "openrouter",
+                         "model": "m", "identity": "probe", "kind": "budget", "http_code": None,
+                         "message": "spend limit reached: $25.01 of $25 in total; no request sent"})
+    root = _mk_identity(tmp_path, _thoughts(12, newest_minutes_ago=1, gap_s=30))
+    llm_health._cache.update(ts=0.0, root=None, payload=None)
+    payload = llm_health.llm_health(root)
+    assert payload["status"] == "ok"
+    assert payload["last_call"]["kind"] == "budget"
+    assert payload["last_call"]["identity"] == "probe"
 
 
 def test_last_call_garbage_ignored(tmp_path: Path, monkeypatch):

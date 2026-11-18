@@ -1,8 +1,8 @@
 """Per-day usage series for an identity, with an incremental cache.
 
 What the usage page shows: messages in/out, model calls, tokens (input,
-output, thinking), agentic runs started and reasoning steps, per UTC day,
-plus token totals per model. The same definitions as
+output, thinking), cost, agentic runs started and reasoning steps, per UTC
+day, plus token and cost totals per model. The same definitions as
 deploy/scripts/audel-metrics, computed locally.
 
 Two append-only sources feed it:
@@ -14,7 +14,12 @@ Two append-only sources feed it:
 * the usage ledger (``<identity_dir>/usage/llm.jsonl``), one line per
   successful bin/llm call from any caller (shellm runs, the responder's
   fast path, other thinkers, hand calls), with ts/model/tokens. bin/llm
-  appends it unconditionally, so it is the complete spend.
+  appends it unconditionally, so it is the complete spend. Lines carry
+  ``cost`` (USD) when the provider reported one (OpenRouter's usage.cost);
+  contrib/opencode appends one line per delegation step with
+  ``source: "opencode"``. Cost always comes from the ledger, whichever
+  source wins a day's tokens: the mind log has none, and it is the sum
+  bin/llm's spend limit (LLM_SPEND_LIMIT_USD) counts.
 
 Per day, the ledger wins when it has at least as many calls as the stamps
 (a complete ledger is a superset of the stamps); days before the ledger
@@ -44,7 +49,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 CACHE_DIRNAME = "usage"
 CACHE_FILE = "cache.json"
 LOCK_DIRNAME = ".lock"
@@ -117,6 +122,8 @@ def _empty_day() -> dict:
     day = dict.fromkeys(COUNT_KEYS, 0)
     day["run"] = _empty_tokens()   # from mind-log stamps (shellm runs)
     day["llm"] = _empty_tokens()   # from the bin/llm ledger (every call)
+    # From the ledger too: USD by who spent it, and how many lines had a cost.
+    day["cost"] = {"llm": 0.0, "opencode": 0.0, "priced": 0}
     return day
 
 
@@ -236,15 +243,24 @@ def _ingest_log(state: dict, line: bytes, identity_name: str) -> None:
 
 
 def _ingest_ledger(state: dict, line: bytes) -> None:
-    """Fold one bin/llm ledger line into the state."""
+    """Fold one bin/llm ledger line into the state. A cost counts even on a
+    line without tokens, as it does for bin/llm's spend limit."""
     state["ledger_rows"] += 1
     parsed = _parse_row(line)
     if parsed is None:
         state["ledger_skipped"] += 1
         return
     rec, day_key = parsed
-    if not _add_tokens(_day(state, day_key)["llm"], rec, str(rec.get("model") or "?")):
+    day = _day(state, day_key)
+    model = str(rec.get("model") or "?")
+    if not _add_tokens(day["llm"], rec, model):
         state["ledger_skipped"] += 1
+    cost = rec.get("cost")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        day["cost"]["opencode" if rec.get("source") == "opencode" else "llm"] += cost
+        day["cost"]["priced"] += 1
+        per_model = day["llm"]["models"][model]
+        per_model["cost"] = per_model.get("cost", 0.0) + cost
 
 
 def _read_appended(path: Path, offset: int, ingest) -> int:
@@ -336,14 +352,21 @@ def _pending_bytes(traj_dir: Path, ledger: Path | None, state: dict | None) -> i
     return max(0, pending)
 
 
+def _usd(value: float) -> float:
+    """Round away float noise (0.1 + 0.2); a call can cost $0.00001."""
+    return round(value, 8)
+
+
 def _merge_day(day: dict) -> tuple[dict, dict]:
     """One API day: counters plus the tokens of the winning source, and that
-    source's per-model map."""
+    source's per-model map; cost is the ledger's either way."""
     llm_calls, run_calls = day["llm"]["calls"], day["run"]["calls"]
     source = "ledger" if llm_calls > 0 and llm_calls >= run_calls else "mindlog"
     tokens = day["llm"] if source == "ledger" else day["run"]
     out = {key: day.get(key, 0) for key in COUNT_KEYS}
     out.update({key: tokens[key] for key in TOKEN_KEYS})
+    out["cost_llm"] = _usd(day["cost"]["llm"])
+    out["cost_opencode"] = _usd(day["cost"]["opencode"])
     out["source"] = source
     return out, tokens["models"]
 
@@ -363,18 +386,29 @@ def summary(traj_dir: Path, identity_id: str, identity_name: str,
     days = []
     by_model: dict[str, dict] = {}
     totals = {"in": 0, "out": 0, "think": 0, "calls": 0, "in_msg": 0, "out_msg": 0, "runs": 0}
+    cost = {"cost_llm": 0.0, "cost_opencode": 0.0}
+    ledger_calls = ledger_priced = 0
     ledger_since = None
     for day_key in sorted(daily):
         merged, models = _merge_day(daily[day_key])
         days.append([day_key, merged])
         for key in totals:
             totals[key] += int(merged.get(key, 0))
+        for key in cost:
+            cost[key] += merged[key]
         for model, counters in models.items():
-            bucket = by_model.setdefault(model, dict.fromkeys(TOKEN_KEYS, 0))
+            bucket = by_model.setdefault(model, {**dict.fromkeys(TOKEN_KEYS, 0), "cost": 0.0})
             for key in TOKEN_KEYS:
                 bucket[key] += int(counters.get(key, 0))
+        for model, counters in daily[day_key]["llm"]["models"].items():
+            bucket = by_model.setdefault(model, {**dict.fromkeys(TOKEN_KEYS, 0), "cost": 0.0})
+            bucket["cost"] += counters.get("cost", 0.0)
+        ledger_calls += daily[day_key]["llm"]["calls"]
+        ledger_priced += daily[day_key]["cost"]["priced"]
         if merged["source"] == "ledger" and ledger_since is None:
             ledger_since = day_key
+    for bucket in by_model.values():
+        bucket["cost"] = _usd(bucket["cost"])
     return {
         **base,
         "available": True,
@@ -385,8 +419,10 @@ def summary(traj_dir: Path, identity_id: str, identity_name: str,
             "rows": state.get("ledger_rows", 0),
             "skipped": state.get("ledger_skipped", 0),
             "since": ledger_since,
+            "calls": ledger_calls,
+            "priced": ledger_priced,
         },
         "daily": days,
         "by_model": {m: c for m, c in by_model.items() if c["calls"] > 0},
-        "totals": totals,
+        "totals": {**totals, **{key: _usd(value) for key, value in cost.items()}},
     }
