@@ -123,7 +123,12 @@ trigger_step_id=$(printf '%s' "$step_json" | jq -r '.step_id // empty' 2>/dev/nu
 # quiet paths all interpolate this, never the raw content. Redacted before
 # the 200-byte cut so digits straddling the cut are still caught.
 trigger_excerpt=$(printf '%s' "$trigger_content" | _redact_card)
-trigger_excerpt=$(printf '%.200s' "$trigger_excerpt")
+# The 200-byte excerpt cap is a write-time cut (be080b0 family): the
+# observation rows quoting the message are durable, so no later renderer
+# can mark the drop. Marked here with the dropped byte count and a route
+# to the message step, boundary repaired so the excerpt cannot end inside
+# a multibyte character (PR 171 class).
+trigger_excerpt=$(_excerpt_marked "$trigger_excerpt" 200 "full message in the raw log")
 
 [[ "$trigger_type" == "message" ]] || exit 0
 
@@ -886,9 +891,9 @@ if [[ -n "$reply" ]] && printf '%s' "$reply" | chat reply ${reply_args[@]+"${rep
     _extra=$(printf '%s' "$_extra" | jq -c --argjson s "$structured" --arg p "$_parse" '. + {structured: ($s == 1), parse: $p}')
     if [[ -n "$deferred_request" ]]; then
         _extra=$(printf '%s' "$_extra" | jq -c --arg r "$deferred_request" '. + {deferred: true, request: $r}')
-        _obs "Replied to $msg_from with a holding message and handed the mind a pending request: $(printf '%.200s' "$deferred_request")" replied "$_extra"
+        _obs "Replied to $msg_from with a holding message and handed the mind a pending request: $(_excerpt_marked "$deferred_request" 200 "full request in the pending action row")" replied "$_extra"
     else
-        _obs "Replied to $msg_from: $(printf '%.200s' "$reply")" replied "$_extra"
+        _obs "Replied to $msg_from: $(_excerpt_marked "$reply" 200 "full reply in the raw log")" replied "$_extra"
     fi
     printf '  [reply -> %s] %s\n' "$msg_from" "$(printf '%s' "$reply" | head -1)"
     _update_person_notes_async
