@@ -169,7 +169,7 @@ cp "$REPO"/thinkers/responder/* "$_noredact_dir/responder/"
 # so GNU's bare form made the Mac runner treat the script as the suffix
 # and the file path as the command, leaving the stripped copy identical
 # to the real step. Stream to the file instead; portable everywhere.
-sed 's#| _redact_keys | head -n 20#| head -n 20#' "$REPO/thinkers/responder/step" > "$_noredact_dir/responder/step"
+sed 's#| _redact_keys)#)#' "$REPO/thinkers/responder/step" > "$_noredact_dir/responder/step"
 chmod +x "$_noredact_dir/responder/step"
 rm -f "$ID/memories"/*.md
 # Fresh trigger step: the idempotency guard skips a trigger that already
