@@ -21,6 +21,22 @@ _require_env
 THINK_MODEL="${THINK_MODEL:-${SHELLM_MODEL:-claude-opus-4-7}}"
 THINK_CONTEXT_TAIL="${THINK_CONTEXT_TAIL:-20}"
 REPLY_MODEL="${MONOLITH_REPLY_MODEL:-$THINK_MODEL}"
+RESPONDER_PARTIALS_DIR="responder-partials"
+RESPONDER_PARTIAL_META_FILE="meta.json"
+RESPONDER_PARTIAL_CONTENT_FILE="content.txt"
+
+partial_dir=""
+partial_content_file=""
+
+_partial_key() {
+    printf '%s' "$1" | sed -E 's/[^A-Za-z0-9_-]/_/g'
+}
+
+_partial_cleanup() {
+    [[ -n "$partial_dir" && -d "$partial_dir" ]] || return 0
+    find "$partial_dir" -type f -delete 2>/dev/null || true
+    find "$partial_dir" -depth -type d -delete 2>/dev/null || true
+}
 
 # The reply call is bounded twice, on its own, never inherited from the mind:
 # RESPONDER_MAX_TOKENS caps the output (reasoning counts against it; the
@@ -81,6 +97,17 @@ _reply_llm() {   # _reply_llm <llm args...>; stdout = the reply, rc = llm's rc
         || printf '%s' "$prev" > "$_rl_meta_file"
     rm -f "$usage" "$err"
     return "$rc"
+}
+
+# Text replies stream into the partial file the talk UI polls (web chat.py);
+# a structured reply is a JSON object, not something to show a person. A
+# failed preview write (disk full) must not turn a good reply into a failure.
+_reply_stream() {
+    if [[ -n "$partial_content_file" ]]; then
+        _reply_llm "$@" | { tee "$partial_content_file" || cat; }
+    else
+        _reply_llm "$@"
+    fi
 }
 _rl_sync() {   # after each _reply_llm: its record into this shell's variables
     _llm_meta=$(cat "$_rl_meta_file" 2>/dev/null); [[ -n "$_llm_meta" ]] || _llm_meta='{}'
@@ -222,6 +249,30 @@ jq -nc \
     '{type:"reply_claim", content:("handling reply to " + $from), source:$source}
      + (if $trigger == "" then {} else {trigger_step: $trigger} end)' \
     | traj append >/dev/null || true
+
+if [[ -n "$trigger_step_id" ]]; then
+    partial_key=$(_partial_key "$trigger_step_id")
+    partial_dir="$IDENTITY_DIR/run/$RESPONDER_PARTIALS_DIR/$partial_key"
+    partial_content_file="$partial_dir/$RESPONDER_PARTIAL_CONTENT_FILE"
+    partial_meta_file="$partial_dir/$RESPONDER_PARTIAL_META_FILE"
+    if mkdir -p "$partial_dir"; then
+        if jq -nc \
+            --arg from "$IDENTITY_NAME" \
+            --arg to "$msg_from" \
+            --arg reply_to "$trigger_step_id" \
+            '{from:$from, to:$to, reply_to:$reply_to}' \
+            > "$partial_meta_file" && : > "$partial_content_file"; then
+            trap _partial_cleanup EXIT
+        else
+            _partial_cleanup
+            partial_dir=""
+            partial_content_file=""
+        fi
+    else
+        partial_dir=""
+        partial_content_file=""
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Compose and send the reply
@@ -657,6 +708,7 @@ fi
 
 printf '  replying to %s...\n' "$msg_from" >&2
 reply=""
+llm_rc=0
 _parse="text"
 _rl_meta_file=$(mktemp)
 printf '{}' > "$_rl_meta_file"
@@ -676,17 +728,19 @@ if [[ "$structured" -eq 1 ]]; then
             structured=0
             _parse="text"
             _compose_reply_system 0
-            reply=$(_reply_llm -m "$REPLY_MODEL" -M "$convo_json" -s "$reply_system") || true
+            reply=$(_reply_stream -m "$REPLY_MODEL" -M "$convo_json" -s "$reply_system") || llm_rc=$?
             _rl_sync
             _llm_meta=$(printf '%s' "$_llm_meta" | jq -c '. + {fallback: true}' 2>/dev/null || printf '%s' "$_llm_meta")
             printf '%s' "$_llm_meta" > "$_rl_meta_file"
         fi
     fi
 else
-    reply=$(_reply_llm -m "$REPLY_MODEL" -M "$convo_json" -s "$reply_system") || true
+    reply=$(_reply_stream -m "$REPLY_MODEL" -M "$convo_json" -s "$reply_system") || llm_rc=$?
 fi
 _rl_sync
 rm -f "$_rl_meta_file"
+# A failed call's stdout (a stream cut mid-reply) is never sent as the reply.
+[[ $llm_rc -eq 0 ]] || reply=""
 
 # Nothing came back and the call itself was the reason: say which.
 if [[ -z "$(printf '%s' "$reply" | tr -d '[:space:]')" ]]; then
@@ -768,6 +822,7 @@ reply=$(printf '%s' "$reply" | sed -E '1s/^[[:space:]]*chat reply [A-Za-z0-9._-]
 first_line=$(printf '%s' "$reply" | head -n 1 | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
 if [[ "$first_line" == "NO_REPLY" ]]; then
     printf '  model declined to reply (NO_REPLY)\n' >&2
+    _partial_cleanup
     _obs "Chose not to reply to $msg_from — their message needed no reply (already answered, or a bare acknowledgment). Their message was: $trigger_excerpt" no-reply "$(_finish_metrics)"
     exit 0
 fi
@@ -882,6 +937,7 @@ reply_args=()
 # holding line on the same inbound.
 [[ -n "$deferred_request" ]] && reply_args+=(--force)
 if [[ -n "$reply" ]] && printf '%s' "$reply" | chat reply ${reply_args[@]+"${reply_args[@]}"} "$msg_from"; then
+    _partial_cleanup
     _extra=$(_finish_metrics)
     _extra=$(printf '%s' "$_extra" | jq -c --argjson s "$structured" --arg p "$_parse" '. + {structured: ($s == 1), parse: $p}')
     if [[ -n "$deferred_request" ]]; then
@@ -897,6 +953,7 @@ fi
 
 # Reply failed — surface it so the monolith can pick it up.
 printf '  reply failed — appending failure observation\n' >&2
+_partial_cleanup
 _kind=send
 [[ -n "$reply" ]] || _kind=empty
 _obs "reply failed: could not send a reply to $msg_from (empty model output or chat error — see responder log). Their message was: $trigger_excerpt" reply-failed "$(_fail_metrics "$_kind")"
