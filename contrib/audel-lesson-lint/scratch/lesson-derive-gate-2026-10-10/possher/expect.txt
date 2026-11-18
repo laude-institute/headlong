@@ -1,0 +1,7 @@
+a-her-pluirr.md accept
+a-her-pluirr2.md accept
+a-her-plureg.md accept
+a-her-sing.md accept
+a-his-plureg.md accept
+a-our-plureg.md accept
+g-obj-her.md refuse

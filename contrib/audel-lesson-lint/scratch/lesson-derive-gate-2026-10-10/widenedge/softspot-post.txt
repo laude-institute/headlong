@@ -1,0 +1,19 @@
+ok   m-coref-second.md  refuse
+ok   m-coref-temporal.md refuse
+ok   m-coref-widen.md   refuse
+ok   m-date.md          refuse
+ok   m-join.md          refuse
+ok   m-join2.md         refuse
+ok   m-noone.md         refuse
+ok   m-pr.md            refuse
+ok   m-stepnum.md       refuse
+ok   m-year.md          refuse
+ok   a-35fix.md         accept
+ok   a-andcheap.md      accept
+FAIL a-andverb.md       want=accept got=refuse
+ok   a-coref-all.md     accept
+ok   a-coref-none.md    accept
+ok   a-countnoun.md     accept
+ok   a-oneofthe.md      accept
+ok   a-tenfix.md        accept
+pass=17 fail=1 of-which-gap(mutant-accepted)=0

@@ -1,0 +1,13 @@
+g-obj-her.md refuse
+g-obj-her2.md refuse
+g-obj-him.md refuse
+g-obj-them.md refuse
+g-obj-us.md refuse
+a-gov-forus.md accept
+a-gov-pp.md accept
+a-her-gate.md accept
+a-her-green.md accept
+a-nomsubj.md accept
+a-result-clean.md accept
+a-subj-det.md accept
+a-subj-it.md accept

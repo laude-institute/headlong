@@ -1,0 +1,17 @@
+SWEEP 2026-10-12T12:25:18Z
+
+on-disk dirs: 46
+
+--- adjrel ---
+ok adjrel/a-anaphoric-ctl.md want=accept got=0
+ok adjrel/a-bare-ctl.md     want=accept got=0
+ok adjrel/a-ofthem-ctl.md   want=accept got=0
+ok adjrel/a-relcl-exposed.md want=accept got=0
+ok adjrel/a-relcl-flagged.md want=accept got=0
+ok adjrel/a-relcl-kept.md   want=accept got=0
+ok adjrel/a-relcl-named-ctl.md want=accept got=0
+ok adjrel/a-relcl-produced.md want=accept got=0
+ok adjrel/a-relcl-pronoun.md want=accept got=0
+ok adjrel/a-relcl-showed.md want=accept got=0
+ok adjrel/a-verbmid-all-ctl.md want=accept got=0
+ok adjrel/a-verbmid-both-ctl.md want=accept got=0

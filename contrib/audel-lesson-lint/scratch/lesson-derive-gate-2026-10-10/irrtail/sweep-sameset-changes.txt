@@ -1,0 +1,30 @@
+165,172c165,172
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outflew.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outleft.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outrang.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outrangout.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outsetinmotion.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outshone.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/a-pluraltail-ran.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/a-pluraltail.md
+---
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outflew.md
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outleft.md
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outrang.md
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outrangout.md
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outsetinmotion.md
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/a-outshone.md
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/a-pluraltail-ran.md
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/a-pluraltail.md
+181c181
+< refuse	scratch/lesson-derive-gate-2026-10-10/irrtail/probes/probe-setinmotion.md
+---
+> accept	scratch/lesson-derive-gate-2026-10-10/irrtail/probes/probe-setinmotion.md
+413,415c413,415
+< refuse	scratch/lesson-derive-gate-2026-10-10/verbtail/p-noteskept.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/verbtail/p-rang.md
+< refuse	scratch/lesson-derive-gate-2026-10-10/verbtail/p-shone.md
+---
+> accept	scratch/lesson-derive-gate-2026-10-10/verbtail/p-noteskept.md
+> accept	scratch/lesson-derive-gate-2026-10-10/verbtail/p-rang.md
+> accept	scratch/lesson-derive-gate-2026-10-10/verbtail/p-shone.md

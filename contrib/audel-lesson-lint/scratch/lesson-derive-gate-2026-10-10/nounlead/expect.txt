@@ -1,0 +1,7 @@
+a-bare-all.md accept
+a-bare-none.md accept
+a-ofthem.md accept
+lesson-gate-draft.md accept
+m-adjnoun-both.md refuse
+m-adjnoun-runs.md refuse
+m-adjnoun-tests.md refuse

@@ -1,0 +1,7 @@
+ok   file scratch/lesson-derive-gate-2026-10-10/relcl/pre.txt
+ok   file scratch/lesson-derive-gate-2026-10-10/relcl/post.txt
+ok   contains scratch/lesson-derive-gate-2026-10-10/relcl/runall.txt
+ok   contains bin/lesson-overreach-lint
+ok   cmd
+ok   cmd
+PASS 6 evidence line(s) re-derived and reach lint clean

@@ -1,0 +1,8 @@
+ok   contains scratch/lesson-derive-gate-2026-10-10/nounlead/pre.txt
+ok   contains scratch/lesson-derive-gate-2026-10-10/bothedge/verdict.txt
+ok   contains scratch/lesson-derive-gate-2026-10-10/bothedge/verdict.txt
+ok   contains scratch/lesson-derive-gate-2026-10-10/nounlead/sweep-changes.txt
+ok   absent scratch/lesson-derive-gate-2026-10-10/nounlead/sweep-changes.txt
+ok   contains scratch/lesson-derive-gate-2026-10-10/nounlead/runall.txt
+ok   cmd
+PASS 7 evidence line(s) re-derived and reach lint clean

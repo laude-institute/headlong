@@ -1,0 +1,5 @@
+Opera paper body extract marker. The full plain text extract of arXiv 2609.33987 is
+retained outside version control to avoid redistributing the paper body. This marker
+file stands in for it in the self-contained test tree. The two disputed percentage
+figures from my earlier retracted claim do not appear in the retained Opera note and
+are deliberately not recorded here.

@@ -1,0 +1,7 @@
+ok   file scratch/lesson-derive-gate-2026-10-10/counttrail/pre.txt
+ok   contains scratch/lesson-derive-gate-2026-10-10/counttrail/pre.txt
+ok   file scratch/lesson-derive-gate-2026-10-10/counttrail/post.txt
+ok   absent scratch/lesson-derive-gate-2026-10-10/counttrail/post.txt
+ok   cmd
+ok   cmd
+PASS 6 evidence line(s) re-derived and reach lint clean

@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# lesson-overreach-lint DRAFT
+# Reach check for lesson drafts. lesson-derive-gate verifies that every
+# evidence line re-derives right now (the link from rule to interactions).
+# This checks the other half: the lesson text must not carry an unbounded
+# universal claim. Empirical claims must be bounded to what was checked;
+# norms must be declared as norms. Evidence lines are not lesson text.
+#
+# Deepened twice on 2026-10-10 (word-list boundary, then mechanism edges).
+# Scope is judged per clause, not per line or per sentence:
+#   - a bound only counts when it sits in the clause that carries the
+#     quantifier, so a bounded clause cannot shield a second clause beside it
+#     on the same line ("in the 3 cases i checked the gate refused, and the
+#     fix always holds" is refused);
+#   - one exception, a bare scope clause whose only content is the bound
+#     phrase itself bounds the sentence ("in the 2 windows i checked, nothing
+#     moved" is accepted), because that is a fronted scope marker, not an
+#     assertion being borrowed;
+#   - negated universals count (under no circumstances, in no case, no matter
+#     what, and bare "no NOUN" as in "no lesson may skip");
+#   - intensifier adverbs count (invariably, without fail, at all times);
+#   - a count of the things a quantifier ranges over bounds it ("the 35
+#     fixtures ... all pass"), same as "3 of the 3" always did.
+# Known soft spots (named in the note for 2026-10-10): the count whitelist is
+# open-ended, the bare-scope test is a filler-word strip rather than a parse,
+# and the clause split is punctuation-only, so "X and Y holds" with no comma
+# is judged as one clause.
+set -u
+f=${1:-}
+if [ -z "$f" ]; then echo "usage: lesson-overreach-lint DRAFT" >&2; exit 2; fi
+if [ ! -f "$f" ]; then echo "no such draft: $f" >&2; exit 2; fi
+qre='\b(never|always|none|nothing|no one|every|everyone|everything|everywhere|all|any|anyone|anything|anywhere|each|whenever|wherever|without exception|universally|exclusively|cannot|impossible|nowhere|invariably|inevitably|without fail|at all times|across the board|in every respect|each and every)\b'
+nre='\b(under no circumstances|in no case|in no instance|no matter (what|how|when|where|who)|without exception|in all cases|at all times)\b'
+bare_nore='(^|[[:space:]])no[[:space:]]+[a-z]+'
+bre='\b(in the [0-9a-zA-Z-]+ (cases|fixtures|samples|runs|steps|checks|instances|windows) (i |we )?(checked|verified|ran|saw|read)|among the|so far|in (this|these|my) (case|cases|sample|samples|window|windows|checks|reading|tests?)|on (this|that) (machine|build|day|run|branch)|as (checked|verified|observed) here|[0-9]+ of [0-9]+|each of the|[0-9]+ of the [0-9]+|proves only that|says nothing about|all (the )?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)|every (one of (the )?)?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen))\b'
+countre='\b([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)\b'
+filler='runs?|cases?|checks?|windows?|fixtures?|samples?|steps?|instances?|days?|builds?|machines?|branches?|tests?|readings?|checked|verified|ran|saw|read|the|a|an|of|in|on|at|to|and|or|but|so|then|i|we|my|our|among'
+normre='^[[:space:]]*(rule|habit|norm)[[:space:]]*:'
+
+hits_of() {
+  { printf '%s\n' "$1" | grep -ioE "$qre"
+    printf '%s\n' "$1" | grep -ioE "$nre"
+    printf '%s\n' "$1" | grep -ioE "$bare_nore"; } | sort -u | tr '\n' ' '
+}
+bound_in() {
+  printf '%s\n' "$1" | grep -qiE "$bre" && return 0
+  printf '%s\n' "$1" | grep -qiE "$countre" && return 0
+  return 1
+}
+bare_scope() {
+  bound_in "$1" || return 1
+  rem=$(printf '%s\n' "$1" | sed -E "s/$bre//gI; s/$countre//gI; s/\\b($filler)\\b//gI; s/[[:space:]]+//g")
+  [ -z "$rem" ]
+}
+
+bad=0
+n=0
+while IFS= read -r line || [ -n "$line" ]; do
+  n=$((n+1))
+  t="${line#evidence:}"
+  t="${t#evidence }"
+  t="${t#"${t%%[![:space:]]*}"}"
+  case "$t" in
+    ''|file\ *|contains\ *|absent\ *|cmd\ *) continue ;;
+  esac
+  if printf '%s\n' "$line" | grep -qiE "$normre"; then continue; fi
+  # The line label (Lesson:/Rule:/Habit:/Norm:) names the line type and is not
+  # claim content; strip it before judging so a fronted bound phrase still
+  # reads as a bare scope marker ("Lesson: in the 6 fixtures checked, ..." must
+  # accept). Verified after the fix against a re-break corpus in edge/labelbreak.
+  body=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*(lesson|rule|habit|norm)[[:space:]]*:[[:space:]]*//I')
+  linebad=0
+  while IFS= read -r sent || [ -n "$sent" ]; do
+    [ -z "${sent//[[:space:]]/}" ] && continue
+    clauses=$(printf '%s\n' "$sent" | tr ',;' '\n')
+    bare=0
+    while IFS= read -r c || [ -n "$c" ]; do
+      [ -z "${c//[[:space:]]/}" ] && continue
+      if bare_scope "$c"; then bare=1; fi
+    done <<CLAUSES
+$clauses
+CLAUSES
+    while IFS= read -r c || [ -n "$c" ]; do
+      [ -z "${c//[[:space:]]/}" ] && continue
+      hits=$(hits_of "$c")
+      [ -z "$hits" ] && continue
+      bound_in "$c" && continue
+      [ "$bare" -eq 1 ] && continue
+      printf 'line %s: unbounded universal (%s) in: %s\n' "$n" "$(printf '%s' "$hits" | sed 's/ $//')" "$line"
+      printf 'bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).\n'
+      linebad=1
+    done <<CLAUSES
+$clauses
+CLAUSES
+  done <<SENTS
+$(printf '%s\n' "$body" | tr '.!?' '\n')
+SENTS
+  if [ "$linebad" -ne 0 ]; then bad=1; fi
+done < "$f"
+if [ "$bad" -ne 0 ]; then exit 1; fi
+exit 0

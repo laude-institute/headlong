@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# lesson-overreach-lint DRAFT
+# Reach check for lesson drafts. lesson-derive-gate verifies that every
+# evidence line re-derives right now (the link from rule to interactions).
+# This checks the other half: the lesson text must not carry an unbounded
+# universal claim. Empirical claims must be bounded to what was checked;
+# norms must be declared as norms. Evidence lines are not lesson text.
+set -u
+f=${1:-}
+if [ -z "$f" ]; then echo "usage: lesson-overreach-lint DRAFT" >&2; exit 2; fi
+if [ ! -f "$f" ]; then echo "no such draft: $f" >&2; exit 2; fi
+qre='\b(never|always|none|nothing|no one|every|everyone|everything|everywhere|all|any|anyone|anything|anywhere|each|whenever|wherever|without exception|universally|exclusively|cannot|impossible|nowhere)\b'
+bre='\b(in the [0-9a-zA-Z-]+ (cases|fixtures|samples|runs|steps|checks|instances|windows) (i |we )?(checked|verified|ran|saw|read)|among the|so far|in (this|these|my) (case|cases|sample|samples|window|windows|checks|reading|tests?)|on (this|that) (machine|build|day|run|branch)|as (checked|verified|observed) here|[0-9]+ of [0-9]+|each of the|[0-9]+ of the [0-9]+|proves only that|says nothing about|all (the )?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)|every (one of (the )?)?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen))\b'
+normre='^[[:space:]]*(rule|habit|norm)[[:space:]]*:'
+bad=0
+n=0
+while IFS= read -r line || [ -n "$line" ]; do
+  n=$((n+1))
+  case "$line" in
+    ''|evidence\ *|file\ *|contains\ *|absent\ *|cmd\ *) continue ;;
+  esac
+  if printf '%s\n' "$line" | grep -qiE "$normre"; then continue; fi
+  hits=$(printf '%s\n' "$line" | grep -ioE "$qre" | sort -u | tr '\n' ' ')
+  if [ -z "$hits" ]; then continue; fi
+  if printf '%s\n' "$line" | grep -qiE "$bre"; then continue; fi
+  printf 'line %s: unbounded universal (%s) in: %s\n' "$n" "$(printf '%s' "$hits" | sed 's/ $//')" "$line"
+  printf 'bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).\n'
+  bad=1
+done < "$f"
+if [ "$bad" -ne 0 ]; then exit 1; fi
+exit 0

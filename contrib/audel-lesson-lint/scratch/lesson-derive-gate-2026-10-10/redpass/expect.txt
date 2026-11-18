@@ -1,0 +1,6 @@
+a-redpass-builds.md refuse
+a-redpass-measured.md accept
+a-redpass-named.md accept
+m-objpred.md refuse
+m-objpred2.md refuse
+m-plain.md refuse

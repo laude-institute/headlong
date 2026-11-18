@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# lesson-overreach-lint DRAFT
+# Reach check for lesson drafts. lesson-derive-gate verifies that every
+# evidence line re-derives right now (the link from rule to interactions).
+# This checks the other half: the lesson text must not carry an unbounded
+# universal claim. Empirical claims must be bounded to what was checked;
+# norms must be declared as norms. Evidence lines are not lesson text.
+#
+# Deepened twice on 2026-10-10 (word-list boundary, then mechanism edges).
+# Scope is judged per clause, not per line or per sentence:
+#   - a bound only counts when it sits in the clause that carries the
+#     quantifier, so a bounded clause cannot shield a second clause beside it
+#     on the same line ("in the 3 cases i checked the gate refused, and the
+#     fix always holds" is refused);
+#   - one exception, a bare scope clause whose only content is the bound
+#     phrase itself bounds the sentence ("in the 2 windows i checked, nothing
+#     moved" is accepted), because that is a fronted scope marker, not an
+#     assertion being borrowed;
+#   - negated universals count (under no circumstances, in no case, no matter
+#     what, and bare "no NOUN" as in "no lesson may skip");
+#   - intensifier adverbs count (invariably, without fail, at all times);
+#   - a count of the things a quantifier ranges over bounds it ("the 35
+#     fixtures ... all pass"), same as "3 of the 3" always did.
+# Deepened a third time on 2026-10-10 (soft-spot pass): a count only bounds
+# when it counts the things checked (see countre below), and the clause split
+# also breaks at a coordinating conjunction when what follows starts with a
+# subject, so "in the 2 cases I checked the gate refused and the fix always
+# holds" is judged as two clauses. Residual soft spots (note for 2026-10-10):
+# the bare-scope test is a filler-word strip rather than a parse, the clause
+# split is punctuation and subject-start only so a conjunction joining two
+# verb phrases with an unlisted subject is still judged as one clause, and a
+# count trailing its noun is not read as a count.
+# Deepened a fourth time on 2026-10-10 (seam pass): the clause split now
+# breaks at the verb-phrase coordinators and, but, or and nor whatever follows
+# them, so two verb phrases sharing a subject no longer share one clause and
+# one bound (in the 2 cases I checked the gate refused and always holds is now
+# refused). so, then, while and whereas still split only before a subject,
+# because so far is itself a bound phrase. Remaining soft spots: the
+# filler-strip bare-scope test and that second group of coordinators joining two
+# verb phrases into one clause. Deepened a fifth time on 2026-10-10 (counttrail
+# corpus): a count trailing its noun is now read as a count of the things
+# checked, when a count phrase (N of them, N in total, a parenthesized N) trails
+# a plural check noun and a bare universal with a listed verb follows it in the
+# same sentence (the fixtures, 35 of them, all pass). The sentence must carry no
+# adverbial quantifier of its own or the clause loop below judges it, and a bare
+# universal with its own domain noun (all engineers) or an unlisted verb is not
+# treated as coreferential. Residual named for the next pass: a trailing count
+# does not reach a coordinated adverbial clause (all pass and never fail).
+# Deepened a sixth time on 2026-10-10 (coord corpus): so, then, while and
+# whereas now split the clause whatever follows them, not only before a
+# listed subject, so a coordinator joining two verb phrases with no subject
+# after it no longer keeps both phrases in one clause. "so far" is swapped out
+# before the split and restored after, because it is itself a bound phrase and
+# a split there would strand its bound. Residuals named for the next pass: the
+# bare-scope test is still a filler-word strip rather than a parse, a trailing
+# count does not reach a coordinated adverbial clause, and the split treats
+# "so that" and "so as" as splits, which can strand a bound sitting after
+# them.
+set -u
+f=${1:-}
+if [ -z "$f" ]; then echo "usage: lesson-overreach-lint DRAFT" >&2; exit 2; fi
+if [ ! -f "$f" ]; then echo "no such draft: $f" >&2; exit 2; fi
+qre='\b(never|always|none|nothing|no one|every|everyone|everything|everywhere|all|any|anyone|anything|anywhere|each|whenever|wherever|without exception|universally|exclusively|cannot|impossible|nowhere|invariably|inevitably|without fail|at all times|across the board|in every respect|each and every)\b'
+nre='\b(under no circumstances|in no case|in no instance|no matter (what|how|when|where|who)|without exception|in all cases|at all times)\b'
+bare_nore='(^|[[:space:]])no[[:space:]]+[a-z]+'
+bre='\b(in the [0-9a-zA-Z-]+ (cases|fixtures|samples|runs|steps|checks|instances|windows) (i |we )?(checked|verified|ran|saw|read)|among the|so far|in (this|these|my) (case|cases|sample|samples|window|windows|checks|reading|tests?)|on (this|that) (machine|build|day|run|branch)|as (checked|verified|observed) here|[0-9]+ of [0-9]+|each of the|[0-9]+ of the [0-9]+|proves only that|says nothing about|all (the )?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)|every (one of (the )?)?([0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen))\b'
+# Count bound (soft-spot fix 2026-10-10): a number only bounds a quantifier
+# when it counts the things checked. "PR 156", "step 3", "2026-10-03", "in
+# 2026" and the "one" inside "no one" are not counts of checked things and no
+# longer bound anything, while "the 35 fixtures all pass" and "the ten
+# fixtures I built all pass" still do. The count comes first and a plural
+# check noun must follow it within at most three short modifier words, and the
+# noun must be plural, because "step 3" names a location and not a count of
+# steps checked. Residual shapes this misses, named in the note for
+# 2026-10-10: a count trailing its noun ("the fixtures, 35 of them, all
+# pass"), and a count-noun pair with an unlisted modifier between them.
+numre='([0-9]{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)'
+nounplre='(cases|fixtures|samples|runs|steps|checks|instances|windows|builds|machines|branches|tests|readings|days|attempts|examples|records|sessions|files|notes|papers|mutants|drafts|lines|claims|items|entries|rounds|fixes|games|tasks|rows|sends|probes|evidence|verdicts|sentences|sections|findings|loops|rules|lessons|skills|messages|commits|pulls|requests|windows)'
+modre='(of|in|from|among|the|a|an|my|our|these|those|new|fresh|total|green|checked|verified|ran|saw|read|built|recorded|named|listed|individual|separate|distinct|full|whole|evidence|deepen|folded|real|extra)'
+countre='\b'"$numre"'\b([[:space:]]+'"$modre"'){0,3}[[:space:]]+\b'"$nounplre"'\b'
+
+filler='runs?|cases?|checks?|windows?|fixtures?|samples?|steps?|instances?|days?|builds?|machines?|branches?|tests?|readings?|checked|verified|ran|saw|read|the|a|an|of|in|on|at|to|and|or|but|so|then|i|we|my|our|among'
+tailre='(all|none|nothing|both)[[:space:]]+(pass|passes|passed|succeed|succeeded|clear|cleared|hold|held|fail|failed|break|broke|work|worked|stall|stalled|move|moved|change|changed|stop|stopped|land|landed|send|sent|arrive|arrived|run|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|stayed|remained|refused|accepted|verified|checked|green|clean|fine|open|closed|stale)'
+appre='\b'"$nounplre"'\b[^.;!?]{0,40}\b'"$numre"'\b[[:space:]]+(of them|in total)\b[^.;!?]{0,40}\b'"$tailre"'\b|\b'"$nounplre"'\b[[:space:]]*\([[:space:]]*'"$numre"'[[:space:]]*\)[[:space:]]*\b'"$tailre"'\b'
+advre='\b(always|never|cannot|impossible|invariably|inevitably|without fail|at all times|universally|exclusively|everywhere|anywhere|nowhere|each and every|every|each|anyone|anything|any|without exception)\b'
+normre='^[[:space:]]*(rule|habit|norm)[[:space:]]*:'
+
+hits_of() {
+  { printf '%s\n' "$1" | grep -ioE "$qre"
+    printf '%s\n' "$1" | grep -ioE "$nre"
+    printf '%s\n' "$1" | grep -ioE "$bare_nore"; } | sort -u | tr '\n' ' '
+}
+bound_in() {
+  printf '%s\n' "$1" | grep -qiE "$bre" && return 0
+  printf '%s\n' "$1" | grep -qiE "$countre" && return 0
+  return 1
+}
+# Coreference (soft-spot fix 2026-10-10, follow-on): a coordinated clause
+# whose only universal is a bare pronoun and that names no domain of its own
+# ranges over the domain of its sibling clause, so it inherits that clause's
+# bound ("all three sources were checked and none failed" is bounded over the
+# three sources). Anything that widens the domain ("else", "ever", "anywhere",
+# "everywhere", "again") or names its own domain ("every later build") is not
+# coreferential and is judged on its own.
+corefre='^[[:space:]]*(and|but|or|nor|so|then|while|whereas)?[[:space:]]*(none|both|nothing|all)([[:space:]]+(failed|passed|broke|worked|held|moved|changed|stopped|stuck|landed|merged|sent|arrived|ran|went|came|did|was|were|got|made|took|kept|left|fell|rose|cleared|clean|green|red|fine|broken|fixed|open|closed|stale|new|old|slow|fast|wrong|right|late|early|quiet|loud|clear|fuzzy|stable|stuck))([[:space:]]+[a-z]+){0,6}[[:space:]]*$'
+coref_widen='(^|[[:space:],])(else|other|others|anywhere|everywhere|ever|again|alike|instead|excluded|exempt)([[:space:],]|$)'
+coref_self='\b(every|each|any|none|nothing|all|no)[[:space:]]+[a-z]+'
+coref_ok() {
+  printf '%s\n' "$1" | grep -qiE "$corefre" || return 1
+  printf '%s\n' "$1" | grep -qiE "$coref_widen" && return 1
+  printf '%s\n' "$1" | sed -E "s/^[[:space:]]*(and|but|or|nor|so|then|while|whereas)?[[:space:]]*(none|both|nothing|all)\\b/I" | grep -qiE "$coref_self" && return 1
+  return 0
+}
+bare_scope() {
+  bound_in "$1" || return 1
+  rem=$(printf '%s\n' "$1" | sed -E "s/$bre//gI; s/$countre//gI; s/\\b($filler)\\b//gI; s/[[:space:]]+//g")
+  [ -z "$rem" ]
+}
+
+bad=0
+n=0
+while IFS= read -r line || [ -n "$line" ]; do
+  n=$((n+1))
+  t="${line#evidence:}"
+  t="${t#evidence }"
+  t="${t#"${t%%[![:space:]]*}"}"
+  case "$t" in
+    ''|file\ *|contains\ *|absent\ *|cmd\ *) continue ;;
+  esac
+  if printf '%s\n' "$line" | grep -qiE "$normre"; then continue; fi
+  # The line label (Lesson:/Rule:/Habit:/Norm:) names the line type and is not
+  # claim content; strip it before judging so a fronted bound phrase still
+  # reads as a bare scope marker ("Lesson: in the 6 fixtures checked, ..." must
+  # accept). Verified after the fix against a re-break corpus in edge/labelbreak.
+  body=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*(lesson|rule|habit|norm)[[:space:]]*:[[:space:]]*//I')
+  linebad=0
+  while IFS= read -r sent || [ -n "$sent" ]; do
+    [ -z "${sent//[[:space:]]/}" ] && continue
+    # Appositive trailing count (soft-spot fix 2026-10-10, counttrail corpus):
+    # a count trailing its noun is still a count of the things checked. When a
+    # count phrase (N of them, N in total, a parenthesized N) trails a plural
+    # check noun and a bare universal with a listed verb follows it, the count
+    # bounds the sentence even though it trails the noun. It bounds only that
+    # shape: a sentence carrying an adverbial quantifier of its own is judged by
+    # the clause loop below, where a trailing count sitting in its own clause
+    # does not reach the quantifier clause.
+    if printf '%s\n' "$sent" | grep -qiE "$appre" && ! printf '%s\n' "$sent" | grep -qiE "$advre"; then
+      continue
+    fi
+    clauses=$(printf '%s\n' "$sent" | sed -E 's/\bso far\b/SOFARBOUND/gI; s/[;,]/|/g; s/[[:space:]](and|but|or|nor)[[:space:]]/|/gI; s/ (so|then|while|whereas) (the|a|an|this|that|these|those|it|they|we|I|he|she|my|our|your|its|every|each|any|all|no|none|nothing|both) /|\2 /gI; s/[[:space:]](so|then|while|whereas)[[:space:]]/|/gI' | tr '|' '\n' | sed 's/SOFARBOUND/so far/g')
+    sibbound=0
+    while IFS= read -r c || [ -n "$c" ]; do
+      [ -z "${c//[[:space:]]/}" ] && continue
+      if bound_in "$c"; then sibbound=1; fi
+    done <<CLAUSES
+$clauses
+CLAUSES
+    bare=0
+    while IFS= read -r c || [ -n "$c" ]; do
+      [ -z "${c//[[:space:]]/}" ] && continue
+      if bare_scope "$c"; then bare=1; fi
+    done <<CLAUSES
+$clauses
+CLAUSES
+    while IFS= read -r c || [ -n "$c" ]; do
+      [ -z "${c//[[:space:]]/}" ] && continue
+      hits=$(hits_of "$c")
+      [ -z "$hits" ] && continue
+      bound_in "$c" && continue
+      [ "$bare" -eq 1 ] && continue
+      if [ "$sibbound" -eq 1 ] && coref_ok "$c"; then continue; fi
+      printf 'line %s: unbounded universal (%s) in: %s\n' "$n" "$(printf '%s' "$hits" | sed 's/ $//')" "$line"
+      printf 'bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).\n'
+      linebad=1
+    done <<CLAUSES
+$clauses
+CLAUSES
+  done <<SENTS
+$(printf '%s\n' "$body" | tr '.!?' '\n')
+SENTS
+  if [ "$linebad" -ne 0 ]; then bad=1; fi
+done < "$f"
+if [ "$bad" -ne 0 ]; then exit 1; fi
+exit 0

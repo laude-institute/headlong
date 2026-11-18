@@ -1,0 +1,8 @@
+a-gov-pp               accept   Lesson: all logs the fix kept in the tests stayed clean.
+a-gov-sing             accept   Lesson: all logs the fix kept the gate held and none leaked.
+a-phrasal-open         accept   Lesson: all logs the latch flung open stayed clean.
+a-result-clean         accept   Lesson: all logs the fix kept clean stayed clean.
+g-bare-runners         refuse   Lesson: all logs the fix kept runners failed.
+g-mass-bread           accept   Lesson: all logs the fix kept bread failed.
+g-pron-it              accept   Lesson: all logs the fix kept it failed.
+g-pron-them            accept   Lesson: all logs the fix kept them failed.

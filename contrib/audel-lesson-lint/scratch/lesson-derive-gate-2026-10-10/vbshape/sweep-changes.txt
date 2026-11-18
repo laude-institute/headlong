@@ -1,0 +1,8 @@
+scratch/lesson-derive-gate-2026-10-10/adjrel/a-relcl-exposed.md pre=1 post=0
+scratch/lesson-derive-gate-2026-10-10/adjrel/a-relcl-flagged.md pre=1 post=0
+scratch/lesson-derive-gate-2026-10-10/adjrel/a-relcl-showed.md pre=1 post=0
+scratch/lesson-derive-gate-2026-10-10/lexedge/a-rcverb-exposed.md pre=1 post=0
+scratch/lesson-derive-gate-2026-10-10/lexedge/a-rcverb-flagged.md pre=1 post=0
+scratch/lesson-derive-gate-2026-10-10/lexedge/a-rcverb-surfaced.md pre=1 post=0
+scratch/lesson-derive-gate-2026-10-10/relcl/m-rebreak-clipped.md pre=1 post=0
+scratch/lesson-derive-gate-2026-10-10/sharedvp/r3.md pre=1 post=0

@@ -1,0 +1,7 @@
+ok   file notes/tests/2026-10-10-lesson-derive-gate-overreach.md
+ok   file notes/tests/2026-10-10-lesson-derive-gate-fold.md
+ok   contains scratch/lesson-derive-gate-2026-10-10/fold/result.txt
+ok   contains bin/lesson-derive-gate
+ok   cmd
+ok   cmd
+PASS 6 evidence line(s) re-derived and reach lint clean

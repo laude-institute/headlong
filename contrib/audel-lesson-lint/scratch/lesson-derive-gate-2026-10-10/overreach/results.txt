@@ -1,0 +1,54 @@
+FIXTURE accept-evidence-skip.txt expected=0 got=0 ok
+FIXTURE accept-far.txt expected=0 got=0 ok
+FIXTURE accept-norm.txt expected=0 got=0 ok
+FIXTURE accept-plain.txt expected=0 got=0 ok
+FIXTURE accept-scoped.txt expected=0 got=0 ok
+line 1: unbounded universal (all) in: Lesson: all distilled rules ban untried combinations.
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+FIXTURE refuse-all.txt expected=1 got=1 ok
+line 1: unbounded universal (always) in: Lesson: the gate always catches malformed drafts.
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+FIXTURE refuse-always.txt expected=1 got=1 ok
+line 1: unbounded universal (impossible never) in: Lesson: use re-derivation, never replay, since replay is impossible on a moving machine.
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+FIXTURE refuse-double.txt expected=1 got=1 ok
+line 1: unbounded universal (never) in: Lesson: never trust a remembered number.
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+FIXTURE refuse-never.txt expected=1 got=1 ok
+line 1: unbounded universal (never) in: never trust a remembered number.
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+FIXTURE refuse-nomarker.txt expected=1 got=1 ok
+line 1: unbounded universal (never) in: Lesson: never trust a remembered number.
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+FIXTURE refuse-nonewline.txt expected=1 got=1 ok
+FIXTURES 11 of 11 green
+line 2: unbounded universal (all) in: Case (2026-10-10): I wrote 25% and 10.8% into my handoff as Opera body findings, and neither number exists in the paper body, the HTML, or my read note. A re-check against all three sources found zero hits and both were dropped as confabulated. The habit this encodes: before a numeric claim enters a note or a brief, grep the extract on file for it (or the numbers near it), and if the extract is not on file, write the claim as qualitative or drop it. Absence of the extract is not permission to remember the number.
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 1: unbounded universal (cannot) in: lesson: lesson-derive-gate refuses lesson updates whose evidence cannot be re-derived now
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 4: unbounded universal (ALL) in: evidence: contains scratch/lesson-derive-gate-2026-10-10/result.txt ALL PASS (8/8)
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+CONTROLS fieldtest=1 lessondraft=1
+ok   file notes/daily-papers/bodies/2609.33987-read.md
+ok   contains notes/daily-papers/bodies/2609.33987-read.md
+ok   absent scratch/opera-read/body.txt
+ok   absent scratch/opera-read/body.txt
+ok   cmd
+ok   cmd
+PASS 6 evidence line(s) re-derived
+ok   file notes/daily-papers/bodies/2609.33987-read.md
+ok   contains notes/daily-papers/bodies/2609.33987-read.md
+ok   absent scratch/opera-read/body.txt
+ok   absent scratch/opera-read/body.txt
+ok   cmd
+ok   cmd
+PASS 6 evidence line(s) re-derived
+line 1: unbounded universal (everywhere never) in: This lesson reaches everywhere and never fails at anything.
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 3: unbounded universal (all) in: Case (2026-10-10): I wrote 25% and 10.8% into my handoff as Opera body findings, and neither number exists in the paper body, the HTML, or my read note. A re-check against all three sources found zero hits and both were dropped as confabulated. The habit this encodes: before a numeric claim enters a note or a brief, grep the extract on file for it (or the numbers near it), and if the extract is not on file, write the claim as qualitative or drop it. Absence of the extract is not permission to remember the number.
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 2: unbounded universal (all) in: Case (2026-10-10): I wrote 25% and 10.8% into my handoff as Opera body findings, and neither number exists in the paper body, the HTML, or my read note. A re-check against all three sources found zero hits and both were dropped as confabulated. The habit this encodes: before a numeric claim enters a note or a brief, grep the extract on file for it (or the numbers near it), and if the extract is not on file, write the claim as qualitative or drop it. Absence of the extract is not permission to remember the number.
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+line 9: unbounded universal (everywhere never) in: This lesson reaches everywhere and never fails at anything.
+bound it to what was checked, or declare the line a norm (rule: / habit: / norm:).
+MUTANTS gate-pre=0 gate-app=0 lint-pre=1 lint-app=1

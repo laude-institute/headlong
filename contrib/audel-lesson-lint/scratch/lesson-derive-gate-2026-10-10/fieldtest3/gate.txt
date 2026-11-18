@@ -1,0 +1,5 @@
+ok   file notes/tests/2026-10-10-overreach-label-fix.md
+ok   contains notes/tests/2026-10-10-overreach-label-fix.md
+ok   cmd
+ok   absent scratch/lesson-derive-gate-2026-10-10/edge/result-mechanism.txt
+PASS 4 evidence line(s) re-derived and reach lint clean

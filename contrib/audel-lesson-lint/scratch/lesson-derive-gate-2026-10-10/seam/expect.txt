@@ -1,0 +1,13 @@
+a-coref-all6.md accept
+a-coref-count.md accept
+a-coref-none.md accept
+a-fronted-comma.md accept
+a-noquant-and.md accept
+a-norm.md accept
+a-second-noquant.md accept
+m-and-always.md refuse
+m-and-cannot.md refuse
+m-and-invariably.md refuse
+m-and-never.md refuse
+m-and-nothing-ever.md refuse
+m-and-verb-always.md refuse

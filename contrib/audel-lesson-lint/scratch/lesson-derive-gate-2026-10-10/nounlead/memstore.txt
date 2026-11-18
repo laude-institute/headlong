@@ -1,0 +1,5 @@
+gate question: is there one reusable fact here that memory is missing?
+--- duplicate check (mem search on the opening words) ---
+--- end duplicate check ---
+stored one fact; a second write this wake will be refused.
+2026-10-11-02-57-07_80eb1d9b_lesson-2026-10-10-overreach-lint-nounlead-a-clause-can-be-skipped-before-it-is-j
