@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # thinkers/finance_critic/step
-# Dedicated thinker for proactive NetSuite / FP&A anomaly detection with exponential idle backoff.
+# Autonomous Finance Critic for live NetSuite / FP&A anomaly analysis and proactive Slack alerting.
 
 THINKER_NAME="finance_critic"
 SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
@@ -46,27 +46,61 @@ _arm_wake() {
     printf '%s' "$target" > "$wake_at_file"
 }
 
-# Trap to ensure next wake is armed
 trap '_arm_wake "$(_delay_for_level 1)"' EXIT
 
-# Read recent context using traj tail (-n N)
+# Read recent context using traj tail
 recent_steps=$(traj tail -n "$THINK_CONTEXT_TAIL" -a --raw 2>/dev/null || true)
-# Simple deterministic heuristics or LLM invocation:
-# If recent_steps contains an unapplied cash match or overdue alert condition
-if echo "$recent_steps" | grep -q "unapplied" && echo "$recent_steps" | grep -q "overdue"; then
-    # We found a discrepancy to alert!
-    if command -v chat >/dev/null 2>&1; then
-        today=$(date +%Y-%m-%d)
-        chat send --to "slack-C0CK170A7K7" --key "ar-alert-$today" <<'ALERT' || true
-Proactive Alert: Unapplied payment wire ($240,000) from Acme Corp matches overdue Invoice #1042 ($240,000, 60 days overdue). Reconciling this will clear the balance and reduce DSO.
-ALERT
+
+# System prompt for finance analysis
+sys_prompt="You are the Finance Critic for $IDENTITY_NAME.
+Analyze the following recent trajectory log of finance queries and NetSuite ERP tool outputs.
+Determine if there are actionable financial insights, anomalies, cut-off discrepancies, unapplied receipts, or proactive reports worth alerting the team on Slack.
+
+Format your response as valid JSON with:
+{
+  \"decision\": \"alert\" | \"idle\",
+  \"reason\": \"One sentence explanation of what you observed\",
+  \"alert_message\": \"Short, crisp Slack alert citing exact entities, GL accounts, dates, and amounts (or null if idle)\"
+}
+Only output the raw JSON object, no markdown fencing."
+
+# Call Headlong's internal LLM driver (bin/llm)
+llm_out=$(printf '%s\n\nRecent Trajectory Stream:\n%s\n' "$sys_prompt" "$recent_steps" | llm -m "$THINK_MODEL" --no-stream 2>/dev/null || true)
+
+# Clean and parse JSON
+decision=$(printf '%s' "$llm_out" | jq -r '.decision // "idle"' 2>/dev/null || echo "idle")
+reason=$(printf '%s' "$llm_out" | jq -r '.reason // "no anomaly"' 2>/dev/null || echo "no anomaly")
+alert_msg=$(printf '%s' "$llm_out" | jq -r '.alert_message // empty' 2>/dev/null || true)
+
+if [[ "$decision" == "alert" && -n "$alert_msg" ]]; then
+    today=$(date +%Y-%m-%d-%H%M)
+    # Post alert to Slack channel C0CK170A7K7
+    if [[ -f "$IDENTITY_DIR/.env.slack" ]]; then
+        # shellcheck disable=SC1090
+        source "$IDENTITY_DIR/.env.slack"
     fi
-    traj append --field type=observation --field content="Sent Acme Corp AR alert to #finny-alerts" --field source="$THINKER_NAME"
-    _arm_wake 300 # Reset to calm monitoring
+
+    if [[ -n "${SLACK_BOT_TOKEN:-}" ]]; then
+        python3 -c "
+import urllib.request, json, os
+token = os.environ.get('SLACK_BOT_TOKEN')
+channel = 'C0CK170A7K7'
+msg = '''$alert_msg'''
+req = urllib.request.Request(
+    'https://slack.com/api/chat.postMessage',
+    data=json.dumps({'channel': channel, 'text': msg, 'unfurl_links': False}).encode(),
+    headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+)
+urllib.request.urlopen(req)
+" 2>/dev/null || true
+    fi
+
+    traj append --field type=observation --field content="Delivered proactive finance insight: $reason" --field source="$THINKER_NAME"
+    _arm_wake 300
     exit 0
 fi
 
-# Otherwise, honest idle to preserve tokens
-traj append --field type=idle --field content="idle - no active finance anomalies in stream" --field source="$THINKER_NAME"
+# Idle path
+traj append --field type=idle --field content="idle - $reason" --field source="$THINKER_NAME"
 _arm_wake "$BACKOFF_BASE"
 exit 0
