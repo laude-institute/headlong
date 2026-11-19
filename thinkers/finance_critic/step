@@ -57,7 +57,7 @@ if echo "$recent_steps" | grep -q "unapplied" && echo "$recent_steps" | grep -q 
     # We found a discrepancy to alert!
     if command -v chat >/dev/null 2>&1; then
         today=$(date +%Y-%m-%d)
-        chat send --to "slack-finny-alerts" --key "ar-alert-$today" <<'ALERT' || true
+        chat send --to "slack-C0CK170A7K7" --key "ar-alert-$today" <<'ALERT' || true
 Proactive Alert: Unapplied payment wire ($240,000) from Acme Corp matches overdue Invoice #1042 ($240,000, 60 days overdue). Reconciling this will clear the balance and reduce DSO.
 ALERT
     fi
