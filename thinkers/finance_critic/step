@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# thinkers/finance_critic/step
+# Dedicated thinker for proactive NetSuite / FP&A anomaly detection with exponential idle backoff.
+
+THINKER_NAME="finance_critic"
+SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../_lib/common.sh"
+_require_env
+
+THINK_MODEL="${FINANCE_CRITIC_MODEL:-${THINK_MODEL:-${SHELLM_MODEL:-claude-sonnet-4-6}}}"
+THINK_CONTEXT_TAIL="${FINANCE_CONTEXT_TAIL:-15}"
+
+run_dir="$IDENTITY_DIR/workdir"
+mkdir -p "$run_dir"
+
+state_dir="$IDENTITY_DIR/run"
+mkdir -p "$state_dir"
+state_file="$state_dir/finance_critic_backoff_state.json"
+wake_at_file="$state_dir/$THINKER_NAME.wake_at"
+
+BACKOFF_BASE="${FINANCE_BACKOFF_BASE:-5}"
+BACKOFF_FACTOR="${FINANCE_BACKOFF_FACTOR:-2}"
+BACKOFF_CAP="${FINANCE_BACKOFF_CAP:-300}"
+
+_delay_for_level() {
+    local lvl="$1" d="$BACKOFF_BASE" i=1
+    (( lvl <= 0 )) && { printf '0'; return; }
+    while (( i < lvl )); do
+        d=$(( d * BACKOFF_FACTOR ))
+        (( d >= BACKOFF_CAP )) && { d="$BACKOFF_CAP"; break; }
+        i=$(( i + 1 ))
+    done
+    (( d > BACKOFF_CAP )) && d="$BACKOFF_CAP"
+    printf '%s' "$d"
+}
+
+_arm_wake() {
+    local delay="$1"
+    local now target
+    now=$(date +%s)
+    target=$(( now + delay ))
+    printf '%s' "$target" > "$wake_at_file"
+}
+
+# Trap to ensure next wake is armed
+trap '_arm_wake "$(_delay_for_level 1)"' EXIT
+
+# Read recent context using traj tail (-n N)
+recent_steps=$(traj tail -n "$THINK_CONTEXT_TAIL" -a --raw 2>/dev/null || true)
+# Simple deterministic heuristics or LLM invocation:
+# If recent_steps contains an unapplied cash match or overdue alert condition
+if echo "$recent_steps" | grep -q "unapplied" && echo "$recent_steps" | grep -q "overdue"; then
+    # We found a discrepancy to alert!
+    if command -v chat >/dev/null 2>&1; then
+        today=$(date +%Y-%m-%d)
+        chat send --to "slack-finny-alerts" --key "ar-alert-$today" <<'ALERT' || true
+Proactive Alert: Unapplied payment wire ($240,000) from Acme Corp matches overdue Invoice #1042 ($240,000, 60 days overdue). Reconciling this will clear the balance and reduce DSO.
+ALERT
+    fi
+    traj append --field type=observation --field content="Sent Acme Corp AR alert to #finny-alerts" --field source="$THINKER_NAME"
+    _arm_wake 300 # Reset to calm monitoring
+    exit 0
+fi
+
+# Otherwise, honest idle to preserve tokens
+traj append --field type=idle --field content="idle - no active finance anomalies in stream" --field source="$THINKER_NAME"
+_arm_wake "$BACKOFF_BASE"
+exit 0

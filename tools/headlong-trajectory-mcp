@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""
+Lightweight JSON-RPC 2.0 stdio MCP Server for Headlong.
+Exposes tools to:
+1. append_trajectory_step: Appends a raw Headlong step via `bin/traj append`.
+2. ingest_hermes_trajectory: Normalizes ShareGPT Hermes turns into Headlong steps.
+3. chat_send: Sends messages/alerts via `bin/chat send`.
+"""
+
+import sys
+import json
+import subprocess
+import os
+from pathlib import Path
+from typing import Dict, Any, List
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+BIN_TRAJ = REPO_ROOT / "bin" / "traj"
+BIN_CHAT = REPO_ROOT / "bin" / "chat"
+
+TOOLS = [
+    {
+        "name": "append_trajectory_step",
+        "description": "Append a normalized step to a Headlong trajectory via bin/traj append.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "identity": {"type": "string", "description": "Identity name (e.g. ada, finny)"},
+                "type": {"type": "string", "description": "Step type (e.g. message, observation, thought, action)"},
+                "content": {"type": "string", "description": "Step text or message content"},
+                "source": {"type": "string", "description": "Originating source (default: hermes)", "default": "hermes"},
+                "extra_fields": {"type": "object", "description": "Optional extra fields to record in the step"}
+            },
+            "required": ["identity", "type"]
+        }
+    },
+    {
+        "name": "ingest_hermes_trajectory",
+        "description": "Ingest and normalize a Hermes ShareGPT-formatted trajectory into a Headlong identity's trajectory.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "identity": {"type": "string", "description": "Headlong identity name (e.g. ada, finny)"},
+                "conversations": {
+                    "type": "array",
+                    "description": "ShareGPT conversations array [{'from': 'system'|'human'|'gpt'|'tool', 'value': '...'}]",
+                    "items": {"type": "object"}
+                },
+                "model": {"type": "string", "description": "Model used in Hermes run"},
+                "completed": {"type": "boolean", "description": "Whether the Hermes run succeeded"}
+            },
+            "required": ["identity", "conversations"]
+        }
+    },
+    {
+        "name": "chat_send",
+        "description": "Send a chat message or alert to a person or Slack channel via bin/chat send.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "identity": {"type": "string", "description": "Headlong identity sending the message"},
+                "to": {"type": "string", "description": "Recipient address (e.g. 'slack-finny-alerts' or username)"},
+                "message": {"type": "string", "description": "Message body to send"},
+                "key": {"type": "string", "description": "Optional schedule/deduplication key (e.g. 'ar-reconcile/2026-11-19')"}
+            },
+            "required": ["identity", "to", "message"]
+        }
+    }
+]
+
+
+def resolve_identity_env(identity: str) -> Dict[str, str]:
+    """Sets up environment variables for the identity."""
+    env = os.environ.copy()
+    identity_dir = REPO_ROOT / ".identities" / identity
+    trajectories_dir = identity_dir / "trajectories"
+    env["IDENTITY_NAME"] = identity
+    env["IDENTITY_DIR"] = str(identity_dir)
+    env["TRAJ_DIR"] = str(trajectories_dir)
+    env["HEADLONG_HOME"] = env.get("HEADLONG_HOME", str(Path.home() / ".headlong"))
+    env["PATH"] = f"{REPO_ROOT / 'bin'}:{env.get('PATH', '')}"
+
+    # Find root trajectory id if present
+    if trajectories_dir.exists():
+        for p in trajectories_dir.iterdir():
+            if p.is_dir() and (p / "trajectory.jsonl").exists():
+                env["TRAJ_ID"] = p.name
+                break
+    return env
+
+def handle_append_step(identity: str, step_type: str, content: str = "", source: str = "hermes", extra_fields: Dict[str, Any] = None) -> Dict[str, Any]:
+    env = resolve_identity_env(identity)
+    step_dict = {
+        "type": step_type,
+        "source": source
+    }
+    if content:
+        step_dict["content"] = content
+    if extra_fields:
+        step_dict.update(extra_fields)
+
+    payload = json.dumps(step_dict)
+    cmd = [str(BIN_TRAJ), "append"]
+    
+    proc = subprocess.run(
+        cmd,
+        input=payload,
+        text=True,
+        capture_output=True,
+        env=env,
+        cwd=str(REPO_ROOT)
+    )
+    if proc.returncode != 0:
+        return {"status": "error", "error": proc.stderr.strip() or "traj append failed"}
+    
+    step_id = proc.stdout.strip()
+    return {"status": "ok", "step_id": step_id, "type": step_type}
+
+
+def handle_ingest_hermes(identity: str, conversations: List[Dict[str, Any]], model: str = "", completed: bool = True) -> Dict[str, Any]:
+    env = resolve_identity_env(identity)
+    appended_steps = []
+
+    for turn in conversations:
+        role = turn.get("from")
+        val = turn.get("value", "")
+
+        if role == "human":
+            # Map human prompt to Headlong message
+            step = {
+                "type": "message",
+                "from": "user",
+                "to": identity,
+                "content": val,
+                "source": "hermes-chat"
+            }
+        elif role == "gpt":
+            # Map reasoning / thought or final gpt message
+            # Check if value has <tool_call>
+            if "<tool_call>" in val:
+                # Extract tool call
+                step = {
+                    "type": "action",
+                    "content": val,
+                    "source": "hermes-agent"
+                }
+            else:
+                step = {
+                    "type": "message",
+                    "from": identity,
+                    "to": "user",
+                    "content": val,
+                    "source": "hermes-agent"
+                }
+        elif role == "tool":
+            # Map tool response to observation
+            step = {
+                "type": "observation",
+                "content": val,
+                "source": "hermes-tool"
+            }
+        else:
+            # system or meta
+            continue
+
+        payload = json.dumps(step)
+        proc = subprocess.run(
+            [str(BIN_TRAJ), "append"],
+            input=payload,
+            text=True,
+            capture_output=True,
+            env=env,
+            cwd=str(REPO_ROOT)
+        )
+        if proc.returncode == 0:
+            appended_steps.append(proc.stdout.strip())
+
+    return {
+        "status": "ok",
+        "appended_count": len(appended_steps),
+        "step_ids": appended_steps,
+        "completed": completed
+    }
+
+
+def handle_chat_send(identity: str, to: str, message: str, key: str = None) -> Dict[str, Any]:
+    env = resolve_identity_env(identity)
+    cmd = [str(BIN_CHAT), "send", "--to", to]
+    if key:
+        cmd.extend(["--key", key])
+
+    proc = subprocess.run(
+        cmd,
+        input=message,
+        text=True,
+        capture_output=True,
+        env=env,
+        cwd=str(REPO_ROOT)
+    )
+    if proc.returncode != 0:
+        return {"status": "error", "error": proc.stderr.strip() or "chat send failed"}
+
+    return {"status": "ok", "delivered_or_queued": True, "output": proc.stdout.strip()}
+
+
+def handle_call_tool(params: Dict[str, Any]) -> Dict[str, Any]:
+    name = params.get("name")
+    args = params.get("arguments", {})
+
+    if name == "append_trajectory_step":
+        res = handle_append_step(
+            identity=args.get("identity"),
+            step_type=args.get("type"),
+            content=args.get("content", ""),
+            source=args.get("source", "hermes"),
+            extra_fields=args.get("extra_fields")
+        )
+    elif name == "ingest_hermes_trajectory":
+        res = handle_ingest_hermes(
+            identity=args.get("identity"),
+            conversations=args.get("conversations", []),
+            model=args.get("model", ""),
+            completed=args.get("completed", True)
+        )
+    elif name == "chat_send":
+        res = handle_chat_send(
+            identity=args.get("identity"),
+            to=args.get("to"),
+            message=args.get("message"),
+            key=args.get("key")
+        )
+    else:
+        raise ValueError(f"Unknown tool: {name}")
+
+    return {
+        "content": [
+            {"type": "text", "text": json.dumps(res)}
+        ]
+    }
+
+
+def main():
+    """Standard JSON-RPC loop for stdio MCP."""
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except Exception as e:
+            continue
+
+        req_id = req.get("id")
+        method = req.get("method")
+        params = req.get("params", {})
+
+        if method == "initialize":
+            res = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "headlong-trajectory-mcp", "version": "0.1.0"}
+                }
+            }
+        elif method == "notifications/initialized":
+            continue
+        elif method == "tools/list":
+            res = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"tools": TOOLS}
+            }
+        elif method == "tools/call":
+            try:
+                result = handle_call_tool(params)
+                res = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": result
+                }
+            except Exception as e:
+                res = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32603, "message": str(e)}
+                }
+        else:
+            if req_id is not None:
+                res = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32601, "message": f"Method not found: {method}"}
+                }
+            else:
+                continue
+
+        sys.stdout.write(json.dumps(res) + "\n")
+        sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()

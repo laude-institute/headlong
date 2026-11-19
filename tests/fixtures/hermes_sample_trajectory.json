@@ -1,0 +1,27 @@
+{
+  "conversations": [
+    {
+      "from": "system",
+      "value": "You are Finny Prime, the autonomous finance intelligence agent."
+    },
+    {
+      "from": "human",
+      "value": "Can you check Acme Corp's open balances and recent payments in NetSuite?"
+    },
+    {
+      "from": "gpt",
+      "value": "<think>\nUser wants open balance and payment details for Acme Corp in NetSuite. Let's call netsuite_search.\n</think>\n<tool_call>\n{\"name\": \"netsuite_search\", \"arguments\": {\"record_type\": \"customer\", \"entity_id\": \"Acme Corp\"}}\n</tool_call>"
+    },
+    {
+      "from": "tool",
+      "value": "<tool_response>\n{\"entity_id\": \"Acme Corp\", \"overdue_invoices\": [{\"id\": \"1042\", \"amount\": 240000, \"days_overdue\": 60}], \"unapplied_payments\": [{\"wire_id\": \"W-9821\", \"amount\": 240000, \"date\": \"2026-11-18\"}]}\n</tool_response>"
+    },
+    {
+      "from": "gpt",
+      "value": "<think>\nAcme Corp has Invoice #1042 overdue by 60 days for $240,000, but also has an unapplied wire of $240,000 from yesterday.\n</think>\nAcme Corp currently shows Invoice #1042 ($240,000) overdue by 60 days. However, there is an unapplied wire of $240,000 received yesterday that has not yet been reconciled against this invoice."
+    }
+  ],
+  "timestamp": "2026-11-19T11:45:00Z",
+  "model": "anthropic/claude-opus-5.5",
+  "completed": true
+}
