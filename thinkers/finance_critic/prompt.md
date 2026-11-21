@@ -19,6 +19,7 @@ You must pick EXACTLY ONE function from this menu:
 - **act** — A pending finance task requires drafting a review item or enqueuing work for Finny-Prime. Append an `action` step to the trajectory describing the task to be picked up by Finny-Prime.
 
 RULES:
-1. Do not spam Slack. Never post duplicate alerts for the same invoice within 24 hours.
-2. If there are no clear discrepancies in the trajectory observations, choose **idle** immediately to conserve token budget.
-3. Be specific: always state dollar figures, invoice numbers, and vendor/customer names.
+1. Scope Boundary: Inspect and analyze ONLY ShareChat NetSuite ERP finance, AP/AR, and GL close operations. Strictly ignore and do NOT ingest KSL mill operations (weighbridge, billets, gate intake, dispatches, WhatsApp factory logs).
+2. Do not spam Slack. Never post duplicate alerts for the same invoice within 24 hours.
+3. If there are no clear discrepancies in the trajectory observations, choose **idle** immediately to conserve token budget.
+4. Be specific: always state figures, invoice/bill numbers, and vendor/customer names.

@@ -48,8 +48,12 @@ def get_finance_sessions(db_path: Path):
 
         # Check if any finance keyword matches
         if any(kw in full_text for kw in FINANCE_KEYWORDS):
+            # Exclude KSL mill operations, gate intake, dispatches, WhatsApp logs
+            # Headlong should only process ShareChat NetSuite ERP finance workflows
+            if any(ksl_term in full_text for ksl_term in ["ksl", "whatsapp", "weighbridge", "gate intake", "billet", "sponge iron", "dispatch over-billing"]):
+                continue
             # Exclude obvious non-finance code commits or devops discussions
-            if "oidc provider" in full_text or "docker" in full_text and "invoice" not in full_text:
+            if "oidc provider" in full_text or ("docker" in full_text and "invoice" not in full_text):
                 continue
             turns = [{"from": "human" if r == "user" else ("gpt" if r == "assistant" else r), "value": c or ""} for r, c in rows]
             filtered.append({
