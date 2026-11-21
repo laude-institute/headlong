@@ -20,7 +20,7 @@
 #     the mind, while quoted commands, examples and ordinary prose pass
 
 set -uo pipefail
-unset IDENTITY_DIR IDENTITY_NAME MEM_DIR TRAJ_DIR TRAJ_ID ROOT_TRAJ_ID THINK_CONTEXT_TAIL 2>/dev/null
+unset IDENTITY_DIR IDENTITY_NAME MEM_DIR TRAJ_DIR TRAJ_ID ROOT_TRAJ_ID THINK_CONTEXT_TAIL THINK_MODEL MONOLITH_REPLY_MODEL 2>/dev/null
 unset LLM_MAX_TOKENS LLM_MAX_TIME LLM_RETRIES RESPONDER_MAX_TOKENS RESPONDER_MAX_TIME 2>/dev/null
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

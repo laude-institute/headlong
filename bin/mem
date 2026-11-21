@@ -54,6 +54,28 @@ warn_flag_summary() {
     esac
 }
 
+clip_summary() {
+    # Clip to at most 80 bytes without splitting a UTF-8 character:
+    # head -c 80 takes bytes, iconv -c drops a trailing partial
+    # character (an invalid UTF-8 sequence) so the clip stays whole.
+    local text="$1"
+    ( printf '%s' "$text" | head -c 80 \
+        | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null )
+}
+
+bake_summary() {
+    # Clip, then mark the dropped remainder so a list/search row never
+    # reads as if the memory ended mid-word.
+    local line="$1" clip dropped
+    clip=$(clip_summary "$line")
+    dropped=$(( ${#line} - ${#clip} ))
+    if (( dropped > 0 )); then
+        printf '%s +%d chars (route: full line in the memory body)' "$clip" "$dropped"
+    else
+        printf '%s' "$clip"
+    fi
+}
+
 debug() {
     if [[ "$VERBOSE" -eq 1 ]]; then
         printf '[mem debug] %s\n' "$*" >&2
@@ -248,7 +270,7 @@ action_add() {
     slug=$(slugify "$text")
     filename="${timestamp}_${hex}_${slug}"
     # Drain the body so upstream writers cannot fail with SIGPIPE.
-    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p' | cut -c1-80)
+    summary=$(bake_summary "$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p')")
     warn_flag_summary "$summary"
     created=$(date +"%Y-%m-%d %H:%M:%S")
 
@@ -458,16 +480,91 @@ $(cat "$f")
         ) >/dev/null &
         _hb_pid=$!
     fi
-    local rc=0
+    local rc=0 reply=""
     # Keep the real llm adapter in our worker group. Otherwise llm's own
     # deadline regroups it, and cancelling search kills its supervisor but
     # leaves the adapter alive holding our caller's output pipes.
     # This also applies with the search deadline disabled: public TERM/INT
     # must still cancel the whole tree. llm retains its own shorter bound.
+    # The reply is validated against the store before it reaches stdout
+    # (2026-10-30): the model sometimes returns a plausible row for a
+    # memory that does not exist, and callers read search rows as store
+    # facts. A row is grounded when its eight-hex id is one of the
+    # store's ids (filenames carry the id between underscores); a
+    # filename carrying no id, or an id the store does not know, falls
+    # back to the full-filename check, and a row failing both is
+    # dropped, with a reply whose every row was dropped answered as the
+    # engine's own no-match line. Prose passes through. Keying on the
+    # id, not the filename alone, keeps rows the model redates or
+    # shortens: a live measure (294 rows, 2026-10-30) had the filename
+    # check drop 54 real rows and one ghost; the id key dropped only
+    # the ghost.
+    # A row the id admits is then displayed with the store's canonical
+    # filename when the model composed a different one, so the reply never
+    # names a file the store does not hold.
     # shellcheck disable=SC2086
-    printf 'Search these memories for: %s\n\n%s' "$query" "$memories" | \
+    reply=$(printf 'Search these memories for: %s\n\n%s' "$query" "$memories" | \
         _LLM_SHARED_PROCESS_GROUP=1 llm ${SHELLM_FAST_MODEL:+-m "$SHELLM_FAST_MODEL"} -t "${MEM_SEARCH_MAX_TOKENS:-16000}" \
-            -s "You are a semantic search engine for memory files. Each memory has a filename header (=== filename ===), YAML frontmatter (summary, type), and a body. Return ONLY the filenames and summaries of semantically matching memories, one per line. If nothing matches, say 'No matches found.'" || rc=$?
+            -s "You are a semantic search engine for memory files. Each memory has a filename header (=== filename ===), YAML frontmatter (summary, type), and a body. Return ONLY the filenames and summaries of semantically matching memories, one per line. If nothing matches, say 'No matches found.'") || rc=$?
+    local idlist=""
+    idlist=$(ls -1 "$MEM_DIR" 2>/dev/null | awk '
+        { n = split($0, f, "_")
+          for (i = 1; i <= n; i++)
+            if (length(f[i]) == 8 && f[i] ~ /^[0-9a-f]+$/) { print f[i]; break }
+        }' | paste -sd, -)
+    # Canonical names for display: a row the id key admits is printed with
+    # the store's own filename, never the model's composed one, so no kept
+    # row names a file that does not exist — the redated/shortened shape the
+    # id key keeps would otherwise ship the very defect this filter refuses.
+    # Built from a second listing so a map-build failure costs the rewrite
+    # only, never the grounding: an empty or missing map leaves rows shown
+    # exactly as the model wrote them, with idlist still admitting known ids.
+    local canonfile=""
+    canonfile=$(mktemp "${TMPDIR:-/tmp}/memsearch-canon.XXXXXX") || canonfile=""
+    if [[ -n "$canonfile" ]]; then
+        ls -1 "$MEM_DIR" 2>/dev/null | awk -v OFS='\t' '
+            { n = split($0, f, "_"); id = ""
+              for (i = 1; i <= n; i++)
+                if (length(f[i]) == 8 && f[i] ~ /^[0-9a-f]+$/) { id = f[i]; break }
+              if (id != "") print id, $0
+            }' > "$canonfile"
+    fi
+    printf '%s' "$reply" | awk -v dir="$MEM_DIR" -v idlist="$idlist" -v canonfile="$canonfile" '
+        BEGIN {
+            n = split(idlist, a, ","); for (i = 1; i <= n; i++) known[a[i]] = 1
+            if (canonfile != "") {
+                while ((getline mrow < canonfile) > 0) {
+                    split(mrow, m, "\t")
+                    if (m[1] != "" && m[2] != "") canon[m[1]] = m[2]
+                }
+                close(canonfile)
+            }
+        }
+        match($0, /[^ ]+\.md/) {
+            fn = substr($0, RSTART, RLENGTH)
+            n = split(fn, rf, "_")
+            rid = ""
+            for (i = 1; i <= n; i++)
+                if (length(rf[i]) == 8 && rf[i] ~ /^[0-9a-f]+$/) { rid = rf[i]; break }
+            if (rid != "" && (rid in canon) && fn != canon[rid]) {
+                print substr($0, 1, RSTART - 1) canon[rid] substr($0, RSTART + RLENGTH)
+                kept = 1; next
+            }
+            if (rid == "" || !(rid in known)) {
+                if ((getline junk < (dir "/" fn)) < 0) { dropped++; next }
+                close(dir "/" fn)
+            }
+            print; kept = 1; next
+        }
+        { print; kept = 1 }
+        END {
+            if (dropped > 0)
+                printf "mem search: dropped %d row(s) naming memories that are not in the store\n", dropped > "/dev/stderr"
+            if (dropped > 0 && kept != 1)
+                print "No matches found."
+        }
+    '
+    [[ -n "$canonfile" ]] && rm -f "$canonfile"
     # The EXIT trap owns heartbeat cleanup; a second wait here would print
     # "not a child" once the trap has already reaped it.
     return "$rc"
@@ -608,27 +705,32 @@ action_edit() {
         slug=$(mem_redact "$slug") || die "Slug redaction failed; memory not written"
     fi
 
+
     local now
     now=$(date +"%Y-%m-%d %H:%M:%S")
 
-    # Extract frontmatter fields. `until:` (mem add --until) rides through an
-    # edit: a todo shortlist that is appended to during the day must still
-    # expire that night. So do `schedule:` and `tz:` (design/scheduled_goals.md).
-    local summary type created id until _k _v
+    # The summary is the new text's first line. Every other frontmatter
+    # field is cargo and rides the rewrite below through byte for byte, so
+    # `until:` (mem add --until), `schedule:`, `tz:` and anything a second
+    # writer stored (the responder's person_key, aliases) no longer need a
+    # per-key extraction-and-rebuild round trip to survive an edit.
+    local summary
     # Drain the body so upstream writers cannot fail with SIGPIPE.
-    summary=$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p' | cut -c1-80)
+    # Clip without splitting a UTF-8 character, mark the dropped remainder
+    # (PR 168/236 composed seam), then flag a flag-looking first word.
+    summary=$(bake_summary "$(printf '%s' "$text" | sed '/^[[:space:]]*$/d' | sed -n '1p')")
     warn_flag_summary "$summary"
-    type=$(frontmatter_field "$file" "type")
-    created=$(frontmatter_field "$file" "created")
-    id=$(frontmatter_field "$file" "id")
-    until=$(frontmatter_field "$file" "until")
 
     # Build updated: field — collect existing entries and append new one
     local updated_block=""
     local existing_updated
     existing_updated=$(sed -n '/^---$/,/^---$/p' "$file" | grep "^updated:" | sed 's/^updated:[[:space:]]*//' || true)
     local existing_list
-    existing_list=$(sed -n '/^---$/,/^---$/p' "$file" | grep "^  - " || true)
+    # The collector reads only the list items that belong to updated: itself,
+    # stopping at the next key, so a multiline list another field owns (the
+    # responder's aliases) does not bleed into the updated entries.
+    existing_list=$(sed -n '/^---$/,/^---$/p' "$file" \
+        | awk '/^updated:/{p=1; next} p && /^  - /{print; next} p{exit}' || true)
 
     if [[ -n "$existing_list" ]]; then
         # Already a list — append
@@ -641,28 +743,62 @@ action_edit() {
         updated_block=$(printf 'updated: %s' "$now")
     fi
 
-    # Reconstruct the file (preserve id and until if present)
-    local id_line="" until_line=""
-    [[ -n "$id" ]] && id_line="id: $id
-"
-    [[ -n "$until" ]] && until_line="until: $until
-"
-    for _k in schedule tz; do
-        _v=$(frontmatter_field "$file" "$_k")
-        [[ -n "$_v" ]] && until_line="${until_line}$_k: $_v
-"
-    done
-
-    cat > "$file" << EOF
----
-${id_line}summary: $summary
-type: $type
-created: $created
-${until_line}$updated_block
----
-
-$text
-EOF
+    # Rewrite the file: mem edit owns two frontmatter fields, summary and
+    # updated, and rewrites only those. Every other field is carried through
+    # byte for byte, whatever wrote it. The responder writes person files
+    # directly with person_key and aliases; a rebuild from mem's own key list
+    # dropped both on a successful edit (exit 0, id and type intact, nothing
+    # looked wrong), the responder stopped claiming the file, and that
+    # person's next message minted a duplicate while the edited body sat
+    # orphaned. A multiline list also bled: the updated: collector greps list
+    # items anywhere in the frontmatter, so alias items became updated
+    # entries. Fields a tool does not model are cargo, not clay.
+    local tmp
+    tmp=$(mktemp "$MEM_DIR/.mem-edit-XXXXXX") || die "edit: mktemp failed"
+    # Carry the original file's mode across the rewrite; cp -p is portable,
+    # chmod --reference is a GNU-only extension.
+    cp -p "$file" "$tmp" 2>/dev/null || true
+    : > "$tmp"
+    if [[ "$(head -1 "$file")" == "---" ]]; then
+        # A frontmatter block that opens but never closes is a corrupted store
+        # file. Refuse rather than mangle: a failed edit leaves the file as it
+        # was, an edit into a malformed file is not a repair.
+        if ! tail -n +2 "$file" | grep -q '^---$'; then
+            rm -f "$tmp"
+            die "edit: frontmatter in $(basename "$file") never closes; refusing to edit a corrupted file"
+        fi
+        NEW_SUMMARY="$summary" UPDATED_BLOCK="$updated_block" awk '
+            BEGIN { infm = 0; skip = 0; wrote = 0 }
+            infm == 0 && /^---$/ { infm = 1; print; next }
+            infm == 1 {
+                if ($0 ~ /^---$/) {
+                    if (!wrote)
+                        print "summary: " ENVIRON["NEW_SUMMARY"]
+                    print ENVIRON["UPDATED_BLOCK"]
+                    print "---"
+                    infm = 2
+                    next
+                }
+                if (skip) {
+                    if ($0 ~ /^  - /)
+                        next
+                    skip = 0
+                }
+                if ($0 ~ /^updated:/) { skip = 1; next }
+                if (!wrote && $0 ~ /^summary:/) {
+                    print "summary: " ENVIRON["NEW_SUMMARY"]
+                    wrote = 1
+                    next
+                }
+                print
+            }
+            infm == 2 { next }
+        ' "$file" > "$tmp" || { rm -f "$tmp"; die "edit: rewrite failed"; }
+    else
+        printf -- '---\nsummary: %s\n%s\n---\n' "$summary" "$updated_block" > "$tmp"
+    fi
+    printf '\n%s\n' "$text" >> "$tmp"
+    mv "$tmp" "$file"
 
     # Auto-update slug in filename. Always sanitize through slugify: sed is
     # line-oriented and lets embedded newlines through into the filename, and

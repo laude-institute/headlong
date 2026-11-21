@@ -307,6 +307,9 @@ Options:
   --docker-access MODE Docker access for generated code: none, broker, socket, dind
   --traj TRAJ_ID         Write steps to an existing trajectory (no child traj or fork)
   --resume               Shorthand for --traj with the most recent trajectory
+                         (refused inside a nested run unless --traj/--traj-dir
+                         names the target; a nested run inherits the parent's
+                         trajectory directory)
   --context-scope SCOPE  What the model sees of the trajectory: "traj" (default,
                          earlier steps included) or "run" (only this run's
                          steps, prompt pinned whole)
@@ -408,13 +411,13 @@ redact_sensitive() {
     local output="$input"
 
     if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-        output="${output//${ANTHROPIC_API_KEY}/<redacted-anthropic-key>}"
+        output="${output//"${ANTHROPIC_API_KEY}"/<redacted-anthropic-key>}"
     fi
 
     # LLM_API_KEY (openai-compatible endpoints) has no vendor prefix to
     # pattern-match, so only value-based masking can catch it.
     if [[ -n "${LLM_API_KEY:-}" ]]; then
-        output="${output//${LLM_API_KEY}/<redacted-api-key>}"
+        output="${output//"${LLM_API_KEY}"/<redacted-api-key>}"
     fi
 
     # Preserve exact masking of every nonempty configured provider value,
@@ -652,12 +655,13 @@ build_inactivity_feedback() {
         generic_prompt)
             advice="DETECTED: Likely interactive prompt (line ending with ':' or '?'). Use non-interactive flags or pipe input." ;;
         unknown)
-            advice="Could not detect a specific prompt pattern. The process may be waiting for stdin, a network response, or is simply slow. Try non-interactive flags or investigate the command's batch mode." ;;
+            advice="Quiet work survives by printing a heartbeat now and then; run a long silent command in the background with its output in a file, then read the file in a later step." ;;
     esac
 
     printf 'Execution was KILLED after %s seconds of inactivity\n' "$timeout"
-    printf '(likely waiting for interactive input that will never arrive).\n'
-    printf 'stdin is connected to /dev/null — interactive prompts get immediate EOF.\n'
+    printf 'Inactivity means this block produced no output for that long — the\n'
+    printf 'watchdog measures output silence, not a wait for input. stdin is connected\n'
+    printf 'to /dev/null, so an interactive prompt gets immediate EOF and cannot be the hang.\n'
     printf '\nLast output before timeout:\n%s\n' "$last_output"
     printf '\n%s\n' "$advice"
 }
@@ -1959,46 +1963,126 @@ extract_code() {
 
     # Extract the FIRST fenced code block (```bash, ```sh, or bare ```).
     # Heredoc-aware: lines like ``` inside an open heredoc do NOT close the
-    # outer code fence.  We track heredoc opens (<<[-]DELIM) and closes
-    # (delimiter alone on a line) so nested markdown fences pass through.
+    # outer code fence.  Opens are found by lexically scanning the code line
+    # by line (quotes, word-start # comments and $(( )) arithmetic all
+    # suppress <<), closes are the FIFO delimiter lines, so nested markdown
+    # fences pass through.
     # If extra fenced blocks follow the first, awk writes a "TRUNCATED" line
     # to stderr so we can prepend a notice that the model can see next turn.
     local truncation_file
     truncation_file=$(mktemp)
     local code
     code=$(printf '%s\n' "$response" | awk -v sq="'" '
-        # ── try_open_heredoc: inspect a line for <<[-]DELIM and push delimiter
-        function try_open_heredoc(line,    rest, delim) {
-            if (!match(line, /<<-?/)) return
-            rest = substr(line, RSTART + RLENGTH)
-            sub(/^[[:space:]]*/, "", rest)
-            if (substr(rest, 1, 1) == "\"") {
-                # <<"DELIM"
-                sub(/^"/, "", rest)
-                if (match(rest, /^[^"]+/)) {
-                    hd_stack[++hd_top] = substr(rest, 1, RLENGTH)
-                }
-            } else if (substr(rest, 1, 1) == sq) {
-                # <<'DELIM' — use string pattern since sq cant go in //
-                sub("^" sq, "", rest)
-                if (match(rest, "^[^" sq "]+")) {
-                    hd_stack[++hd_top] = substr(rest, 1, RLENGTH)
-                }
-            } else if (substr(rest, 1, 1) == "\\") {
-                # <<\DELIM
-                sub(/^\\/, "", rest)
+        # ── lex_heredoc: parse the delimiter after << or <<- at pos, push it
+        # onto the pending FIFO, and leave lx_i just past it. Unterminated
+        # quoted delimiters and a bare << with no word after it open nothing.
+        function lex_heredoc(line, pos,    n, c, rest, k) {
+            n = length(line)
+            while (pos <= n) {
+                c = substr(line, pos, 1)
+                if (c != " " && c != "\t") break
+                pos++
+            }
+            c = substr(line, pos, 1)
+            if (c == "\"" || c == sq) {
+                rest = substr(line, pos + 1)
+                k = index(rest, c)
+                if (k == 0) { lx_i = n + 1; return }
+                hd_stack[++hd_top] = substr(rest, 1, k - 1)
+                lx_i = pos + k + 1
+            } else if (c == "\\") {
+                rest = substr(line, pos + 1)
                 if (match(rest, /^[A-Za-z_][A-Za-z_0-9]*/)) {
                     hd_stack[++hd_top] = substr(rest, 1, RLENGTH)
-                }
+                    lx_i = pos + 1 + RLENGTH
+                } else lx_i = pos + 1
             } else {
-                # <<DELIM (unquoted)
+                rest = substr(line, pos)
                 if (match(rest, /^[A-Za-z_][A-Za-z_0-9]*/)) {
                     hd_stack[++hd_top] = substr(rest, 1, RLENGTH)
+                    lx_i = pos + RLENGTH
+                } else lx_i = pos
+            }
+        }
+
+        # ── lex_line: scan one collected code line character by character so
+        # << only opens a heredoc where the shell itself would read one: not
+        # inside single, double or ANSI-C dollar quotes (which span lines),
+        # not after a word-start hash comment, not inside arithmetic $(( ))
+        # where << is a shift. Dollar-paren inside double quotes resumes
+        # command lexing, so a heredoc opened there is real; heredoc bodies
+        # are never lexed, the FIFO below owns them.
+        function lex_line(line,    i, n, c, d, m) {
+            n = length(line); i = 1; lx_word = 1
+            while (i <= n) {
+                c = substr(line, i, 1)
+                m = lx_top > 0 ? lx_stack[lx_top] : 0
+                if (m == 1) {
+                    if (c == sq) lx_top--
+                    lx_word = 0; i++
+                } else if (m == 3) {
+                    if (c == "\\") i += 2
+                    else { if (c == sq) lx_top--; i++ }
+                    lx_word = 0
+                } else if (m == 2) {
+                    if (c == "\\") {
+                        d = substr(line, i + 1, 1)
+                        if (d == "\"" || d == "\\" || d == "$" || d == "`") i += 2
+                        else i++
+                    } else if (c == "\"") { lx_top--; i++ }
+                    else if (c == "$" && substr(line, i + 1, 1) == "(") {
+                        if (substr(line, i + 2, 1) == "(") { lx_stack[++lx_top] = 5; lx_arith = 2; i += 3 }
+                        else { lx_stack[++lx_top] = 4; i += 2 }
+                    } else i++
+                    lx_word = 0
+                } else if (m == 5) {
+                    if (c == "(") lx_arith++
+                    else if (c == ")") {
+                        lx_arith--
+                        if (lx_arith == 0) lx_top--
+                    }
+                    lx_word = 0; i++
+                } else {
+                    if (c == "\\") { i += 2; lx_word = 0 }
+                    else if (c == sq) { lx_stack[++lx_top] = 1; i++; lx_word = 0 }
+                    else if (c == "\"") { lx_stack[++lx_top] = 2; i++; lx_word = 0 }
+                    else if (c == "$") {
+                        d = substr(line, i + 1, 1)
+                        if (d == sq) { lx_stack[++lx_top] = 3; i += 2 }
+                        else if (d == "\"") { lx_stack[++lx_top] = 2; i += 2 }
+                        else if (d == "(" && substr(line, i + 2, 1) == "(") { lx_stack[++lx_top] = 5; lx_arith = 2; i += 3 }
+                        else if (d == "(") { lx_stack[++lx_top] = 4; i += 2 }
+                        else i++
+                        lx_word = 0
+                    }
+                    else if (c == "(") {
+                        if (substr(line, i + 1, 1) == "(") { lx_stack[++lx_top] = 5; lx_arith = 2; i += 2 }
+                        else if (m == 4) { lx_stack[++lx_top] = 4; i++ }
+                        else i++
+                        lx_word = 1
+                    }
+                    else if (c == ")") {
+                        if (m == 4) lx_top--
+                        i++; lx_word = 0
+                    }
+                    else if (c == "#" && lx_word) return
+                    else if (c == "<") {
+                        if (substr(line, i + 1, 1) == "<") {
+                            d = substr(line, i + 2, 1)
+                            if (d == "<" || d == "=") { i += 3; lx_word = 0 }
+                            else if (d == "-") { lex_heredoc(line, i + 3); i = lx_i; lx_word = 0 }
+                            else { lex_heredoc(line, i + 2); i = lx_i; lx_word = 0 }
+                        } else { i++; lx_word = 1 }
+                    }
+                    else {
+                        i++
+                        lx_word = (c == " " || c == "\t" || c == ";" || c == "&" || c == "|" || c == ">" || c == "{") ? 1 : 0
+                    }
                 }
             }
         }
 
-        BEGIN { in_block = 0; hd_top = 0; first_block_closed = 0 }
+        BEGIN { in_block = 0; hd_top = 0; first_block_closed = 0; lx_top = 0; lx_arith = 0; lx_word = 1 }
         # CRLF input: a trailing \r would survive into the collected code
         # and both break the closing-fence check and hand bash a bad line.
         { sub(/\r$/, "", $0) }
@@ -2033,25 +2117,30 @@ extract_code() {
 
         # Inside the code block
         in_block {
-            # Check for heredoc close (delimiter alone on its own line)
+            # A pending heredoc makes this line literal body: only its FIFO
+            # delimiter can end it, so a ``` line inside the body never
+            # closes the fence. Queued heredocs (cat <<A <<B) are read in the
+            # order their operators appeared, so the OLDEST pending delimiter
+            # is the one a body line matches, not the most recent.
             if (hd_top > 0) {
                 stripped = $0
                 gsub(/^[[:space:]]+/, "", stripped)
                 gsub(/[[:space:]]+$/, "", stripped)
-                if (stripped == hd_stack[hd_top]) {
+                if (stripped == hd_stack[1]) {
+                    for (j = 1; j < hd_top; j++) hd_stack[j] = hd_stack[j + 1]
                     hd_top--
                 }
-            }
+            } else {
+                # A bare ``` only closes the fence when no heredoc is open
+                if ($0 ~ /^```[[:space:]]*$/) {
+                    in_block = 0
+                    first_block_closed = 1
+                    next
+                }
 
-            # A bare ``` only closes the fence when no heredoc is open
-            if ($0 ~ /^```[[:space:]]*$/ && hd_top == 0) {
-                in_block = 0
-                first_block_closed = 1
-                next
+                # Scan lexically so only a REAL heredoc open lands on the FIFO
+                lex_line($0)
             }
-
-            # Track heredoc opens inside the code we are collecting
-            try_open_heredoc($0)
 
             print
         }
@@ -2470,9 +2559,14 @@ ${combined}"
 
 # Stream lines past $2 from $1 to stderr (redacted), then print the new
 # line count and PEM-block state on stdout. The caller carries both across
-# polls and resets them for each execution output file.
+# polls and resets them for each execution output file. IS_TRACE (arg 4)
+# marks FILE as the trace channel: every line renders as the cyan command
+# view. Otherwise FILE is program output and renders gray, except a trace
+# line that reached this stream anyway (bash 3.2, or a generated block that
+# closed fd 9): those carry the \001 PS4 mark, stripped here for display,
+# and render like trace.
 _stream_new_output() {
-    local output_file="$1" lines_read="$2" in_pem="${3:-0}"
+    local output_file="$1" lines_read="$2" in_pem="${3:-0}" is_trace="${4:-0}"
     local pem_begin='-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----'
     local pem_end='-----END [A-Z0-9 ]*PRIVATE KEY-----'
     local total_lines
@@ -2517,7 +2611,12 @@ _stream_new_output() {
             fi
             local redacted_line
             redacted_line=$(redact_sensitive "$line")
-            if [[ "$redacted_line" == +* ]]; then
+            # A trace line that reached this stream anyway (bash 3.2, or a
+            # generated block that closed fd 9) carries the \001 PS4 mark:
+            # strip it for display. Genuine plus-prefixed output (diffs,
+            # "+ text") keeps its plus sign and renders like trace.
+            redacted_line=${redacted_line#$'\001'}
+            if [[ "$redacted_line" == +* || "$is_trace" -eq 1 ]]; then
                 printf '\033[36m  $ %s\033[0m\n' "${redacted_line#+ }" >&2
             else
                 printf '\033[90m  │ %s\033[0m\n' "$redacted_line" >&2
@@ -2885,7 +2984,7 @@ run_loop() {
         # Clean up temp dir
         rm -rf "$_cleanup_rundir"
         # Clean up Docker-mode final file from workdir
-        rm -f "$_cleanup_workdir/.shellm_final" 2>/dev/null
+        rm -f "$_cleanup_workdir/.shellm_final" "$_cleanup_workdir/.shellm_trace" 2>/dev/null
         # Docker teardown: only if --temp-docker was passed
         if [[ "${_cleanup_temp:-0}" -eq 1 ]] && [[ "${_SHELLM_DOCKER_MODE:-0}" -eq 1 ]]; then
             docker_teardown
@@ -3058,14 +3157,36 @@ run_loop() {
         if [[ "${_SHELLM_DOCKER_MODE:-0}" -eq 1 ]]; then
             final_path="$workdir/.shellm_final"
         fi
+        # The trace channel's file. In Docker mode it must live in the
+        # mounted workdir, same rule as the final file, so the parent
+        # can read it from the host.
+        local trace_file="$rundir/.trace"
+        if [[ "${_SHELLM_DOCKER_MODE:-0}" -eq 1 ]]; then
+            trace_file="$workdir/.shellm_trace"
+        fi
 
-        # Build wrapped code that captures FINAL/FINAL_FILE after execution
+        # Build wrapped code that captures FINAL/FINAL_FILE after execution.
+        # The block runs under xtrace so an operator watching the live
+        # stream sees each command. The trace channel is a seam, not a
+        # filter: on bash 4.1 and newer the wrapper points BASH_XTRACEFD
+        # at fd 9 and the trace file above, so trace never shares the
+        # captured output stream, and a traced multiline argument can
+        # leave neither continuation lines in storage nor glue onto an
+        # unterminated output line. BASH_XTRACEFD does not exist in bash
+        # 3.2 and a generated block may close fd 9, so PS4 keeps the
+        # \001 mark (backslash octal: bash 3.2 expands PS4 as a prompt
+        # string and eats a raw control byte) and the storage strip
+        # below drops marked lines as the fallback for both.
         local wrapped_code
         # shellcheck disable=SC1078,SC1079  # one long double-quoted string, built across lines on purpose
-        wrapped_code="set -x
+        wrapped_code="PS4='\\001+ '
+if [ -n \"$trace_file\" ] && { [ \"\${BASH_VERSINFO[0]}\" -gt 4 ] || { [ \"\${BASH_VERSINFO[0]}\" -eq 4 ] && [ \"\${BASH_VERSINFO[1]}\" -ge 1 ]; }; }; then
+    if exec 9>>\"$trace_file\"; then BASH_XTRACEFD=9; fi
+fi
+set -x
 $code
-set +x"$'\n'"
 __shellm_rc=\$?
+set +x"$'\n'"
 set +e
 [ -n \"\${FINAL+x}\" ] && printf '%s' \"\$FINAL\" > \"$final_path\"
 [ -n \"\${FINAL_FILE+x}\" ] && cat \"\$FINAL_FILE\" > \"$final_path\"
@@ -3151,6 +3272,7 @@ exit \$__shellm_rc
         local timeout_marker="$rundir/.timeout"
         local activity_file="$rundir/.activity"
         : > "$output_file"
+        : > "$trace_file"
         : > "$activity_file"
         rm -f "$timeout_marker" "$exec_pid_file" "$watchdog_pid_file"
         local exit_code=0
@@ -3185,9 +3307,16 @@ exit \$__shellm_rc
             local started=$SECONDS
             while kill -0 "$exec_pid" 2>/dev/null; do
                 sleep 1
-                local cur_size
+                local cur_size _trace_size
                 cur_size=$(wc -c < "$output_file" 2>/dev/null || echo 0)
                 cur_size=$(echo "$cur_size" | tr -d ' ')
+                # Trace went to its own file (bash 4.1+), so a busy but
+                # silent block would read idle if staleness watched the
+                # output file alone. Sum both files; on the joined
+                # stream the two sizes were one number already.
+                _trace_size=$(wc -c < "$trace_file" 2>/dev/null || echo 0)
+                _trace_size=$(echo "$_trace_size" | tr -d ' ')
+                cur_size=$((cur_size + _trace_size))
                 if [[ "$cur_size" -eq "$last_size" ]]; then
                     stale_seconds=$((stale_seconds + 1))
                     quiet_seconds=$((quiet_seconds + 1))
@@ -3241,9 +3370,10 @@ exit \$__shellm_rc
         printf '%s' "$watchdog_pid" > "$watchdog_pid_file"
 
         # Foreground: poll output file and stream new lines to stderr
-        local lines_read=0 pem_open=0
+        local lines_read=0 pem_open=0 trace_read=0
         while kill -0 "$exec_pid" 2>/dev/null; do
             read -r lines_read pem_open <<< "$(_stream_new_output "$output_file" "$lines_read" "$pem_open")"
+            trace_read=$(_stream_new_output "$trace_file" "$trace_read" 0 1)
             sleep 0.2
         done
 
@@ -3256,6 +3386,7 @@ exit \$__shellm_rc
 
         # Drain any remaining output lines
         _stream_new_output "$output_file" "$lines_read" "$pem_open" >/dev/null
+        _stream_new_output "$trace_file" "$trace_read" 0 1 >/dev/null
 
         # Check if we timed out. The marker carries why, so the feedback the
         # model gets names the real cause instead of guessing at a prompt.
@@ -3285,7 +3416,12 @@ $(tail -c "$OUTPUT_KEEP_BYTES" "$output_file" | tail -n +2)"
         else
             output=$(cat "$output_file")
         fi
-        rm -f "$output_file" "$exec_pid_file" "$watchdog_pid_file" "$timeout_marker" "$activity_file"
+        # A trace line that reached this stream anyway (bash 3.2, or a
+        # generated block that closed fd 9) carries the \001 PS4 mark:
+        # strip it here so storage never holds it, and genuine
+        # plus-prefixed output survives the strip below.
+        output=${output#$'\001'}
+        rm -f "$output_file" "$exec_pid_file" "$watchdog_pid_file" "$timeout_marker" "$activity_file" "$trace_file"
         local _exec_s=$(( $(date +%s) - _exec_t0 ))
 
         debug "Exit code: $exit_code, timed_out: $timed_out"
@@ -3305,9 +3441,14 @@ $(tail -c "$OUTPUT_KEEP_BYTES" "$output_file" | tail -n +2)"
             progress "\033[1;31mExit $exit_code\033[0m"
         fi
 
-        # Clean output: strip xtrace lines for storage
+        # Clean output for storage. On bash 4.1 and newer the trace went
+        # to its own fd and never touched this stream; this strip is the
+        # fallback for bash 3.2 and for a block that closed fd 9, where
+        # marked trace lines do reach the stream. Trace carries the
+        # \001 PS4 mark, so genuine output that begins with a plus sign
+        # (diffs, "+ text") is kept and only marked lines are dropped.
         local clean_output
-        clean_output=$(printf '%s' "$output" | grep -v '^+\+ ' | grep -v '^+ ' || true)
+        clean_output=$(printf '%s' "$output" | grep -v "^"$'\001' || true)
         # Write to temp file to avoid ARG_MAX when passing large output to jq
         local _stdout_tmp
         _stdout_tmp=$(mktemp)
@@ -3521,6 +3662,7 @@ main() {
     local _SHELLM_ENV_NAME="${SHELLM_ENV:-}"
     local _new_env=0
     local _use_traj=""
+    local _SHELLM_TRAJ_DIR_EXPLICIT=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -3615,6 +3757,7 @@ main() {
                 ;;
             --traj-dir)
                 SHELLM_TRAJ_DIR="${2:?--traj-dir requires DIR}"
+                _SHELLM_TRAJ_DIR_EXPLICIT=1
                 shift 2
                 ;;
             --resume)
@@ -3662,6 +3805,19 @@ main() {
     if [[ "$_new_env" -eq 1 && -n "$_SHELLM_ENV_NAME" ]]; then
         die "--new-env and --env cannot be used together"
     fi
+    # A nested shellm run (generated code calling shellm) inherits the
+    # parent run's TRAJ_DIR, so a bare --resume resolves "latest" to the
+    # parent's own live trajectory and appends foreign rows to it
+    # (2026-09-30: 27 such rows landed in a live identity log this way).
+    # Resume is a caller-side act: refuse it inside a run unless the caller
+    # names what gets written (--traj ID) or re-roots the directory
+    # (--traj-dir), both explicit choices.
+    if [[ -n "${SHELLM_RUN_STEP_ID:-}" && "$_use_traj" == "__latest__" \
+        && -z "${_SHELLM_TRAJ_DIR_EXPLICIT:-}" ]]; then
+        die "--resume inside a nested run would continue the live trajectory; \
+pass --traj ID or --traj-dir, or run from outside a shellm run"
+    fi
+
 
     validate_docker_config
     case "$SHELLM_CONTEXT_SCOPE" in
