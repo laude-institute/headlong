@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: laude-institute/rev-engine-prime@main
+      - uses: laude-institute/rev-engine-prime@ca5a2ed59b5840862238e25590e22441fac884e0 # main
         with:
           openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
           pr-number: ${{ inputs.pr-number }}
