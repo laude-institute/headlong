@@ -1317,16 +1317,25 @@ $matches"
 
 cmd_delete() {
     local target="${1:-}"
+    # Tab completion appends a slash; drop it. Any other path spelling
+    # (./ada, ../x, a/b) is refused, so the guards below see a real name.
+    while [[ "$target" == */ ]]; do target="${target%/}"; done
     [[ -z "$target" ]] && die "Usage: identity delete <name>"
+    if [[ "$target" == */* || "$target" == . || "$target" == .. ]]; then
+        die "Usage: identity delete <name> (a name, not a path): $1"
+    fi
+    [[ "$target" == default ]] && die "'default' links to the active identity; it is not an identity to delete"
 
     [[ ! -d "$IDENTITY_DIR/$target" ]] && die "No identity named: $target"
 
-    # Don't allow deleting the default identity
-    local current_name=""
-    if [[ -L "$IDENTITY_DIR/default" ]]; then
-        current_name=$(basename "$(readlink "$IDENTITY_DIR/default")")
+    # Don't allow deleting the default identity, under any name (an alias
+    # symlink included) that resolves to its directory.
+    local target_real default_real=""
+    target_real=$(cd -P -- "$IDENTITY_DIR/$target" >/dev/null && pwd)
+    if [[ -e "$IDENTITY_DIR/default" ]]; then
+        default_real=$(cd -P -- "$IDENTITY_DIR/default" >/dev/null && pwd)
     fi
-    if [[ "$target" == "$current_name" ]]; then
+    if [[ -n "$default_real" && "$target_real" == "$default_real" ]]; then
         die "Cannot delete the active identity. Switch to another first."
     fi
 
