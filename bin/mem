@@ -85,14 +85,16 @@ frontmatter_field() {
 find_memory() {
     local id="$1"
 
-    # Hex id match (4-8 char hex prefix in filename)
+    # Hex id match (4-8 char prefix of the id field right after the
+    # timestamp). Anchor it there: a slug can start with hex ("deadline").
     if [[ "$id" =~ ^[0-9a-f]{4,8}$ ]]; then
         local id_match
         local _f _b
+        local _re="^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}_${id}[0-9a-f]*_"
         id_match=$(for _f in "$MEM_DIR"/*.md; do
             [[ -e "$_f" ]] || continue
             _b=$(basename "$_f" .md)
-            [[ "$_b" == *"_${id}"* ]] && printf '%s\n' "$_b"
+            [[ "$_b" =~ $_re ]] && printf '%s\n' "$_b"
         done | head -2) || true
         local id_count
         id_count=$(printf '%s' "$id_match" | grep -c . 2>/dev/null) || id_count=0
