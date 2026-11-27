@@ -271,8 +271,7 @@ Options:
   -h, --help               Show this help
 
 Models:
-  Anthropic:  claude-opus-4-7, claude-sonnet-4-5, claude-haiku-4-5
-              claude-3-5-sonnet, claude-3-5-haiku, claude-3-opus
+  Anthropic:  claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
   OpenAI:     gpt-5.5, gpt-5, gpt-4o, o1, o3, o4
   Gemini:     gemini-3.5-flash, gemini-2.0-flash, gemini-*
   OpenRouter: z-ai/glm-5.2, meta-llama/*, ... (any vendor/model name)
@@ -358,7 +357,7 @@ Environment:
                            (out_tok from bytes, estimated:true).
 
 Examples:
-  llm -m claude-sonnet-4-5-20250929 "explain quicksort"
+  llm -m claude-sonnet-4-6 "explain quicksort"
   echo "summarize this" | llm -m gpt-5
   llm --thinking -m claude-opus-4-7 "solve this carefully"
   llm --raw -m gemini-2.0-flash "return a JSON greeting"
@@ -419,13 +418,13 @@ if [[ -z "$LLM_MODEL" ]]; then
     if [[ -n "${SHELLM_MODEL:-}" ]]; then
         LLM_MODEL="$SHELLM_MODEL"
     elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-        LLM_MODEL="claude-sonnet-4-5-20250929"
+        LLM_MODEL="claude-sonnet-4-6"
     elif [[ -n "${OPENAI_API_KEY:-}" ]]; then
         LLM_MODEL="gpt-5.5"
     elif [[ -n "${GEMINI_API_KEY:-}" ]]; then
         LLM_MODEL="gemini-3.5-flash"
     elif [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
-        LLM_MODEL="anthropic/claude-sonnet-4.5"
+        LLM_MODEL="anthropic/claude-sonnet-4.6"
     elif [[ -n "${OPENCODE_API_KEY:-}" ]]; then
         # OPENCODE_API_KEY covers both OpenCode plans and can't disambiguate
         # them, so default to the flat-rate subscription; Zen models are one

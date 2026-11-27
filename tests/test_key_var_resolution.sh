@@ -51,7 +51,7 @@ run_init() {
 # --- the reported case: OpenRouter key exported as OPENAI_API_KEY ------------
 run_init "$WORK/h1" OPENAI_API_KEY=sk-or-v1-EXAMPLE-NOT-A-REAL-KEY
 check "misplaced sk-or- key: model follows the key, not the variable" \
-    grep -qx "SHELLM_MODEL='anthropic/claude-sonnet-4.5'" "$WORK/h1/.headlong/.env"
+    grep -qx "SHELLM_MODEL='anthropic/claude-sonnet-4.6'" "$WORK/h1/.headlong/.env"
 check "misplaced sk-or- key: says which variable it should be in" \
     grep -q 'OPENROUTER_API_KEY' "$WORK/out"
 check_not "misplaced sk-or- key: never defaults to an OpenAI model" \
@@ -82,12 +82,12 @@ run_init "$WORK/h4" \
     OPENAI_API_KEY=sk-or-v1-EXAMPLE-MISPLACED-KEY \
     OPENROUTER_API_KEY=sk-or-v1-EXAMPLE-CORRECT-KEY
 check "both set: picks the consistent variable" \
-    grep -qx "SHELLM_MODEL='anthropic/claude-sonnet-4.5'" "$WORK/h4/.headlong/.env"
+    grep -qx "SHELLM_MODEL='anthropic/claude-sonnet-4.6'" "$WORK/h4/.headlong/.env"
 
 # --- an Anthropic key in the wrong slot is corrected too ---------------------
 run_init "$WORK/h5" OPENAI_API_KEY=sk-ant-api03-EXAMPLE-NOT-A-REAL-KEY
 check "misplaced sk-ant- key: model follows the key" \
-    grep -qx "SHELLM_MODEL='claude-sonnet-4-5-20250929'" "$WORK/h5/.headlong/.env"
+    grep -qx "SHELLM_MODEL='claude-sonnet-4-6'" "$WORK/h5/.headlong/.env"
 
 # --- a stale SHELLM_MODEL pinned from the misfiled variable heals ------------
 # An earlier init derived gpt-5.5 from the key sitting in OPENAI_API_KEY;
@@ -97,7 +97,7 @@ mkdir -p "$WORK/h7/.headlong"
 printf 'SHELLM_MODEL=gpt-5.5\n' > "$WORK/h7/.headlong/.env"
 run_init "$WORK/h7" OPENAI_API_KEY=sk-or-v1-EXAMPLE-NOT-A-REAL-KEY
 check "stale model from the misfiled variable: re-pinned to the key's provider" \
-    grep -qx "SHELLM_MODEL='anthropic/claude-sonnet-4.5'" "$WORK/h7/.headlong/.env"
+    grep -qx "SHELLM_MODEL='anthropic/claude-sonnet-4.6'" "$WORK/h7/.headlong/.env"
 
 # --- bin/llm honors LLM_MAX_TOKENS from the environment ----------------------
 # curl stub records the request body; llm builds it with jq before sending.
