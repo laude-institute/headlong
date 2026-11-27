@@ -38,8 +38,8 @@ Left to right, first set value wins:
 
 | Call site | Resolution chain |
 |---|---|
-| `mem search` | `SHELLM_FAST_MODEL` → `SHELLM_MODEL` → `claude-sonnet-4-5` |
-| bare `llm` (no `-m`) | `-m` flag → `LLM_MODEL` → `SHELLM_MODEL` → `claude-sonnet-4-5` |
+| `mem search` | `SHELLM_FAST_MODEL` → `SHELLM_MODEL` → `claude-sonnet-4-6` |
+| bare `llm` (no `-m`) | `-m` flag → `LLM_MODEL` → `SHELLM_MODEL` → `claude-sonnet-4-6` |
 | run summaries (`bin/shellm`) | `SHELLM_SUMMARY_MODEL` → `SHELLM_FAST_MODEL` → *if run is `claude-*`*: `claude-haiku-4-5` / *else*: the run's own `SHELLM_MODEL` |
 | `shellm` agent loop | `--model` flag → `SHELLM_MODEL` → `claude-opus-4-7` |
 | thinkers (all) | `THINK_MODEL` → `SHELLM_MODEL` → `claude-opus-4-7` |

@@ -349,10 +349,10 @@ _key_var_for() {  # guess the provider env var from the key's prefix
 
 _default_model_for() {
     case "$1" in
-        ANTHROPIC_API_KEY)  echo "claude-sonnet-4-5-20250929" ;;
+        ANTHROPIC_API_KEY)  echo "claude-sonnet-4-6" ;;
         OPENAI_API_KEY)     echo "gpt-5.5" ;;
         GEMINI_API_KEY)     echo "gemini-3.5-flash" ;;
-        OPENROUTER_API_KEY) echo "anthropic/claude-sonnet-4.5" ;;
+        OPENROUTER_API_KEY) echo "anthropic/claude-sonnet-4.6" ;;
         OPENCODE_API_KEY)   echo "opencode-go/deepseek-v4-flash" ;;
     esac
 }

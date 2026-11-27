@@ -426,7 +426,7 @@ run_init "$WORK/h7e" \
     OPENAI_API_KEY=sk-or-example-redacted-value
 check "corrected-key switch: exits 0"                        test "$RC" -eq 0
 check "corrected-key switch: corrected key is persisted"    grep -qx "OPENROUTER_API_KEY='sk-or-example-redacted-value'" "$WORK/h7e/.headlong/.env"
-check "corrected-key switch: model follows corrected key"    grep -qx "SHELLM_MODEL='anthropic/claude-sonnet-4.5'" "$WORK/h7e/.headlong/.env"
+check "corrected-key switch: model follows corrected key"    grep -qx "SHELLM_MODEL='anthropic/claude-sonnet-4.6'" "$WORK/h7e/.headlong/.env"
 
 # ---------------------------------------------------------------------------
 # re-run idempotence: the same local config persists again (keyless), and

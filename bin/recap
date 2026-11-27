@@ -32,7 +32,7 @@ QUIET=0
 # Map (windows -> episodes) and reduce (episodes -> themes) take separate
 # models; both default to the smart model. Set RECAP_MAP_MODEL to a cheap
 # model if map volume ever becomes a cost concern.
-_DEFAULT_MODEL="${RECAP_MODEL:-${SHELLM_MODEL:-claude-sonnet-4-5-20250929}}"
+_DEFAULT_MODEL="${RECAP_MODEL:-${SHELLM_MODEL:-claude-sonnet-4-6}}"
 MAP_MODEL="${RECAP_MAP_MODEL:-$_DEFAULT_MODEL}"
 REDUCE_MODEL="${RECAP_REDUCE_MODEL:-$_DEFAULT_MODEL}"
 
