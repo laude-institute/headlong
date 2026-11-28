@@ -57,7 +57,7 @@ shellm streams everything live. Commands show in cyan, output in dim:
 Found 42 results
 ```
 
-If a command hangs (waiting for interactive input), the inactivity watchdog kills it after `SHELLM_INACTIVITY_TIMEOUT` seconds (default 30) and gives the LLM structured feedback on what went wrong. Blocks that are waiting on a nested `shellm` run get a longer limit, see [Interactive command handling](#interactive-command-handling).
+If a command produces no output for `SHELLM_INACTIVITY_TIMEOUT` seconds (default 30), the inactivity watchdog kills it and gives the LLM structured feedback on what went wrong. Blocks that are waiting on a nested `shellm` run get a longer limit, see [Interactive command handling](#interactive-command-handling).
 
 ### Completion signals
 
@@ -130,12 +130,15 @@ If a process produces no output for `SHELLM_INACTIVITY_TIMEOUT` seconds (default
 
 ```
 Execution was KILLED after 30 seconds of inactivity
-(likely waiting for interactive input that will never arrive).
-stdin is connected to /dev/null.
+Inactivity means this block produced no output for that long — the
+watchdog measures output silence, not a wait for input. stdin is connected
+to /dev/null, so an interactive prompt gets immediate EOF and cannot be the hang.
 
 DETECTED: Confirmation prompt. Retry with --yes, -y, --force,
 --assume-yes, --non-interactive, or equivalent flag.
 ```
+
+Quiet work survives by printing a heartbeat now and then; run a long silent command in the background with its output in a file, then read the file in a later step.
 
 The LLM sees this and retries with non-interactive flags. For commands that truly need interaction, the LLM can use tmux to create a PTY session and interact with it step by step.
 

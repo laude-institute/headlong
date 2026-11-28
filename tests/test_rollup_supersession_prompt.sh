@@ -68,12 +68,25 @@ check "prompt: correction requires shared input" \
     grep -q 'correcting evidence is also present in this input' "$LLM_LOG"
 check "prompt: unseen prefixes forbidden" \
     grep -q 'do not invent or infer a prefix for an unseen window' "$LLM_LOG"
+# Message rows are rendered verb-led with no persona name in them; the old
+# arrow row left the persona's own name as the only name in an outbound row
+# and sealed summaries flipped outbound to inbound. The prompt documents
+# the verb-led forms.
+check "prompt: message-row direction documented" \
+    grep -q 'I sent to RECIPIENT: content' "$LLM_LOG"
 
-# 4. Sealed blocks are stamped with prompt_version 5.
+# merge and shellm-run rows are dispatcher bookkeeping for nested runs;
+# sealed summaries narrated them as completed Git operations before this
+# sentence existed.
+check "prompt: merge/shellm-run bookkeeping gloss documented" \
+    grep -q 'dispatcher bookkeeping for nested runs' "$LLM_LOG"
+
+
+# 4. Sealed blocks are stamped with prompt_version 7.
 blk="$TRAJ_ROOT/supe0001/rollups/t1/000000000000-000000000010.json"
 check "sealed block exists" test -f "$blk"
-check "sealed block stamped prompt_version 5" \
-    jq -e '.prompt_version == 5' "$blk"
+check "sealed block stamped prompt_version 7" \
+    jq -e '.prompt_version == 7' "$blk"
 
 # 5. The stub was actually called (log has at least one CALL/SYSTEM record).
 check "rollup model invoked" grep -q '^SYSTEM$' "$LLM_LOG"

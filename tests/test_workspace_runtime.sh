@@ -24,8 +24,45 @@ grep -q 'your thinkers synced 20[0-9][0-9]-' <<<"$out" && ok "sync time from the
 
 # No git checkout behind the shellm on PATH: prints nothing, exits 0.
 mkdir -p "$W/fake/bin"; printf '#!/bin/sh\n' > "$W/fake/bin/shellm"; chmod +x "$W/fake/bin/shellm"
-out=$(bash -c "set -euo pipefail; export PATH=\"$W/fake/bin:\$PATH\"; source \"$REPO/thinkers/_lib/common.sh\"; _runtime_line; echo RC=\$?" 2>&1)
+# Hermetic PATH: this case appended the caller PATH, so a shell that
+# carried the repo bin on PATH answered the probe and printed a real
+# Runtime line here, red inside the persona runtime (kin to the
+# inherited TRAJ_DIR fix in 7fd4c3a). Only the fake bin and the system
+# paths answer.
+out=$(bash -c "set -euo pipefail; export PATH=\"$W/fake/bin:/usr/bin:/bin\"; source \"$REPO/thinkers/_lib/common.sh\"; _runtime_line; echo RC=\$?" 2>&1)
 [[ "$out" == "RC=0" ]] && ok "no git checkout: empty line, rc 0" || bad "no git checkout" "$out"
+
+# Checked-out time: the last reflog entry's clock, not .git/HEAD's mtime.
+# An ff-only pull moves main without changing HEAD's content (HEAD is a
+# symref), so the old mtime read froze at clone birth through every later
+# checkout; and in a linked worktree .git/HEAD is not a regular path at all,
+# which dropped the segment entirely. Both checks were born red on main.
+G="$W/g"; git init -q "$G"
+mkdir -p "$G/bin"; printf '#!/bin/sh\n' > "$G/bin/shellm"; chmod +x "$G/bin/shellm"
+printf 'x\n' > "$G/x"
+git -C "$G" -c user.email=t@t -c user.name=t add -- x
+git -C "$G" -c user.email=t@t -c user.name=t commit -qm 'c1'
+TZ=UTC touch -t 202001010000.00 "$G/.git/HEAD"
+rt() { IDENTITY_DIR="$W/none" bash -c "set -euo pipefail; export PATH=\"$1/bin:\$PATH\"; source \"$REPO/thinkers/_lib/common.sh\"; _runtime_line" 2>&1; }
+out=$(rt "$G")
+if grep -q 'checked out 20[0-9][0-9]-' <<<"$out" && ! grep -q 'checked out 2020-01-01' <<<"$out"; then
+    ok "checked-out time: reflog entry beats a stale .git/HEAD mtime"
+else
+    bad "checked-out time: reflog beats mtime" "$out"
+fi
+git -C "$G" worktree add --detach "$G-wt" >/dev/null 2>&1
+git -C "$G-wt" reset -q
+mkdir -p "$G-wt/bin"; printf '#!/bin/sh\n' > "$G-wt/bin/shellm"; chmod +x "$G-wt/bin/shellm"
+out=$(rt "$G-wt")
+grep -q 'checked out 20[0-9][0-9]-' <<<"$out" \
+    && ok "checked-out time: present in a linked worktree (no regular .git/HEAD there)" \
+    || bad "checked-out time in linked worktree" "$out"
+rm -rf "$G/.git/logs"
+TZ=UTC touch -t 202102020202.02 "$G/.git/HEAD"
+out=$(rt "$G")
+grep -q 'checked out 2021-02-02 02:02Z' <<<"$out" \
+    && ok "no reflog: falls back to .git/HEAD mtime" \
+    || bad "no-reflog fallback" "$out"
 
 # Workspace section.
 out=$(run "_workspace_section '$W/missing'; echo RC=\$?")

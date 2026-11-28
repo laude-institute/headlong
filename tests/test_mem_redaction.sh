@@ -51,7 +51,16 @@ check_text() {
             fi
             actual=$(body "$file")
             # All these cases start with a nonblank line, valid on both heads.
-            summary=$(printf '%s' "$expected" | sed -n '1p' | cut -c1-80)
+            # Derive the expected summary the way bin/mem does: a long first
+            # line is clipped to 80 and marked with the dropped count plus a
+            # route (bake_summary). On a base with no bake_summary (before the
+            # marker change) fall back to the plain clip the base produced.
+            summary=$(
+                # Source inside a subshell: the library sets its own shell
+                # options, and set -e at test level would kill the suite.
+                { source "$WORK/mem-library"; bake_summary "$expected"; } 2>/dev/null || true
+            )
+            [[ -n "$summary" ]] || summary=$(printf '%s' "$expected" | sed -n '1p' | cut -c1-80)
             if [[ "$actual" == "$expected" ]] && grep -Fx "summary: $summary" "$file" >/dev/null; then
                 ok "$label $action/$mode body and summary"
             else
